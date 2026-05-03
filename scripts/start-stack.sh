@@ -12,7 +12,7 @@ set -a; . "$ROOT/.env"; set +a
 
 LLAMA_DIR="${LLAMA_DIR:-$HOME/src/llama.cpp}"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
-HF_FILE="${HF_FILE:-Qwen3.6-27B-Instruct-Q6_K.gguf}"
+HF_FILE="${HF_FILE:-Qwen3.6-27B-UD-Q6_K_XL.gguf}"
 MODEL_PATH="$ROOT/models/$HF_FILE"
 MODEL_ALIAS="${MODEL_ALIAS:-qwen3.6-27b-instruct}"
 

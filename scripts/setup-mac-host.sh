@@ -6,8 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODELS_DIR="$ROOT/models"
 
 # Override these env vars to swap in a different Qwen quant or repo.
-HF_REPO="${HF_REPO:-unsloth/Qwen3.6-27B-Instruct-GGUF}"
-HF_FILE="${HF_FILE:-Qwen3.6-27B-Instruct-Q6_K.gguf}"
+HF_REPO="${HF_REPO:-unsloth/Qwen3.6-27B-GGUF}"
+HF_FILE="${HF_FILE:-Qwen3.6-27B-UD-Q6_K_XL.gguf}"
 MODEL_PATH="$MODELS_DIR/$HF_FILE"
 
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
@@ -41,13 +41,14 @@ mkdir -p "$MODELS_DIR"
 if [ -f "$MODEL_PATH" ]; then
   echo "[+] Already present: $MODEL_PATH ($(du -h "$MODEL_PATH" | cut -f1))"
 else
-  echo "[*] Downloading $HF_REPO/$HF_FILE -> $MODELS_DIR (~22 GB)"
+  echo "[*] Downloading $HF_REPO/$HF_FILE -> $MODELS_DIR (~25.6 GB)"
   if ! huggingface-cli download "$HF_REPO" "$HF_FILE" --local-dir "$MODELS_DIR"; then
     echo
     echo "[!] huggingface-cli download failed."
     echo "    Verify HF_REPO and HF_FILE — likely candidates:"
-    echo "      Qwen/Qwen3.6-27B-Instruct-GGUF"
-    echo "      unsloth/Qwen3.6-27B-Instruct-GGUF"
+    echo "      unsloth/Qwen3.6-27B-GGUF      (UD-Q6_K_XL, UD-Q8_K_XL, Q4_K_M, Q5_K_M, ...)"
+    echo "      bartowski/Qwen_Qwen3.6-27B-GGUF"
+    echo "      lmstudio-community/Qwen3.6-27B-GGUF"
     echo "    Override with:  HF_REPO=... HF_FILE=... ./scripts/setup-mac-host.sh"
     exit 1
   fi
