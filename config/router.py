@@ -70,15 +70,24 @@ def _hard_keywords() -> list[str]:
     return [kw.strip().lower() for kw in raw.split(",") if kw.strip()]
 
 
-def _has_anthropic_key() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+def _escalation_enabled() -> bool:
+    """Whether the heuristic should send hard prompts to claude-escalation.
+
+    Set ROUTER_ESCALATION=0 to force everything onto local/remote even when
+    an escalation backend is configured. Defaults to enabled because the
+    `claude-escalation` route now goes through the subscription-billed
+    claude-shim and no longer requires an Anthropic API key — if the shim
+    or claude binary is unavailable, LiteLLM's fallback chain redirects
+    back to the local Qwen automatically.
+    """
+    return os.environ.get("ROUTER_ESCALATION", "1") not in ("0", "false", "False", "")
 
 
 def pick_target(messages: list[dict[str, Any]]) -> str:
     text = _user_text(messages)
     tokens = _approx_tokens(messages)
 
-    if _has_anthropic_key():
+    if _escalation_enabled():
         for kw in _hard_keywords():
             if kw and kw in text:
                 log.info("route=escalation reason=keyword=%r tokens=%d", kw, tokens)
@@ -131,39 +140,38 @@ def _selftest() -> int:
         (
             "trivial -> local",
             [{"role": "user", "content": "fix this typo"}],
-            {"ANTHROPIC_API_KEY": "sk-ant-real"},
+            {},
             LOCAL_ROUTE,
         ),
         (
             "medium -> remote",
             [{"role": "user", "content": "word " * 1700}],
-            {"ANTHROPIC_API_KEY": "sk-ant-real"},
+            {},
             REMOTE_ROUTE,
         ),
         (
             "huge -> escalation",
             [{"role": "user", "content": "word " * 7000}],
-            {"ANTHROPIC_API_KEY": "sk-ant-real"},
+            {},
             ESCALATION_ROUTE,
         ),
         (
             "keyword -> escalation",
             [{"role": "user", "content": "please prove the invariant holds"}],
-            {"ANTHROPIC_API_KEY": "sk-ant-real",
-             "ROUTER_HARD_KEYWORDS": "prove,architect"},
+            {"ROUTER_HARD_KEYWORDS": "prove,architect"},
             ESCALATION_ROUTE,
         ),
         (
-            "no anthropic key collapses keyword to local",
+            "ROUTER_ESCALATION=0 collapses keyword to local",
             [{"role": "user", "content": "please prove the invariant holds"}],
-            {"ANTHROPIC_API_KEY": "",
+            {"ROUTER_ESCALATION": "0",
              "ROUTER_HARD_KEYWORDS": "prove,architect"},
             LOCAL_ROUTE,
         ),
         (
-            "no anthropic key collapses huge to remote",
+            "ROUTER_ESCALATION=0 collapses huge to remote",
             [{"role": "user", "content": "word " * 7000}],
-            {"ANTHROPIC_API_KEY": ""},
+            {"ROUTER_ESCALATION": "0"},
             REMOTE_ROUTE,
         ),
     ]

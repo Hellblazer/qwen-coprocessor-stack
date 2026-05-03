@@ -67,13 +67,18 @@ model_list:
       display_name: "Qwen 3.6 35B-A3B (Strix Halo, remote, no-think)"
 
   - model_name: claude-escalation
+    # Routed through the host-side claude-shim, which spawns a fresh
+    # subscription-authenticated `claude -p` subprocess. Bills against
+    # the user's Pro/Max subscription, not an Anthropic API key.
+    # The api_key value is unused — the shim ignores auth.
     litellm_params:
-      model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
+      model: openai/claude-pro
+      api_base: os.environ/CLAUDE_SHIM_BASE_URL
+      api_key: "no-auth-needed"
       max_tokens: 8192
     model_info:
       id: claude-escalation
-      display_name: "Claude Sonnet 4.6 (Anthropic, escalation)"
+      display_name: "Claude (subscription, via claude -p)"
 
   - model_name: claude-router-auto
     litellm_params:

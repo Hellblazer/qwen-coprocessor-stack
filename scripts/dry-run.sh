@@ -74,10 +74,20 @@ if curl -sf -m 3 "${QWEN_REMOTE_BASE_URL%/v1}/health" >/dev/null; then
 else
   echo "    [-] unreachable (expected — Strix Halo aspirational)"
 fi
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "[*] Anthropic API key present — escalation route available."
+SHIM_URL="${CLAUDE_SHIM_BASE_URL:-http://host.docker.internal:9000/v1}"
+SHIM_HEALTH="${SHIM_URL%/v1}/health"
+SHIM_HEALTH_HOST="$(echo "$SHIM_HEALTH" | sed 's#host.docker.internal#127.0.0.1#')"
+echo "[*] claude-shim at $SHIM_URL (probed via $SHIM_HEALTH_HOST):"
+if curl -sf -m 3 "$SHIM_HEALTH_HOST" >/dev/null; then
+  echo "    [+] reachable — claude-escalation will route through subscription"
 else
-  echo "[-] ANTHROPIC_API_KEY blank — escalation will collapse to local."
+  echo "    [-] unreachable — claude-escalation will fall back to local. Start with: ./scripts/start-stack.sh"
+fi
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "[*] ANTHROPIC_API_KEY is set — only used if you re-point claude-escalation at anthropic/... directly."
+fi
+if [ "${ROUTER_ESCALATION:-1}" = "0" ]; then
+  echo "[*] ROUTER_ESCALATION=0 — pre-call heuristic escalation disabled; only the consult_claude MCP tool can escalate."
 fi
 
 step "5. Tear down"

@@ -95,51 +95,70 @@ for the fast default path, and `claude-qwen-thinking` keeps it on for the rare
 case where you want deeper reasoning. The router currently picks `coding` for
 default; pin `thinking` from the `/model` picker when needed.
 
-## Subscription-billed escalation via `consult_claude` MCP
+## Subscription-billed escalation
 
-`claude-escalation` (the LiteLLM route) bills against an Anthropic Console
-**API key**. If you'd rather pay for hard-question escalation through your
-**Claude Pro/Max subscription**, this repo ships a small MCP bridge that
-exposes a `consult_claude` tool. The Qwen-driven Claude Code calls the tool;
-the tool spawns a fresh subscription-authenticated `claude -p` subprocess
-(env vars from the gateway are stripped) and returns Claude's answer as a
-tool result. Anthropic bills the subscription, not an API key.
+The `claude-escalation` route does **not** call the Anthropic API directly.
+Instead it routes through `claude-shim`, a small host-side OpenAI/Anthropic-
+compatible HTTP server that spawns a fresh `claude -p` subprocess with all
+gateway env vars stripped. The inner `claude` authenticates via your normal
+Pro/Max OAuth login, so escalation traffic bills against the subscription
+rather than against a Console API key.
 
-### Wire it up
-
-```bash
-# User-scope: available wherever you run Qwen-routed Claude Code.
-claude mcp add --scope user consult-claude \
-  "$(pwd)/mcp-bridges/consult-claude/server.py"
-
-# Verify
-claude mcp list | grep consult-claude
-# expected: consult-claude: .../server.py - ✓ Connected
+```
+LiteLLM (Docker)                 claude-shim (host)
+    │  POST /v1/responses             │  subprocess.run(["claude","-p"])
+    ▼  via host.docker.internal:9000  ▼  with ANTHROPIC_BASE_URL etc. stripped
+   ──────────────────────────────►  ─────────────────────────────────►
+                                                                    api.anthropic.com
+                                                                    (subscription quota)
 ```
 
-`uv` must be on PATH (the server is a `uv run --script` shebang). The repo
-also includes a project-scope `.mcp.json` for tracking the registration in
-git; the user-scope `claude mcp add` above is what actually makes it
-available across projects.
+Concretely, when Claude Code (or any client) hits the gateway with model
+`claude-escalation`, LiteLLM's openai/responses adapter forwards to the
+shim, which returns the inner Claude's text. There's no API key involved
+unless you manually re-point the route at `anthropic/claude-sonnet-4-6`.
 
-### When does Qwen reach for it?
+### Two complementary subscription paths
 
-The tool's docstring is the only guardrail — Qwen reads it before deciding.
-We wrote it to refuse routine work and to require non-empty context:
+The stack ships *both* of the following — they serve different escalation
+patterns and don't conflict:
 
-> USE THIS SPARINGLY. It costs subscription quota and adds 5–30 s of latency
-> per call. Reach for it ONLY when the local Qwen model genuinely cannot
-> handle the problem.
+1. **Pre-call route**: Qwen-routed traffic flagged by the router heuristic
+   (large prompt or `ROUTER_HARD_KEYWORDS` match) goes to `claude-escalation`
+   automatically. No tool call required; works for any client of the gateway.
+2. **Mid-flight tool**: `consult_claude` MCP server lets the active model
+   (Qwen) decide *during* a turn that it needs to ask a Claude oracle a
+   single question. Both paths terminate at a `claude -p` subprocess and
+   bill the subscription identically.
 
-Tighten or relax the criteria by editing the `consult_claude` docstring in
-`mcp-bridges/consult-claude/server.py`. Restart the MCP server (any new
-Claude Code session picks it up) for changes to land.
+Disable pre-call escalation by setting `ROUTER_ESCALATION=0` in `.env`
+(useful when you want only Qwen-self-judged escalation via the MCP tool).
+
+### Wire up the MCP path (one-time)
+
+```bash
+claude mcp add --scope user consult-claude \
+  "$(pwd)/mcp-bridges/consult-claude/server.py"
+claude mcp list | grep consult-claude
+# expected: consult-claude: ... - ✓ Connected
+```
+
+`uv` must be on PATH (both shim and MCP server are `uv run --script`
+shebangs).
+
+### Tuning escalation triggers
+
+- `ROUTER_HARD_KEYWORDS`: comma-separated phrases that auto-escalate.
+- `ROUTER_LARGE_PROMPT_TOKENS`: approx-token threshold for size-triggered escalation.
+- `ROUTER_ESCALATION=0` to disable the pre-call path entirely.
+- The MCP tool's docstring in `mcp-bridges/consult-claude/server.py` is the
+  guardrail Qwen reads before invoking it; tighten or relax there.
 
 ### Security note
 
-The bridge spawns `claude -p` with the parent environment minus the gateway
-keys. Anything else in your environment (shell history, secrets, etc.) is
-inherited. If that matters, run the routed Claude Code in a sanitised shell.
+Both bridges spawn `claude -p` inheriting the host environment minus the
+gateway keys. Other secrets in your shell are inherited as-is. Run the
+gateway in a sanitised shell if that matters.
 
 ## What is and isn't built
 
@@ -151,9 +170,12 @@ inherited. If that matters, run the routed Claude Code in a sanitised shell.
 - 🚧 Strix Halo remote tier is **stubbed**. `setup-strix-halo.sh` works but
      requires actual hardware. `QWEN_REMOTE_BASE_URL` should resolve to the
      box; LiteLLM falls back gracefully when it doesn't.
-- ✅ Tool-mediated escalation: `consult_claude` MCP server lets Qwen
-     hand a single hard question to a subscription-authenticated Claude
-     subprocess (single-turn Q&A, not full task delegation).
+- ✅ Subscription-billed pre-call escalation: `claude-escalation` route
+     goes through `claude-shim` (host-side OpenAI-compat HTTP server) which
+     spawns `claude -p` with subscription auth. No API key required.
+- ✅ Subscription-billed mid-flight escalation: `consult_claude` MCP server
+     lets the active model self-judge and ask a Claude oracle a single
+     question (single-turn Q&A, same `claude -p` mechanism).
 - 🚧 Full task delegation (Qwen hands off the conversation + tool authority
      to Claude mid-flight, not just a question) — not yet implemented.
 - 🚧 Langfuse observability — defined in `docker-compose.yml` under the
@@ -166,13 +188,18 @@ inherited. If that matters, run the routed Claude Code in a sanitised shell.
 ├── .env.example                       # all tunables + secrets
 ├── docker-compose.yml                 # LiteLLM (+ optional Langfuse profile)
 ├── config/
-│   ├── litellm_config.yaml            # 4 model routes + fallbacks
+│   ├── litellm_config.yaml            # 5 model routes + fallbacks
 │   └── router.py                      # pre-call hook with routing heuristic
+├── mcp-bridges/
+│   ├── claude-shim/server.py          # OpenAI/Anthropic-compat HTTP shim
+│   │                                  # → spawns subscription `claude -p`
+│   └── consult-claude/server.py       # MCP tool for self-judged escalation
 ├── scripts/
 │   ├── setup-mac-host.sh              # llama.cpp Metal + Qwen 3.6 27B
 │   ├── setup-strix-halo.sh            # Vulkan + Qwen 3.6 35B-A3B (aspirational)
-│   ├── start-stack.sh                 # bring everything up
+│   ├── start-stack.sh                 # bring everything up (incl. claude-shim)
 │   └── stop-stack.sh                  # bring it down cleanly
+│   └── dry-run.sh                     # validate wiring without llama.cpp
 ├── claude-code/
 │   └── env.sh                         # source before `claude`
 ├── ide/
