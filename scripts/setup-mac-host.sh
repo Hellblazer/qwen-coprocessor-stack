@@ -17,9 +17,9 @@ fi
 
 echo "[*] Checking Homebrew dependencies..."
 command -v brew >/dev/null || { echo "[!] Homebrew required: https://brew.sh"; exit 1; }
-for pkg in cmake huggingface-cli; do
-  brew list "$pkg" >/dev/null 2>&1 || brew install "$pkg"
-done
+brew list cmake >/dev/null 2>&1 || brew install cmake
+# Hugging Face renamed `huggingface-cli` to `hf`; the old name now errors out.
+command -v hf >/dev/null 2>&1 || brew install hf
 
 LLAMA_DIR="${LLAMA_DIR:-$HOME/src/llama.cpp}"
 if [ ! -d "$LLAMA_DIR" ]; then
@@ -42,9 +42,9 @@ if [ -f "$MODEL_PATH" ]; then
   echo "[+] Already present: $MODEL_PATH ($(du -h "$MODEL_PATH" | cut -f1))"
 else
   echo "[*] Downloading $HF_REPO/$HF_FILE -> $MODELS_DIR (~25.6 GB)"
-  if ! huggingface-cli download "$HF_REPO" "$HF_FILE" --local-dir "$MODELS_DIR"; then
+  if ! hf download "$HF_REPO" "$HF_FILE" --local-dir "$MODELS_DIR"; then
     echo
-    echo "[!] huggingface-cli download failed."
+    echo "[!] hf download failed."
     echo "    Verify HF_REPO and HF_FILE — likely candidates:"
     echo "      unsloth/Qwen3.6-27B-GGUF      (UD-Q6_K_XL, UD-Q8_K_XL, Q4_K_M, Q5_K_M, ...)"
     echo "      bartowski/Qwen_Qwen3.6-27B-GGUF"
