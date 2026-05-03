@@ -2,9 +2,10 @@ Use claude-router-auto for everything by default — the heuristic router picks
 the right backend per request (local Qwen / remote Qwen / Claude escalation).
 
 Pin a specific backend only when you know better than the router:
-  - claude-qwen-coding   : local Qwen 3.6 27B on M4 Max (low latency)
-  - claude-qwen-remote   : remote Qwen 3.6 35B-A3B on Strix Halo (heavier)
+  - claude-qwen-coding   : Qwen 3.6 27B on M4 Max, thinking off (low latency)
+  - claude-qwen-thinking : Qwen 3.6 27B on M4 Max, thinking on (deeper reasoning)
+  - claude-qwen-remote   : Qwen 3.6 35B-A3B on Strix Halo (aspirational)
   - claude-escalation    : real Claude Sonnet (rare, expensive, hard reasoning)
 
 Prefer tool calling over inline code suggestions.
-Enable thinking mode for multi-file refactors and design-level questions.
+Pin claude-qwen-thinking for multi-file refactors and design-level questions.

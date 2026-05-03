@@ -8,9 +8,16 @@
       "apiKey": "sk-local-CHANGE-ME"
     },
     {
-      "title": "Qwen 3.6 27B (M4 Max)",
+      "title": "Qwen 3.6 27B (M4 Max, no-think)",
       "provider": "openai",
       "model": "claude-qwen-coding",
+      "apiBase": "http://localhost:4000/v1",
+      "apiKey": "sk-local-CHANGE-ME"
+    },
+    {
+      "title": "Qwen 3.6 27B (M4 Max, thinking)",
+      "provider": "openai",
+      "model": "claude-qwen-thinking",
       "apiBase": "http://localhost:4000/v1",
       "apiKey": "sk-local-CHANGE-ME"
     },
@@ -30,7 +37,7 @@
     }
   ],
   "tabAutocompleteModel": {
-    "title": "Qwen 3.6 27B (M4 Max)",
+    "title": "Qwen 3.6 27B (M4 Max, no-think)",
     "provider": "openai",
     "model": "claude-qwen-coding",
     "apiBase": "http://localhost:4000/v1",

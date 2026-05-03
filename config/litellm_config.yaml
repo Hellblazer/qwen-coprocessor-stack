@@ -24,9 +24,31 @@ model_list:
       temperature: 0.6
       top_p: 0.95
       max_tokens: 8192
+      # Qwen3.6-27B is hybrid-thinking; thinking-on burns the entire budget
+      # before emitting visible content on simple prompts. Disable for the
+      # default fast path; use claude-qwen-thinking when reasoning helps.
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
     model_info:
       id: claude-qwen-coding
-      display_name: "Qwen 3.6 27B (M4 Max, local)"
+      display_name: "Qwen 3.6 27B (M4 Max, local, no-think)"
+
+  - model_name: claude-qwen-thinking
+    litellm_params:
+      model: openai/qwen3.6-27b-instruct
+      api_base: os.environ/QWEN_LOCAL_BASE_URL
+      api_key: "sk-local"
+      temperature: 0.6
+      top_p: 0.95
+      max_tokens: 16384
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: true
+          preserve_thinking: true
+    model_info:
+      id: claude-qwen-thinking
+      display_name: "Qwen 3.6 27B (M4 Max, local, thinking)"
 
   - model_name: claude-qwen-remote
     litellm_params:
@@ -37,9 +59,12 @@ model_list:
       top_p: 0.95
       top_k: 20
       max_tokens: 8192
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
     model_info:
       id: claude-qwen-remote
-      display_name: "Qwen 3.6 35B-A3B (Strix Halo, remote)"
+      display_name: "Qwen 3.6 35B-A3B (Strix Halo, remote, no-think)"
 
   - model_name: claude-escalation
     litellm_params:
@@ -64,10 +89,13 @@ model_list:
 
 router_settings:
   num_retries: 2
-  timeout: 180
+  # Generous timeout so thinking-mode requests on a slow-loading model don't
+  # get cut off mid-reason on the M4 Max. Most no-think requests finish in <5s.
+  timeout: 600
   routing_strategy: simple-shuffle
   fallbacks:
     - claude-qwen-coding: ["claude-qwen-remote", "claude-escalation"]
+    - claude-qwen-thinking: ["claude-qwen-coding", "claude-escalation"]
     - claude-qwen-remote: ["claude-qwen-coding", "claude-escalation"]
     - claude-router-auto: ["claude-qwen-coding", "claude-escalation"]
 

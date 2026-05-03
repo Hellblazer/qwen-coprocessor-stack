@@ -71,15 +71,29 @@ down. Does not build llama.cpp and does not download any model weights.
 
 ## Routes
 
-| Route                | Backend                                  |
-|----------------------|------------------------------------------|
-| `claude-router-auto` | heuristic — picks one of the three below |
-| `claude-qwen-coding` | local Qwen 3.6 27B on M4 Max             |
-| `claude-qwen-remote` | remote Qwen 3.6 35B-A3B on Strix Halo    |
-| `claude-escalation`  | Anthropic Claude Sonnet 4.6              |
+| Route                  | Backend                                              |
+|------------------------|------------------------------------------------------|
+| `claude-router-auto`   | heuristic — picks one of the others below           |
+| `claude-qwen-coding`   | Qwen 3.6 27B on M4 Max, **thinking off** (default)   |
+| `claude-qwen-thinking` | Qwen 3.6 27B on M4 Max, **thinking on** (opt-in)     |
+| `claude-qwen-remote`   | Qwen 3.6 35B-A3B on Strix Halo (aspirational)        |
+| `claude-escalation`    | Anthropic Claude Sonnet 4.6                          |
 
-All four show up in Claude Code's `/model` picker via the `/v1/models` discovery
+All five show up in Claude Code's `/model` picker via the `/v1/models` discovery
 endpoint that LiteLLM exposes. Pick one explicitly to bypass the router.
+
+### Why two local routes?
+
+Qwen 3.6-27B is a **hybrid-thinking** model — it emits a `<think>...</think>`
+trace before its visible answer. With thinking enabled, the model spends most
+of its output budget on reasoning even for trivial prompts (we measured
+2 048 thinking tokens for "write a Fibonacci one-liner"). At ~16 tok/s on a
+27B Q6 quant, that's minutes of latency per Claude Code interaction.
+
+So `claude-qwen-coding` disables thinking via `chat_template_kwargs.enable_thinking: false`
+for the fast default path, and `claude-qwen-thinking` keeps it on for the rare
+case where you want deeper reasoning. The router currently picks `coding` for
+default; pin `thinking` from the `/model` picker when needed.
 
 ## What is and isn't built
 

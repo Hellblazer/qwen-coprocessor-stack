@@ -37,12 +37,28 @@ else
     > "$LOGS/gpu/llama-server.log" 2>&1 &
   echo $! > "$PIDFILE"
 
-  echo -n "[*] Waiting for llama-server health"
-  for i in {1..60}; do
-    if curl -sf http://localhost:8080/health >/dev/null; then echo " ok"; break; fi
-    echo -n "."
-    [ "$i" -eq 60 ] && { echo " FAIL"; tail -n 50 "$LOGS/gpu/llama-server.log"; exit 1; }
-    sleep 2
+  # Cold start of a 27B Q6 GGUF off USB-C external storage can take several
+  # minutes to mmap and warm into Metal. Allow up to ~10 min before giving up.
+  WAIT_SECS="${LLAMA_HEALTH_WAIT_SECS:-600}"
+  echo "[*] Waiting up to ${WAIT_SECS}s for llama-server health (24 GB model load)..."
+  deadline=$(( $(date +%s) + WAIT_SECS ))
+  while true; do
+    if curl -sf http://localhost:8080/health >/dev/null; then
+      echo "[+] llama-server healthy"
+      break
+    fi
+    if ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+      echo "[!] llama-server died during startup"
+      tail -n 50 "$LOGS/gpu/llama-server.log"
+      exit 1
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "[!] timeout after ${WAIT_SECS}s — llama-server still loading?"
+      echo "    Increase with LLAMA_HEALTH_WAIT_SECS=900 ./scripts/start-stack.sh"
+      tail -n 30 "$LOGS/gpu/llama-server.log"
+      exit 1
+    fi
+    sleep 3
   done
 fi
 
