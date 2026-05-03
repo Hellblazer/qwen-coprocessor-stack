@@ -11,7 +11,17 @@
 # Pin a specific route from the Claude Code TUI with /model — discovered routes
 # appear there because Claude Code v2.1.126+ scans /v1/models at startup.
 
-_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve our own path portably across bash and zsh.
+if [ -n "${BASH_SOURCE:-}" ]; then
+  _self="${BASH_SOURCE[0]}"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  # zsh's prompt expansion flag (%) gives us the script path when sourced.
+  # Wrapped in eval so bash never tries to parse the zsh-specific syntax.
+  _self="$(eval 'printf "%s" "${(%):-%x}"')"
+else
+  _self="$0"
+fi
+_root="$(cd "$(dirname "$_self")/.." && pwd)"
 [ -f "$_root/.env" ] || { echo "[!] $_root/.env missing. Copy .env.example and fill in." >&2; return 1 2>/dev/null || exit 1; }
 
 set -a
@@ -31,4 +41,4 @@ export ANTHROPIC_SMALL_FAST_MODEL="claude-qwen-coding"
 unset ANTHROPIC_API_KEY
 
 echo "[+] Claude Code routed -> $ANTHROPIC_BASE_URL  (model: $ANTHROPIC_MODEL)"
-unset _root
+unset _root _self
