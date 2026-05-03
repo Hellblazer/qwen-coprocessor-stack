@@ -23,9 +23,12 @@ import logging
 import os
 from typing import Any
 
-from litellm.integrations.custom_logger import CustomLogger
-
 log = logging.getLogger("qwen-router")
+
+try:
+    from litellm.integrations.custom_logger import CustomLogger
+except ImportError:  # litellm absent — heuristic is still importable for tests.
+    CustomLogger = object  # type: ignore[assignment,misc]
 
 META_ROUTE = "claude-router-auto"
 LOCAL_ROUTE = "claude-qwen-coding"
@@ -117,3 +120,78 @@ class RouterCallback(CustomLogger):
 
 
 router_callback_instance = RouterCallback()
+
+
+# --------------------------------------------------------------------------- #
+# Self-tests. Run via `python /app/router.py` inside the LiteLLM container,   #
+# or `python config/router.py` host-side if litellm is installed locally.     #
+# --------------------------------------------------------------------------- #
+def _selftest() -> int:
+    cases: list[tuple[str, list[dict[str, Any]], dict[str, str], str]] = [
+        (
+            "trivial -> local",
+            [{"role": "user", "content": "fix this typo"}],
+            {"ANTHROPIC_API_KEY": "sk-ant-real"},
+            LOCAL_ROUTE,
+        ),
+        (
+            "medium -> remote",
+            [{"role": "user", "content": "word " * 1700}],
+            {"ANTHROPIC_API_KEY": "sk-ant-real"},
+            REMOTE_ROUTE,
+        ),
+        (
+            "huge -> escalation",
+            [{"role": "user", "content": "word " * 7000}],
+            {"ANTHROPIC_API_KEY": "sk-ant-real"},
+            ESCALATION_ROUTE,
+        ),
+        (
+            "keyword -> escalation",
+            [{"role": "user", "content": "please prove the invariant holds"}],
+            {"ANTHROPIC_API_KEY": "sk-ant-real",
+             "ROUTER_HARD_KEYWORDS": "prove,architect"},
+            ESCALATION_ROUTE,
+        ),
+        (
+            "no anthropic key collapses keyword to local",
+            [{"role": "user", "content": "please prove the invariant holds"}],
+            {"ANTHROPIC_API_KEY": "",
+             "ROUTER_HARD_KEYWORDS": "prove,architect"},
+            LOCAL_ROUTE,
+        ),
+        (
+            "no anthropic key collapses huge to remote",
+            [{"role": "user", "content": "word " * 7000}],
+            {"ANTHROPIC_API_KEY": ""},
+            REMOTE_ROUTE,
+        ),
+    ]
+
+    fails = 0
+    for name, messages, env, expected in cases:
+        # Snapshot + apply scoped env.
+        saved = {k: os.environ.get(k) for k in env}
+        for k, v in env.items():
+            if v == "" and k in os.environ:
+                del os.environ[k]
+            else:
+                os.environ[k] = v
+        try:
+            got = pick_target(messages)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        ok = got == expected
+        fails += 0 if ok else 1
+        print(f"  [{'+' if ok else '!'}] {name}: got={got} expected={expected}")
+    print(f"\n{'PASS' if fails == 0 else f'FAIL ({fails})'} — router heuristic")
+    return 0 if fails == 0 else 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(_selftest())

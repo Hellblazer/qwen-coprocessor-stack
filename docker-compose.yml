@@ -1,6 +1,8 @@
 services:
   litellm-proxy:
-    image: ghcr.io/berriai/litellm:main-stable
+    # Pinned to a versioned stable tag — bump from
+    # https://github.com/BerriAI/litellm/releases when needed.
+    image: litellm/litellm:v1.83.14-stable
     container_name: qwen-coprocessor-proxy
     restart: unless-stopped
     ports:

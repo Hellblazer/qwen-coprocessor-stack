@@ -57,6 +57,18 @@ claude
 `source claude-code/env.sh` exports `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
 and `ANTHROPIC_MODEL=claude-router-auto`. Claude Code is otherwise unmodified.
 
+## Dry run (before downloading 22 GB)
+
+```bash
+cp .env.example .env && $EDITOR .env
+./scripts/dry-run.sh
+```
+
+Pulls the LiteLLM image (~1 GB once), starts the proxy without a workhorse,
+verifies `/v1/models` returns all four routes, runs the router heuristic
+self-tests inside the container, snapshots backend reachability, then tears
+down. Does not build llama.cpp and does not download any model weights.
+
 ## Routes
 
 | Route                | Backend                                  |
