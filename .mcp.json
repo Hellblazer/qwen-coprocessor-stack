@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "consult-claude": {
+      "command": "/Users/hal.hildebrand/git/qwen-coprocessor-stack/mcp-bridges/consult-claude/server.py",
+      "args": [],
+      "env": {}
+    }
+  }
+}
