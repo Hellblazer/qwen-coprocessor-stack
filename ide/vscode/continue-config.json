@@ -1,0 +1,39 @@
+{
+  "models": [
+    {
+      "title": "Auto (Qwen → Qwen-remote → Claude)",
+      "provider": "openai",
+      "model": "claude-router-auto",
+      "apiBase": "http://localhost:4000/v1",
+      "apiKey": "sk-local-CHANGE-ME"
+    },
+    {
+      "title": "Qwen 3.6 27B (M4 Max)",
+      "provider": "openai",
+      "model": "claude-qwen-coding",
+      "apiBase": "http://localhost:4000/v1",
+      "apiKey": "sk-local-CHANGE-ME"
+    },
+    {
+      "title": "Qwen 3.6 35B-A3B (Strix Halo)",
+      "provider": "openai",
+      "model": "claude-qwen-remote",
+      "apiBase": "http://localhost:4000/v1",
+      "apiKey": "sk-local-CHANGE-ME"
+    },
+    {
+      "title": "Claude Sonnet (escalation)",
+      "provider": "openai",
+      "model": "claude-escalation",
+      "apiBase": "http://localhost:4000/v1",
+      "apiKey": "sk-local-CHANGE-ME"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Qwen 3.6 27B (M4 Max)",
+    "provider": "openai",
+    "model": "claude-qwen-coding",
+    "apiBase": "http://localhost:4000/v1",
+    "apiKey": "sk-local-CHANGE-ME"
+  }
+}

@@ -1,0 +1,80 @@
+# =============================================================================
+# LiteLLM proxy config
+#
+# Exposes an Anthropic-compatible /v1/messages endpoint at :4000. Claude Code
+# points ANTHROPIC_BASE_URL=http://localhost:4000 and presents
+# ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY.
+#
+# Four routes are defined:
+#   - claude-qwen-coding   : local Qwen3.6-27B on M4 Max (workhorse)
+#   - claude-qwen-remote   : remote Qwen3.6-35B-A3B on Strix Halo (aspirational)
+#   - claude-escalation    : real Anthropic Claude Sonnet (heavy thinker)
+#   - claude-router-auto   : meta-route — custom callback picks one of the above
+#
+# Claude Code's /v1/models discovery surfaces only ids beginning with "claude"
+# or "anthropic", which is why every route name has a `claude-` prefix.
+# =============================================================================
+
+model_list:
+  - model_name: claude-qwen-coding
+    litellm_params:
+      model: openai/qwen3.6-27b-instruct
+      api_base: os.environ/QWEN_LOCAL_BASE_URL
+      api_key: "sk-local"
+      temperature: 0.6
+      top_p: 0.95
+      max_tokens: 8192
+    model_info:
+      id: claude-qwen-coding
+      display_name: "Qwen 3.6 27B (M4 Max, local)"
+
+  - model_name: claude-qwen-remote
+    litellm_params:
+      model: openai/qwen3.6-35b-a3b
+      api_base: os.environ/QWEN_REMOTE_BASE_URL
+      api_key: "sk-local"
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      max_tokens: 8192
+    model_info:
+      id: claude-qwen-remote
+      display_name: "Qwen 3.6 35B-A3B (Strix Halo, remote)"
+
+  - model_name: claude-escalation
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+      max_tokens: 8192
+    model_info:
+      id: claude-escalation
+      display_name: "Claude Sonnet 4.6 (Anthropic, escalation)"
+
+  - model_name: claude-router-auto
+    litellm_params:
+      # Placeholder; the pre-call hook in router.py rewrites `model` to one
+      # of the three concrete routes above before LiteLLM dispatches.
+      model: openai/qwen3.6-27b-instruct
+      api_base: os.environ/QWEN_LOCAL_BASE_URL
+      api_key: "sk-local"
+      max_tokens: 8192
+    model_info:
+      id: claude-router-auto
+      display_name: "Auto (Qwen→Qwen-remote→Claude)"
+
+router_settings:
+  num_retries: 2
+  timeout: 180
+  routing_strategy: simple-shuffle
+  fallbacks:
+    - claude-qwen-coding: ["claude-qwen-remote", "claude-escalation"]
+    - claude-qwen-remote: ["claude-qwen-coding", "claude-escalation"]
+    - claude-router-auto: ["claude-qwen-coding", "claude-escalation"]
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  callbacks: ["router.router_callback_instance"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
