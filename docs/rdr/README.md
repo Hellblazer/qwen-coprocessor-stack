@@ -5,16 +5,16 @@ Architectural decisions and their rationales for the
 context that forced it, the options considered, the choice made, and the
 consequences accepted.
 
-Lifecycle: `draft` → `proposed` → `accepted` → (optional) `superseded`.
+Lifecycle: `draft` → `proposed` → `accepted` → `final` (or `superseded`).
 Acceptance is gated by a substantive critique pass (see
 `/nx:rdr-gate`) and recorded in T2 (`qwen-coprocessor-stack_rdr` project
 namespace) for cross-session discoverability.
 
 ## Index
 
-| ID  | Status   | Type         | Title |
-|-----|----------|--------------|-------|
-| 001 | accepted | architecture | [Qwen-as-coprocessor — stateful Node MCP server with multi-backend routing](RDR-001-qwen-coprocessor-mcp-server.md) |
+| ID  | Status              | Type         | Title |
+|-----|---------------------|--------------|-------|
+| 001 | final (implemented) | architecture | [Qwen-as-coprocessor — stateful Node MCP server with multi-backend routing](RDR-001-qwen-coprocessor-mcp-server.md) |
 
 ## Future / placeholder
 

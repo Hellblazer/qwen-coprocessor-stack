@@ -1,12 +1,14 @@
 ---
 name: Qwen-as-coprocessor — stateful Node MCP server with multi-backend routing
 type: architecture
-status: accepted
+status: final
 priority: high
 created: 2026-05-03
 accepted: 2026-05-03
 accepted_date: 2026-05-04
 gate_passed_date: 2026-05-04
+closed_date: 2026-05-04
+close_reason: implemented
 authors:
   - hal.hildebrand
 reviewed-by: self
@@ -23,13 +25,29 @@ supersedes:
 
 ## Status
 
-**Accepted** (2026-05-03). Implementation pending. Supersedes the original
-gateway architecture documented in commits `9c97f49..25e8054` and the
-README's "Subscription-billed escalation" section through commit `89c4652`.
+**Final — implemented (2026-05-04).** Accepted 2026-05-03; gate PASSED
+2026-05-04 (Run 2; Run 1 BLOCKED on 2 CRITICAL critic findings, addressed
+in remediation). All seven implementation phases (epic `ab6`, child beads
+`ab6.1`–`ab6.7`) shipped. Legacy gateway code removed from disk in commit
+`1fea01a`; the parallel stateless Python MCP removed in `39f8b93`. The
+single delegation surface is now `mcp-bridges/qwen-agent-server/`
+(commits `f3797a3` through `65ab205`).
 
-The formal `/nx:rdr-gate` review was not run; the project owner accepted
-directly after architectural review. Open implementation questions
-(captured below) are deferred to build time, not blockers for acceptance.
+Test status at close: 132 unit tests + 4 integration pins (3 SDK pins +
+1 end-to-end round-trip) green against live llama-server, with ~98%
+prefix-cache hit rate observed on turn 2 within a session.
+
+The §Q1 mechanism originally proposed (deny-with-message answer
+delivery via `canUseTool`) was empirically falsified during integration
+testing (probe `/tmp/qwen-sdk-probe/probe-tool-result.mjs`, 2026-05-04).
+The §Q1 section below was rewritten to reflect the corrected
+mechanism — `ask_user_question` excluded from the inner Qwen's tool
+surface, multi-turn input via streamInput async generator. RDR-001 is
+the canonical reference for this design.
+
+Supersedes the original gateway architecture documented in commits
+`9c97f49..25e8054` and the README's "Subscription-billed escalation"
+section through commit `89c4652`.
 
 ## Context
 
