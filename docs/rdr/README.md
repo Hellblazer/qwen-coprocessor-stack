@@ -15,10 +15,6 @@ namespace) for cross-session discoverability.
 | ID  | Status              | Type         | Title |
 |-----|---------------------|--------------|-------|
 | 001 | final (implemented) | architecture | [Qwen-as-coprocessor — stateful Node MCP server with multi-backend routing](RDR-001-qwen-coprocessor-mcp-server.md) |
-
-## Future / placeholder
-
-| ID  | Anticipated scope |
-|-----|-------------------|
-| 002 | Per-plugin catalogue: which plugins / agents / skills / commands / hooks live under `plugins/`, install order, per-plugin scope decisions, integration test plan. |
-| 003 | Observability hooks: structured logging via `pino`, optional Langfuse client for trace events, sampling policy. |
+| 002 | draft               | architecture | [Per-plugin catalogue — in-repo Qwen Code extensions, install order, and scope](RDR-002-plugin-catalogue.md) |
+| 003 | draft               | architecture | [Observability — structured logs, per-backend metrics, optional traces](RDR-003-observability.md) |
+| 004 | draft               | architecture | [Multi-Qwen fleet management — declarative config, tmux-as-lifecycle, mosh-attached operator UX](RDR-004-multi-qwen-fleet-management.md) |
