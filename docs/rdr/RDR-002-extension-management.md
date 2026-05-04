@@ -262,7 +262,7 @@ and shells out to the bundled Qwen CLI:
 | `qwenctl …`                                | Shells out to                              | Notes |
 |--------------------------------------------|--------------------------------------------|-------|
 | `qwenctl extensions list`                  | `qwen extensions list`                     | Pass-through; optional client-side reformat to a tighter table. Native output already includes `Enabled (User)`, `Enabled (Workspace)`, `Path`, `Source`, declared `Commands`/`Skills`/`Agents`/`MCP servers`. |
-| `qwenctl extensions inspect <name>`        | `qwen extensions list` filtered by `<name>` | The native `list` block per extension is exactly the "inspect" payload. No separate Qwen subcommand needed. |
+| `qwenctl extensions inspect <name>`        | `qwen extensions list` filtered by `<name>` | The native `list` block per extension is exactly the "inspect" payload. No separate Qwen subcommand needed. Exit 1 with `extension '<name>' not found` if no extension matches. |
 | `qwenctl extensions install <source>`      | `qwen extensions install <source>`         | Source types upstream supports: git URL, local path, npm `@scope/name`, marketplace `url:name`. `qwenctl` initially restricts to git URL + local path; pass-through additional flags (`--ref`, `--auto-update`, `--pre-release`, `--registry`, `--consent`). |
 | `qwenctl extensions remove <name>`         | `qwen extensions uninstall <name>`         | Name translation only. `qwenctl` accepts both `remove` and `uninstall` as an alias for muscle-memory consistency. |
 | `qwenctl extensions enable <name> [--scope user\|workspace]`  | `qwen extensions enable <name> --scope <s>`  | `--scope` defaults: upstream defaults to all scopes; `qwenctl` passes through verbatim. |
@@ -328,8 +328,24 @@ exec "$QWEN_REAL_BIN" \
 
 Per-session, the supervisor sets:
 
-- `QWEN_REAL_BIN` — path to the real Qwen Code binary (resolved
-  once at supervisor startup; default: `which qwen`).
+- `QWEN_REAL_BIN` — path to the real Qwen Code binary. Resolution
+  policy (in `src/server.ts` `main()` startup, before any session
+  spawns):
+  1. If the process environment already has `QWEN_REAL_BIN` set,
+     use it verbatim — no `which` lookup. The supervisor verifies
+     the path exists and is executable; if not, exit non-zero with
+     a clear error.
+  2. Else, run `which qwen`. If it returns empty or non-zero, the
+     supervisor exits non-zero with `QWEN_REAL_BIN unset and 'qwen'
+     not on PATH`. Fail-fast at startup, not at first spawn — an
+     operator who hasn't installed Qwen Code can't recover later
+     by registering more sessions, only by fixing the install.
+  3. The resolved path is cached in supervisor process state and
+     used as `QueryOptions.env.QWEN_REAL_BIN` for every session.
+     If the binary is moved or deleted between startup and a
+     spawn, the wrapper's `exec` fails; the SDK surfaces a
+     subprocess error and the session enters `state: error` per
+     RDR-001 §S2 — caller can re-spawn after fixing the install.
 - `QWEN_AGENT_EXTENSIONS` — comma-separated list of extension
   names (per `config.name`). Empty/unset → no `--extensions` flag
   → CLI defaults apply. `none` → disable all.
@@ -353,10 +369,47 @@ for the bridge.
   prepended at any position.
 
 These behaviors are pinned by **Pin 4** of
-`tests/integration/sdk-behavior.test.ts`. Any future SDK change
+`tests/integration/sdk-behavior.test.ts` (read for the exact
+assertions). Any future SDK change
 that strips `env`, validates `pathToQwenExecutable` as a binary,
 or constructs argv with positional arguments fails the pin and
 blocks the SDK upgrade.
+
+### Installed-extensions cache and `qwen_reload_extensions`
+
+The supervisor caches the list of installed extension `config.name`
+values in process state. The cache is populated at startup by
+shelling out to `qwen extensions list` and parsing the names from
+the output (per the format documented in the CLI subcommand spike,
+T2 record `002-research-005` and `/tmp/rdr-002-cli-spike.md`).
+
+The cache is invalidated by:
+
+- The admin-only MCP tool `qwen_reload_extensions` (gated on
+  `QWEN_ADMIN_TOOLS=1`). Calling it triggers a fresh
+  `qwen extensions list`.
+- `qwenctl extensions install` and `qwenctl extensions remove`
+  optionally call `qwen_reload_extensions` before returning, so
+  the operator's next spawn sees the change without an explicit
+  reload step.
+
+In-flight sessions are unaffected by cache refreshes — they
+continue with whatever extension set was resolved at their spawn
+time. Running sessions never re-validate against a refreshed
+cache; their wrapper script's `--extensions` argv is fixed for
+the life of the SDK subprocess.
+
+This is the same drain semantics RDR-004 uses for backend
+hot-reload: hot-reload changes apply to *future* spawns, never to
+*running* sessions, which preserves §S4 / §Q1 contracts the
+running session was started under.
+
+A consequence: an operator who hand-edits
+`~/.qwen/extensions/extension-enablement.json` while a session is
+running does not affect the running session. The wrapper reads
+`QWEN_AGENT_EXTENSIONS` from env at exec time; the resolved set is
+fixed at spawn. Mid-session global enable/disable changes apply
+to the next spawn, not the current one.
 
 ### Framework-required extensions (today: empty)
 
@@ -385,19 +438,36 @@ RDR.
    a. If QWEN_DEFAULT_EXTENSIONS is set, use that.
    b. Else, leave the set unspecified (CLI defaults apply — i.e. all
       enabled per extension-enablement.json).
-2. If opts.extensions.only is set, use that as the base set.
-3. Else apply opts.extensions.enable additively to the session default.
-4. Else apply opts.extensions.disable subtractively from the session default.
-5. Union with the framework-required set (today: empty; the union is a no-op).
-6. If the resolved set is non-empty: render comma-list and set
+2. Compute the base set:
+   a. If opts.extensions.only is set, use it as the base. enable / disable
+      are IGNORED in this branch (only is exact-set semantics).
+   b. Else, the base is the session-default set.
+3. Apply opts.extensions.enable additively to the base set, if set.
+4. Apply opts.extensions.disable subtractively from the result of step 3,
+   if set. enable applies first, disable applies second; if a name appears
+   in both, disable wins.
+5. enable and disable are independent: a caller may set both, neither,
+   or one. Both being set is a valid request ("add A, drop B from the
+   session default").
+6. Validate the resolved set against the supervisor's cached list of
+   installed extension names (refreshed at supervisor startup and on
+   qwen_reload_extensions). If any resolved name does not match any
+   installed extension's config.name (case-insensitive per Q3), reject
+   the spawn with code=spawn_error and a human-readable message listing
+   the unknown names. Fail-fast at qwen_spawn rather than letting the
+   CLI silently ignore unknown names — operators want a deterministic
+   error.
+7. Union with the framework-required set (today: empty; the union is a
+   no-op).
+8. If the resolved set is non-empty: render comma-list and set
    QWEN_AGENT_EXTENSIONS in the SDK env. If exactly empty by an explicit
    only=[]: set QWEN_AGENT_EXTENSIONS=none.
-7. If the resolved set is "leave defaults": don't set the env var; the
+9. If the resolved set is "leave defaults": don't set the env var; the
    wrapper drops the --extensions flag entirely.
-8. Set QueryOptions.pathToQwenExecutable to the wrapper.
-9. Record the resolved set in the session's first event (extensions_loaded)
-   so qwen_poll surfaces it, making "what was the tool surface for this
-   session?" a self-answering question.
+10. Set QueryOptions.pathToQwenExecutable to the wrapper.
+11. Record the resolved set in the session's first event
+    (extensions_loaded) so qwen_poll surfaces it, making "what was the
+    tool surface for this session?" a self-answering question.
 ```
 
 ## Consequences
@@ -440,6 +510,16 @@ RDR.
   Matches upstream; the on-disk dir `~/.qwen/extensions/` and the
   manifest `qwen-extension.json` are now consistently named
   throughout this repo.
+- The repo's `plugins/` directory (placeholder from RDR-001 §D6's
+  "in-repo plugin authoring" framing) was renamed to `extensions/`
+  in commit `1fad5ff` and remains empty by design — see
+  `extensions/README.md`. RDR-001 §D6's *implementation* (in-repo
+  plugin authoring as a primary location) is superseded by this
+  RDR's pass-through framing; RDR-001 §D6's *driver* (versioned
+  authoring co-located with the supervisor) survives, but is now
+  the *operator's* concern, exercised through `qwenctl extensions
+  install <local-path>` for any extension the operator chooses to
+  author in-repo.
 
 ## Open work
 
