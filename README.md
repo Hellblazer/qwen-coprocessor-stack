@@ -21,16 +21,10 @@ qwen-agent-server      (mcp-bridges/qwen-agent-server, Node + TypeScript)
 llama-server  (Qwen 3.6 27B Q6_K_XL, Metal-accelerated, port 8080)
 ```
 
-Two MCP supervisors live in this repo:
-
-- **`mcp-bridges/qwen-agent-server/`** — the supervised long-running
-  session model. Five tools: `qwen_spawn`, `qwen_poll`, `qwen_send`,
-  `qwen_stop`, `qwen_backends`. This is the primary artifact. Design:
-  [docs/rdr/RDR-001](docs/rdr/RDR-001-qwen-coprocessor-mcp-server.md).
-- **`mcp-bridges/qwen-coprocessor/server.py`** — the older, stateless
-  4-tool Python MCP (`qwen`, `qwen_classify`, `qwen_summarize`,
-  `qwen_extract`). Different abstraction layer; left in place pending a
-  separate decision to retire.
+The MCP supervisor in `mcp-bridges/qwen-agent-server/` is the only
+delegation surface — five tools (`qwen_spawn`, `qwen_poll`, `qwen_send`,
+`qwen_stop`, `qwen_backends`) running on long-lived supervised sessions.
+Design: [docs/rdr/RDR-001](docs/rdr/RDR-001-qwen-coprocessor-mcp-server.md).
 
 ## Quick start
 
@@ -50,9 +44,6 @@ Two MCP supervisors live in this repo:
 claude
 ```
 
-`uv` is needed only for the legacy `mcp-bridges/qwen-coprocessor/` Python
-MCP. The new TypeScript supervisor uses `node` and `npm`.
-
 ## Tools Claude sees
 
 When `qwen-agent-server` is registered, Claude gets a long-running
@@ -65,10 +56,6 @@ delegation surface:
 | `qwen_send`      | Push a follow-up user message into a session — answers a plain-text question or starts a new turn. |
 | `qwen_stop`      | Cancel and tear down a session. Idempotent.                                                        |
 | `qwen_backends`  | Discovery: list configured backends and cached health.                                             |
-
-If you also keep the legacy stateless MCP registered (rarely useful
-alongside the supervisor), it still exposes `qwen()`, `qwen_classify()`,
-`qwen_summarize()`, `qwen_extract()`.
 
 ## Why this topology?
 
@@ -123,11 +110,10 @@ coprocessor stabilized; git history preserves it for reference.
 ├── docs/rdr/                                    # decision records
 │   └── RDR-001-qwen-coprocessor-mcp-server.md   # primary design doc
 ├── mcp-bridges/
-│   ├── qwen-agent-server/                       # ← new TypeScript supervisor
-│   │   ├── src/                                 #     5 MCP tools, pool, session
-│   │   ├── tests/                               #     unit + integration pins
-│   │   └── README.md
-│   └── qwen-coprocessor/server.py               # legacy stateless 4-tool Python MCP
+│   └── qwen-agent-server/                       # MCP supervisor (TypeScript)
+│       ├── src/                                 #   5 MCP tools, pool, session
+│       ├── tests/                               #   unit + integration pins
+│       └── README.md
 ├── scripts/
 │   ├── setup-mac-host.sh                        # llama.cpp Metal + Qwen 3.6 27B
 │   ├── setup-strix-halo.sh                      # Vulkan path (aspirational)
