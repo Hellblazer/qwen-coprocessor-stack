@@ -65,6 +65,27 @@ export interface SpawnOpts {
   prior_context?: PriorContext;
   /** Override or augment the inner Qwen's system prompt. */
   system?: string;
+  /**
+   * Per-spawn Qwen Code extension loadout (RDR-002 §Decision Layer 2).
+   *
+   * Resolution semantics: if `only` is set, that is the active set for
+   * this spawn (other fields ignored). Otherwise the supervisor starts
+   * from the session-default set (`QWEN_DEFAULT_EXTENSIONS` env var,
+   * else CLI-default of all enabled per `extension-enablement.json`),
+   * applies `enable` additively, then `disable` subtractively.
+   *
+   * Names match `config.name` from each extension's
+   * `qwen-extension.json`, case-insensitive.
+   *
+   * Bridges to the CLI via the `QWEN_AGENT_EXTENSIONS` env var read by
+   * the wrapper script set as `QueryOptions.pathToQwenExecutable`. The
+   * SDK does not expose `extensions` in `QueryOptions` directly.
+   */
+  extensions?: {
+    enable?: string[];
+    disable?: string[];
+    only?: string[];
+  };
 }
 
 /**
@@ -88,7 +109,8 @@ export type EventType =
   | "permission_denied"
   | "model_message_summary"
   | "turn_complete"
-  | "error";
+  | "error"
+  | "extensions_loaded";
 
 /**
  * One event in a session's event log. `summary` is a one-sentence

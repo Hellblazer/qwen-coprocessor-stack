@@ -85,7 +85,11 @@ vi.mock("../src/backends.js", () => ({
 // ─────────────────────────────────────────────────────────────────
 // Import under test AFTER mocks
 
-import { createToolHandlers } from "../src/server.js";
+import {
+  createToolHandlers,
+  qwenSpawnOptsSchema,
+  buildSpawnOptsFromRaw,
+} from "../src/server.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -170,6 +174,40 @@ describe("MCP tool handlers", () => {
     it("throws MCP error when chooseBackend returns null", async () => {
       mockChooseBackend.mockResolvedValue(null);
       await expect(callTool(handlers, "qwen_spawn", { task: "task" })).rejects.toThrow();
+    });
+
+    it("Zod schema accepts opts.extensions and dispatcher round-trips its shape", () => {
+      // RDR-002 audit-fix #2: the Zod schema for qwen_spawn opts must accept
+      // an extensions: { enable, disable, only } payload, and the inline
+      // strip-undefineds dispatcher must forward it to handlers.qwen_spawn
+      // with field shape preserved.
+      const raw = {
+        extensions: {
+          enable: ["custom-a", "custom-b"],
+          disable: ["legacy-x"],
+          only: undefined,
+        },
+        write_authority: true,
+      };
+
+      // 1. Schema parse accepts the payload (and strips the explicit `only:
+      //    undefined` per Zod default behavior).
+      const parsed = qwenSpawnOptsSchema.parse(raw);
+      expect(parsed).toBeDefined();
+      expect(parsed!.extensions).toEqual({
+        enable: ["custom-a", "custom-b"],
+        disable: ["legacy-x"],
+      });
+
+      // 2. Dispatcher forwards to a SpawnOpts shape with extensions preserved
+      //    and undefined-stripped (exactOptionalPropertyTypes contract).
+      const built = buildSpawnOptsFromRaw(parsed);
+      expect(built.write_authority).toBe(true);
+      expect(built.extensions).toEqual({
+        enable: ["custom-a", "custom-b"],
+        disable: ["legacy-x"],
+      });
+      expect("only" in (built.extensions ?? {})).toBe(false);
     });
   });
 

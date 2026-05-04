@@ -51,6 +51,67 @@ type NotFoundPollResult = Omit<PollResult, "error"> & {
 };
 
 // ─────────────────────────────────────────────────────────────────
+// qwen_spawn opts schema
+//
+// Extracted to a top-level export so tests can parse payloads against it
+// directly without needing a live MCP transport. The same schema is wired
+// into mcpServer.tool registration in main(). Keep these in sync.
+
+export const qwenSpawnOptsSchema = z.object({
+  backend: z.string().optional(),
+  tier: z.enum(["local", "remote"]).optional(),
+  capacity: z.enum(["fast", "heavy"]).optional(),
+  write_authority: z.boolean().optional(),
+  allow_subagents: z.boolean().optional(),
+  system: z.string().optional(),
+  prior_context: z.object({
+    conversation_summary: z.string(),
+    last_user_message: z.string().optional(),
+    prior_session_id: z.string().optional(),
+  }).optional(),
+  extensions: z.object({
+    enable: z.array(z.string()).optional(),
+    disable: z.array(z.string()).optional(),
+    only: z.array(z.string()).optional(),
+  }).optional(),
+}).optional();
+
+type RawSpawnOpts = z.infer<typeof qwenSpawnOptsSchema>;
+
+/**
+ * Translate the Zod-parsed opts payload into a Partial<SpawnOpts>,
+ * stripping undefined fields to satisfy `exactOptionalPropertyTypes`.
+ *
+ * Exported for testability — production wiring in main() funnels every
+ * qwen_spawn invocation through this helper.
+ */
+export function buildSpawnOptsFromRaw(rawOpts: RawSpawnOpts): Partial<SpawnOpts> {
+  const spawnOpts: Partial<SpawnOpts> = {};
+  if (rawOpts === undefined) return spawnOpts;
+
+  if (rawOpts.backend !== undefined) spawnOpts.backend = rawOpts.backend;
+  if (rawOpts.tier !== undefined) spawnOpts.tier = rawOpts.tier;
+  if (rawOpts.capacity !== undefined) spawnOpts.capacity = rawOpts.capacity;
+  if (rawOpts.write_authority !== undefined) spawnOpts.write_authority = rawOpts.write_authority;
+  if (rawOpts.allow_subagents !== undefined) spawnOpts.allow_subagents = rawOpts.allow_subagents;
+  if (rawOpts.system !== undefined) spawnOpts.system = rawOpts.system;
+  if (rawOpts.prior_context !== undefined) {
+    const pc = rawOpts.prior_context;
+    spawnOpts.prior_context = { conversation_summary: pc.conversation_summary };
+    if (pc.last_user_message !== undefined) spawnOpts.prior_context.last_user_message = pc.last_user_message;
+    if (pc.prior_session_id !== undefined) spawnOpts.prior_context.prior_session_id = pc.prior_session_id;
+  }
+  if (rawOpts.extensions !== undefined) {
+    const ext: NonNullable<SpawnOpts["extensions"]> = {};
+    if (rawOpts.extensions.enable !== undefined) ext.enable = rawOpts.extensions.enable;
+    if (rawOpts.extensions.disable !== undefined) ext.disable = rawOpts.extensions.disable;
+    if (rawOpts.extensions.only !== undefined) ext.only = rawOpts.extensions.only;
+    spawnOpts.extensions = ext;
+  }
+  return spawnOpts;
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Tool handlers factory
 //
 // Separated from MCP server wiring so tests can call handlers directly
@@ -202,38 +263,10 @@ async function main(): Promise<void> {
     "Spawn a new Qwen Code session. Returns task_id and chosen_backend immediately; inference runs async.",
     {
       task: z.string().describe("The task/prompt to run"),
-      opts: z.object({
-        backend: z.string().optional(),
-        tier: z.enum(["local", "remote"]).optional(),
-        capacity: z.enum(["fast", "heavy"]).optional(),
-        write_authority: z.boolean().optional(),
-        allow_subagents: z.boolean().optional(),
-        system: z.string().optional(),
-        prior_context: z.object({
-          conversation_summary: z.string(),
-          last_user_message: z.string().optional(),
-          prior_session_id: z.string().optional(),
-        }).optional(),
-      }).optional(),
+      opts: qwenSpawnOptsSchema,
     },
     async (args) => {
-      // Build opts stripping undefined fields (exactOptionalPropertyTypes)
-      const rawOpts = args.opts;
-      const spawnOpts: Partial<SpawnOpts> = {};
-      if (rawOpts !== undefined) {
-        if (rawOpts.backend !== undefined) spawnOpts.backend = rawOpts.backend;
-        if (rawOpts.tier !== undefined) spawnOpts.tier = rawOpts.tier;
-        if (rawOpts.capacity !== undefined) spawnOpts.capacity = rawOpts.capacity;
-        if (rawOpts.write_authority !== undefined) spawnOpts.write_authority = rawOpts.write_authority;
-        if (rawOpts.allow_subagents !== undefined) spawnOpts.allow_subagents = rawOpts.allow_subagents;
-        if (rawOpts.system !== undefined) spawnOpts.system = rawOpts.system;
-        if (rawOpts.prior_context !== undefined) {
-          const pc = rawOpts.prior_context;
-          spawnOpts.prior_context = { conversation_summary: pc.conversation_summary };
-          if (pc.last_user_message !== undefined) spawnOpts.prior_context.last_user_message = pc.last_user_message;
-          if (pc.prior_session_id !== undefined) spawnOpts.prior_context.prior_session_id = pc.prior_session_id;
-        }
-      }
+      const spawnOpts = buildSpawnOptsFromRaw(args.opts);
       const result = await handlers.qwen_spawn({ task: args.task, opts: spawnOpts });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],

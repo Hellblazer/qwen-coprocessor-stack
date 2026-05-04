@@ -18,6 +18,7 @@ import type {
   Backend,
   BackendInfo,
   Event,
+  EventType,
   LastKnown,
   PollOpts,
   PollResult,
@@ -72,6 +73,34 @@ describe("types.ts compile-only assertions", () => {
     expect(true).toBe(true);
   });
 
+  it("SpawnOpts.extensions accepts the documented enable/disable/only shape", () => {
+    // RDR-002 §Decision Layer 2: opts.extensions is the per-spawn extension
+    // loadout the orchestrator passes to the supervisor. All three sub-fields
+    // are independently optional (Zod refines additional rules; type only
+    // expresses the shape).
+    const _onlyMode: SpawnOpts = {
+      extensions: { only: ["serena"] },
+    };
+    const _enableDisable: SpawnOpts = {
+      extensions: { enable: ["custom-a"], disable: ["legacy-b"] },
+    };
+    const _empty: SpawnOpts = {
+      extensions: {},
+    };
+    const _all: SpawnOpts = {
+      extensions: {
+        enable: ["a", "b"],
+        disable: ["c"],
+        only: ["d"],
+      },
+    };
+    void _onlyMode;
+    void _enableDisable;
+    void _empty;
+    void _all;
+    expect(true).toBe(true);
+  });
+
   it("PollOpts accepts cursor and cap", () => {
     const _p: PollOpts = { since: "evt-3", max_events: 32 };
     const _empty: PollOpts = {};
@@ -98,6 +127,23 @@ describe("types.ts compile-only assertions", () => {
       data: { tool_name: "read_file" },
     };
     void _e;
+  });
+
+  it("EventType includes 'extensions_loaded' (RDR-002 step 11)", () => {
+    // Resolution-algorithm step 11: the supervisor emits extensions_loaded
+    // as the first event of every spawned session, capturing the resolved
+    // extension set for observability.
+    const _t: EventType = "extensions_loaded";
+    void _t;
+    const _e: Event = {
+      id: "evt-0",
+      type: "extensions_loaded",
+      ts: Date.now(),
+      summary: "extensions: serena, web-fetch",
+      data: { resolved: ["serena", "web-fetch"] },
+    };
+    void _e;
+    expect(true).toBe(true);
   });
 
   it("SessionState covers four states", () => {
