@@ -108,7 +108,7 @@ qwen-agent-server README.
 docs/rdr/                    Decision records (RDR-001 = primary design doc)
 mcp-bridges/
   qwen-agent-server/         MCP supervisor (TypeScript)
-plugins/                     Qwen Code extension surface
+extensions/                  Qwen Code extensions surface (see RDR-002)
 scripts/
   setup-mac-host.sh          Build llama.cpp + download Qwen 3.6 27B
   setup-strix-halo.sh        Vulkan path for a remote tier (aspirational)
