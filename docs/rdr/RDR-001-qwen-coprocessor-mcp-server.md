@@ -5,10 +5,13 @@ status: accepted
 priority: high
 created: 2026-05-03
 accepted: 2026-05-03
+accepted_date: 2026-05-04
+gate_passed_date: 2026-05-04
 authors:
   - hal.hildebrand
+reviewed-by: self
 related:
-  - RDR-002 (future — system prompt + tool restriction policy for the inner Qwen)
+  - RDR-002 (future — per-plugin catalogue: which plugins/agents/skills/commands/hooks live under plugins/, install order, scope decisions)
   - RDR-003 (future — observability hooks: pino + optional Langfuse)
 supersedes:
   - The original LiteLLM-gateway architecture (commits 9c97f49..25e8054). Retained
