@@ -216,8 +216,6 @@ is supervisor-local: SIGHUP, `fs.watch`, or admin-only
   status mirror
 - ✅ No daemon to compose with the supervisor; no "agent crashed"
   failure mode
-- ✅ One Go binary (`qwenctl`) instead of two; one cross-compile
-  matrix
 - ⚠️ Tmux format-string parsing is shell-text. Mitigated by using
   `tmux -F '#{...}'` exclusively (a documented stable API), with
   unit tests pinning the expected format
@@ -260,13 +258,26 @@ A three-component system:
 
 1. **`fleet.toml`** — declarative state on the operator's
    workstation.
-2. **`qwenctl`** — operator CLI; reconciler. SSH-execs tmux commands
-   on remote hosts; runs tmux directly for the local host.
+2. **`qwenctl`** — operator CLI; reconciler. TypeScript on Node,
+   shipped alongside the supervisor (same repo, same package, same
+   `node_modules`). SSH-execs tmux commands on remote hosts; runs
+   tmux directly for the local host. SSH / mosh / tmux are invoked
+   as child processes, not via library bindings — we want the real
+   `ssh` client for `ControlMaster`, `~/.ssh/config`, and arbitrary
+   per-host `ssh_options` pass-through.
 3. **Supervisor changes** — `fs.watch`/SIGHUP/`qwen_reload_backends`
    for backend hot-reload, plus drain semantics on backend removal.
 
 Remote hosts run only their existing tooling: `tmux`, `mosh-server`,
 `llama-server`. No supervisor-authored daemon on the remote.
+
+`qwenctl` is TypeScript because the supervisor already is, on the
+same machine. There's no cross-compile concern (qwenctl never runs
+anywhere except the operator's workstation), no second deploy
+target, and no need for a separate package manager. The supervisor's
+type definitions for `Backend` and the fleet schema are imported
+directly. Operators who already have Node installed for the
+supervisor get qwenctl with the same `npm install`.
 
 ### `fleet.toml` — declarative fleet
 
@@ -349,7 +360,8 @@ Key properties:
 
 ### `qwenctl` — operator CLI
 
-Single Go binary. Commands:
+TypeScript on Node, distributed as a `bin` entry of the supervisor's
+npm package. Commands:
 
 | Command                              | Effect |
 |--------------------------------------|--------|
@@ -357,7 +369,7 @@ Single Go binary. Commands:
 | `qwenctl up [INST...]`               | Bring up instances (default: all not running). Idempotent. |
 | `qwenctl down [INST...]`             | Stop instances. Sends SIGINT into the tmux window's pane; waits 5 s; kills window if still running. |
 | `qwenctl restart [INST...]`          | down → up |
-| `qwenctl logs INST [-f]`             | Stream the instance's log (mediated by agent, which reads the tmux pane history + the on-disk log) |
+| `qwenctl logs INST [-f]`             | Stream the instance's log: SSH-exec'd `tmux capture-pane` snapshot for pre-flush content, then `tail -f` of the on-disk log |
 | `qwenctl attach [HOST]`              | mosh + tmux attach to the host's `qwen-fleet` session |
 | `qwenctl status`                     | Supervisor view: configured backends, health, in-flight sessions |
 | `qwenctl apply [FILE]`               | Reconcile: apply fleet.toml. Default `~/.config/qwen-fleet/fleet.toml` |
@@ -568,29 +580,34 @@ this, so the abrupt failure is intended.
 
 ### Implementation map
 
-```
-qwenctl/                         (new; scripts/qwenctl/ to start, own repo later)
-  cmd/qwenctl/                   Go main; CLI surface
-  internal/fleet/                fleet.toml parser, validator, differ
-  internal/ssh/                  SSH/mosh transport with ControlMaster
-  internal/tmux/                 tmux command helpers + format-string parsers,
-                                 with snapshot tests against supported tmux versions
-  internal/instance/             llama-server config rendering
-  internal/supervisor/           reload-supervisor (SIGHUP + MCP)
-  internal/host/                 ssh-exec vs local-exec branch
+`qwenctl` is added to the existing `mcp-bridges/qwen-agent-server/`
+package. One package, one `package.json`, one `npm install` — the
+supervisor and qwenctl share dependencies, types, and tooling.
 
+```
 mcp-bridges/qwen-agent-server/
-  src/fleet-config.ts            (new) parse backends.json
-  src/fleet-watch.ts             (new) optional fs.watch
-  src/server.ts                  (modified) SIGHUP handler, qwen_reload_backends
-  src/pool.ts                    (modified) drain semantics
+  src/                            existing supervisor
+    server.ts                    (modified) SIGHUP handler, qwen_reload_backends
+    pool.ts                      (modified) drain semantics
+    fleet-config.ts              (new) parse backends.json
+    fleet-watch.ts               (new) optional fs.watch
+  src-qwenctl/                    new — qwenctl CLI
+    bin.ts                        entry point: argv parser, dispatch
+    fleet.ts                      fleet.toml parser, validator, differ
+    ssh.ts                        ssh / mosh exec via child_process
+    tmux.ts                       tmux command builders + format-string parsers,
+                                  snapshot-tested against supported tmux versions
+    instance.ts                   llama-server command rendering
+    supervisor.ts                 reload-supervisor (SIGHUP + MCP)
+    host.ts                       ssh-exec vs local-exec branch
+  package.json
+    "bin": { "qwenctl": "dist/src-qwenctl/bin.js" }
 ```
 
-`qwenctl` is the only new binary. Go for cross-compile ergonomics —
-one toolchain produces every target the operator's workstation might
-need (typically just `darwin-arm64` plus whatever they ssh-into).
-Remote hosts run nothing supervisor-authored; they need only
-`tmux`, `mosh-server`, and `llama-server`.
+`npm install -g .` (or the supervisor's setup script) symlinks
+`qwenctl` onto the operator's `PATH`. No second toolchain joins the
+project. Remote hosts still run nothing supervisor-authored; they
+need only `tmux`, `mosh-server`, and `llama-server`.
 
 ## Consequences
 
@@ -612,8 +629,9 @@ Remote hosts run nothing supervisor-authored; they need only
   any custom UI code — tmux is the UI.
 - The two control planes (runtime: supervisor; operator: qwenctl)
   remain cleanly separate. Failure in one doesn't propagate.
-- One Go binary (`qwenctl`) instead of two. Single cross-compile
-  matrix, single deploy, single upgrade story.
+- One language for the project. `qwenctl` lives in the supervisor's
+  npm package; no second toolchain, no cross-compile matrix, no
+  separate dependency tree.
 
 ### Negative
 
@@ -631,36 +649,56 @@ Remote hosts run nothing supervisor-authored; they need only
   invisible to `qwenctl ps`. This is correct (declarative is the
   point) but operators must internalize "if it's not in fleet.toml,
   it doesn't exist to qwenctl."
-- A second binary toolchain (Go) joins the project — a TypeScript
-  supervisor and Go ops tooling.
 - `qwenctl reload-supervisor` is a separate explicit step (or
   opt-in `fs.watch`). Keeps the supervisor from reacting to a
   half-edited file mid-apply.
 
 ### Neutral
 
-- Cross-platform Go binary build chain: trivial via standard
-  cross-compile.
 - `fleet.toml` adds a config format; TOML chosen because it's
-  human-editable and has a stable Go parser. JSON would also work.
-  YAML rejected (whitespace gotchas in operator-edited files).
+  human-editable and has stable parsers in both Node (`@iarna/toml`)
+  and Python (stdlib `tomllib`). JSON would also work; YAML rejected
+  (whitespace gotchas in operator-edited files).
 - `~/.qwen-fleet/` directory layout introduces a per-host on-disk
   convention. Documented in bootstrap output.
 
 ## Research findings (open questions)
 
-### Q1 — `qwenctl` binary language
+### Q1 — `qwenctl` implementation language
 
-**Status:** Resolved — Go.
+**Status:** Resolved — TypeScript on Node, in the same npm package
+as the supervisor.
 
-Go for cross-compile ergonomics (one toolchain produces every
-target), single-binary deploy, fast startup, and a strong SSH/tmux
-ecosystem (`os/exec`, `golang.org/x/crypto/ssh`). Rust would yield
-a smaller binary; the size delta isn't worth a second toolchain.
+An earlier version of this RDR proposed Go, justified by
+"cross-compile ergonomics" and "single-binary deploy." Both were
+specious: `qwenctl` runs only on the operator's workstation (the
+same machine as the supervisor), never on remote hosts. There is no
+cross-compile concern and no second deploy target. The operator
+already has Node installed for the supervisor; reusing it costs
+nothing.
 
-Reusing the supervisor's TypeScript via `pkg`/`nexe` was considered
-but rejected — embedded-Node binaries are 40–80 MB vs. ~10 MB Go,
-and bundling adds startup latency for an interactive operator tool.
+TypeScript advantages here:
+
+- One language for the project. Adding Go would mean a second
+  toolchain, a second test framework, a second dependency manager,
+  and parallel type definitions for `Backend`/fleet schema.
+- Direct import of supervisor types — `qwenctl` and the supervisor
+  agree on `Backend`, `SpawnOpts`, etc. by sharing the source.
+- SSH/mosh/tmux are invoked via `child_process.spawn` — no SSH
+  library wanted in any language. The real `ssh` client is what we
+  want; it honours `~/.ssh/config`, `ControlMaster`, and the
+  per-host `ssh_options` pass-through. A Go SSH library would make
+  these harder, not easier.
+- TOML parsing via `@iarna/toml` (already lightweight, MIT, no
+  native deps). Same library can be used by the supervisor for
+  reading `backends.toml` if we ever migrate from JSON.
+
+Node startup latency (~100 ms) is irrelevant — the dominant cost in
+any qwenctl operation is the SSH round-trip (~50 ms with
+ControlMaster, hundreds without). Single-file binary (`pkg`/`nexe`)
+considered and rejected — the operator runs Node anyway, so plain
+`node dist/src-qwenctl/bin.js` (with an `npm bin` symlink to
+`qwenctl`) is the cleanest path.
 
 ### Q2 — tmux output parsing fragility
 
