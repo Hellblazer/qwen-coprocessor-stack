@@ -23,7 +23,10 @@ mandate. The four research questions (Q1–Q4) that gated the original
 design are **resolved** via a spike against `@qwen-code/sdk@0.1.7`
 (report at `/tmp/rdr-002-spikes.md`); findings are inline in the
 "Research findings" section below and have firmed the design from
-provisional to specified.
+provisional to specified. A follow-up spike on the bundled Qwen CLI's
+extensions subcommand surface (report at `/tmp/rdr-002-cli-spike.md`,
+T2 record `002-research-005`) further simplified Layer 1 to a thin
+shell-out wrapper — see "Decision" → "Layer 1."
 
 **Terminology revision:** Qwen Code (the upstream tool the SDK
 embeds) calls these things **extensions**, not "plugins." The
@@ -231,32 +234,45 @@ the supervisor only needs to handle per-spawn overrides.
 The simplified design has two operator-facing layers, plus a small
 wrapper-script bridge.
 
-### Layer 1 — Install / upgrade / remove (pass-through)
+### Layer 1 — Install / upgrade / lifecycle (thin shell-out)
 
-Extensions live where Qwen Code expects them:
-`~/.qwen/extensions/<dir>/` (user) and optionally
-`<cwd>/.qwen/extensions/<dir>/` (project). The supervisor does
-not reimplement install. Operators install extensions the way
-they install any Qwen Code extension — `git clone`, manual copy
-of a release tarball, etc.
+A follow-up spike (2026-05-04, full report at
+`/tmp/rdr-002-cli-spike.md`) confirmed Qwen Code already exposes a
+complete non-interactive `qwen extensions` subcommand surface:
+`list`, `enable`, `disable`, `install`, `uninstall`, `update`,
+`link`, `new`, `settings`. All of them go through the same
+`ExtensionManager` code path that mutates
+`extension-enablement.json` and the on-disk extension dirs. There is
+no need (or benefit) to manipulate `extension-enablement.json`
+directly.
 
-`qwenctl extensions` (defined in RDR-004's CLI surface) wraps
-common operations:
+`qwenctl extensions` is therefore a thin wrapper. It validates
+arguments, fixes one name translation (`remove` → `uninstall`),
+and shells out to the bundled Qwen CLI:
 
-| Command                                | Effect |
-|----------------------------------------|--------|
-| `qwenctl extensions list`              | List installed extensions, displaying both directory name and `config.name` from the manifest, plus enabled/disabled state from `extension-enablement.json` |
-| `qwenctl extensions inspect <name>`    | Show the extension's manifest (`qwen-extension.json`), declared tools, and active state |
-| `qwenctl extensions install <source>`  | Convenience wrapper: git-clone or curl-and-extract into `~/.qwen/extensions/`. NOT a package manager |
-| `qwenctl extensions remove <name>`     | Delete the extension's directory (with confirmation). Resolves `<name>` against `config.name` |
-| `qwenctl extensions enable <name>`     | Mutate `extension-enablement.json` to enable. Pass-through to whatever Qwen Code provides — see Open work |
-| `qwenctl extensions disable <name>`    | Same, to disable |
+| `qwenctl …`                                | Shells out to                              | Notes |
+|--------------------------------------------|--------------------------------------------|-------|
+| `qwenctl extensions list`                  | `qwen extensions list`                     | Pass-through; optional client-side reformat to a tighter table. Native output already includes `Enabled (User)`, `Enabled (Workspace)`, `Path`, `Source`, declared `Commands`/`Skills`/`Agents`/`MCP servers`. |
+| `qwenctl extensions inspect <name>`        | `qwen extensions list` filtered by `<name>` | The native `list` block per extension is exactly the "inspect" payload. No separate Qwen subcommand needed. |
+| `qwenctl extensions install <source>`      | `qwen extensions install <source>`         | Source types upstream supports: git URL, local path, npm `@scope/name`, marketplace `url:name`. `qwenctl` initially restricts to git URL + local path; pass-through additional flags (`--ref`, `--auto-update`, `--pre-release`, `--registry`, `--consent`). |
+| `qwenctl extensions remove <name>`         | `qwen extensions uninstall <name>`         | Name translation only. `qwenctl` accepts both `remove` and `uninstall` as an alias for muscle-memory consistency. |
+| `qwenctl extensions enable <name> [--scope user\|workspace]`  | `qwen extensions enable <name> --scope <s>`  | `--scope` defaults: upstream defaults to all scopes; `qwenctl` passes through verbatim. |
+| `qwenctl extensions disable <name> [--scope user\|workspace]` | `qwen extensions disable <name> --scope <s>` | Upstream default scope is `User`; `qwenctl` passes through. |
+| `qwenctl extensions update [<name>] [--all]` | `qwen extensions update …`               | Bonus surface from upstream; useful and free. |
+| `qwenctl extensions link <path>`           | `qwen extensions link <path>`              | Live-symlink an extension from a local source path; useful for extension-development workflows. |
+| `qwenctl extensions settings list <name>`  | `qwen extensions settings list <name>`     | Per-extension settings table (sensitive values masked). |
+| `qwenctl extensions settings set <name> <setting> [--scope user\|workspace]` | `qwen extensions settings set …` | Per-extension setting mutation. |
 
-Global enable/disable defers to Qwen Code's native
-`extension-enablement.json`. The supervisor does **not** maintain
-a parallel state file. Whether `qwenctl extensions enable` shells
-out to a Qwen Code CLI command or edits the JSON directly is a
-small follow-up question (Open work below).
+The interactive-REPL `/extensions` slash commands inside Qwen Code
+(`cli.js:477680`, tagged `supportedModes: ["interactive"]`) are a
+separate code path and are not consumed by `qwenctl` — those run
+only inside the Qwen REPL session.
+
+Global enable/disable state lives in
+`~/.qwen/extensions/extension-enablement.json`, written exclusively
+by Qwen Code (via the CLI we just shell out to). The supervisor
+does **not** maintain a parallel state file; nothing in this RDR
+edits that JSON directly.
 
 ### Layer 2 — Per-spawn override (the novel piece)
 
@@ -398,18 +414,19 @@ RDR.
 
 ## Open work
 
-- **Decide `qwenctl extensions enable/disable` mechanism**: shell
-  out to whatever Qwen Code CLI command toggles
-  `extension-enablement.json` (preferred if such a command exists),
-  or edit the JSON directly with a small Node helper. Micro-spike:
-  search Qwen Code's CLI for an `extensions enable` / `disable`
-  subcommand. ~10 minutes.
+- ~~**Decide `qwenctl extensions enable/disable` mechanism**~~ —
+  **resolved 2026-05-04** by spike. Shell out to `qwen extensions
+  enable/disable` (record `002-research-005`); same upstream call
+  path that any hand-rolled JSON editor would invoke.
 - **Windows wrapper variant**: out of scope today. Add a `.cmd`
-  wrapper if/when a Windows operator appears.
-- **`qwenctl extensions install <source>` source-resolver**: git
-  URL vs. local path vs. tarball URL — pick conservatively
-  (local path + git URL only initially); document the rest as
-  "use Qwen Code's native install path."
+  wrapper for `qwen-extensions-wrapper.sh` if/when a Windows
+  operator appears.
+- **`qwenctl extensions install <source>` initial scope**: spike
+  confirmed upstream handles git URL, local path, npm `@scope/name`,
+  and marketplace `url:name`. Initial `qwenctl` release restricts
+  to git URL + local path only; lifts restrictions in a later
+  release once the operator UX for npm/marketplace sources is
+  designed.
 
 ## Related decisions and prior art
 
