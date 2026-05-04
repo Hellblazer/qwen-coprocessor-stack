@@ -93,6 +93,30 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
 CLAUDE_CWD = os.environ.get("CLAUDE_SHIM_CWD") or "/tmp/claude-shim-cwd"
 os.makedirs(CLAUDE_CWD, exist_ok=True)
 
+# Why we don't override HOME for the subprocess:
+#
+# We tried it. Setting HOME=/tmp/some-isolated-dir breaks subscription auth
+# even after seeding the isolated dir with copies of ~/.claude.json and
+# ~/.claude/. macOS Keychain access is nominally user-scoped, but Claude
+# Code's auth flow looks up state in HOME-relative paths during refresh and
+# fails to find them in the isolated dir. Auth dies silently with
+# "Not logged in".
+#
+# Instead, we use two milder defenses that achieve the practical isolation
+# the user actually cares about:
+#
+#   1. `--setting-sources ""` on the subprocess command line skips loading
+#      user-level Claude Code settings — including a broken `model` pinning
+#      saved by a previous `/model` pick of a gateway route name.
+#   2. `--model <CLAUDE_MODEL>` always wins regardless of any saved default,
+#      so even if user settings did leak in, the subprocess uses our model.
+#
+# Residual writes the subprocess does still go to the real ~/.claude.json
+# (numStartups, lastReleaseNotesSeen, etc.). Those are benign telemetry.
+# The corruption-grade write — saving a gateway route as the default model
+# — only happens via interactive `/model` picks, which a non-interactive
+# subprocess never performs.
+
 if not CLAUDE_BIN:
     raise SystemExit(
         "claude-shim: cannot find `claude` on PATH. "
@@ -133,6 +157,7 @@ class ClaudeSession:
             "--output-format", "stream-json",
             "--session-id", self.claude_uuid,
             "--model", CLAUDE_MODEL,
+            "--setting-sources", "",
             "--no-session-persistence",
             "--include-partial-messages",
             "--tools", "",
