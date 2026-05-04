@@ -4,15 +4,18 @@
 //
 // Three load-bearing assertions (RDR-001 §Q1, §C1, §C2):
 //   1. KV-cache locality: turn-2 cache_read_input_tokens > 0
-//   2. ask_user_question emitted as ToolUseBlock with structured input.questions[]
-//   3. Deny-with-message answer delivery: model references the denied message text
+//   2. ask_user_question (when not excluded) is emitted as a ToolUseBlock
+//      with structured input.questions[] — pins the SDK message shape.
+//   3. streamInput multi-turn answer delivery: a follow-up SDKUserMessage
+//      pushed after turn 1's result is consumed by the model in turn 2.
+//      This is the mechanism the supervisor relies on (post-spike rework).
 //
 // REQUIRES: llama-server on localhost:8080 running qwen3.6-27b-instruct.
 // If unreachable, all tests skip cleanly — no false-fail in CI without infra.
 //
-// Empirical reference: /tmp/qwen-sdk-probe/probe.mjs (2026-05-04)
-//   Spike A: turn-2 cache_read_input_tokens = 33408 (~98% hit rate)
-//   Spike B: ask_user_question emitted as ToolUseBlock; deny-message is answer path
+// Empirical reference: /tmp/qwen-sdk-probe/probe.mjs (Spike A) and
+// /tmp/qwen-sdk-probe/probe-tool-result.mjs (post-spike falsification of
+// the original deny-with-message path; see RDR-001 §Q1).
 
 import { describe, expect, it, beforeAll } from "vitest";
 import { query } from "@qwen-code/sdk";

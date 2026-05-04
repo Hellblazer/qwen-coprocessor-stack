@@ -103,11 +103,19 @@ export function lruEvict(pool: SessionPool): void {
 /**
  * Sweep sessions idle beyond idleTtlMs. Called periodically by the
  * server's setInterval reaper (every 5 min).
+ *
+ * Reaps `idle`, `complete`, and `error` sessions that haven't been
+ * polled within idleTtlMs. Sessions in the `running` state are SKIPPED
+ * regardless of poll age — the inner Qwen may be processing a long
+ * tool call (codebase scan, web fetch, etc.) and killing it because
+ * the caller hasn't polled would terminate active work. The cap
+ * (lruEvict) is the backstop for runaway running sessions.
  */
 export function reapSweep(pool: SessionPool): void {
   const now = Date.now();
   const toReap: string[] = [];
   for (const [id, session] of pool.sessions) {
+    if (session.state === "running") continue;
     if (now - session.last_polled_at > pool.idleTtlMs) {
       toReap.push(id);
     }
@@ -118,7 +126,7 @@ export function reapSweep(pool: SessionPool): void {
       session.stop();
       pool.sessions.delete(id);
       log.info(
-        { task_id: id, event_type: "reap" },
+        { task_id: id, state: session.state, event_type: "reap" },
         "reaped idle session",
       );
     }

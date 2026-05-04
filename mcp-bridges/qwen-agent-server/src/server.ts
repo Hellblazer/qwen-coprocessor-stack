@@ -25,15 +25,14 @@ import type {
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
-import { loadBackends, getCachedHealth, chooseBackend } from "./backends.js";
+import { getCachedHealth } from "./backends.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
   reapSweep,
-  lruEvict,
   removeSession,
+  spawnSession,
   type SessionPool,
-  type PooledSession,
 } from "./pool.js";
 import { setupShutdown } from "./shutdown.js";
 
@@ -69,7 +68,7 @@ export type ToolHandlers = {
 
 export function createToolHandlers(existingPool?: SessionPool): ToolHandlers {
   const pool = existingPool ?? createPool();
-  const backends = loadBackends();
+  const backends = pool.backends;
   let shuttingDown = false;
 
   // ── qwen_spawn ─────────────────────────────────────────────
@@ -82,38 +81,16 @@ export function createToolHandlers(existingPool?: SessionPool): ToolHandlers {
       };
     }
 
-    const spawnOpts: SpawnOpts = {
-      write_authority: opts.write_authority ?? false,
-      allow_subagents: opts.allow_subagents ?? false,
-      ...opts,
-    };
-
-    // Evict before adding — ensures we never exceed cap
-    while (pool.sessions.size >= pool.maxSessions) {
-      lruEvict(pool);
+    let session;
+    try {
+      session = await spawnSession(pool, task, opts);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn({ event_type: "spawn_no_backend", err: message }, "spawnSession failed");
+      throw new McpError(ErrorCode.InternalError, message);
     }
 
-    const backend = await chooseBackend(backends, spawnOpts, task);
-    if (!backend) {
-      log.warn({ event_type: "spawn_no_backend" }, "chooseBackend returned null — no candidates");
-      throw new McpError(ErrorCode.InternalError, "no backend available to handle spawn");
-    }
-
-    const session = new QwenSession(backend, task, spawnOpts);
-    const pooledSession: PooledSession = Object.assign(session, { last_polled_at: Date.now() });
-    pool.sessions.set(session.task_id, pooledSession);
-
-    log.info(
-      {
-        task_id: session.task_id,
-        backend_id: backend.id,
-        event_type: "spawn",
-        state: "running",
-      },
-      "session spawned",
-    );
-
-    return { task_id: session.task_id, chosen_backend: backend.id };
+    return { task_id: session.task_id, chosen_backend: session.backend.id };
   };
 
   // ── qwen_poll ──────────────────────────────────────────────

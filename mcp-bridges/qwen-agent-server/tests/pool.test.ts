@@ -224,14 +224,15 @@ describe("SessionPool", () => {
   // ── Reaper ──────────────────────────────────────────────────
 
   describe("reaper sweep", () => {
-    it("reaps sessions idle beyond TTL", async () => {
+    it("reaps idle sessions beyond TTL", async () => {
       vi.stubEnv("QWEN_SUPERVISOR_IDLE_TTL_MS", "60000");
       const pool = createPool();
 
       const s1 = await spawnSession(pool, "task A", {});
       const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
 
-      // Advance time past TTL
+      // Idle session past TTL — should be reaped.
+      session1.setState("idle");
       session1.last_polled_at = Date.now() - 70000;
 
       reapSweep(pool);
@@ -247,6 +248,7 @@ describe("SessionPool", () => {
       const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
 
       // Last polled 30 seconds ago (within 60s TTL)
+      session1.setState("idle");
       session1.last_polled_at = Date.now() - 30000;
 
       reapSweep(pool);
@@ -254,7 +256,25 @@ describe("SessionPool", () => {
       expect(session1.stopCalled).toBe(false);
     });
 
-    it("reaps sessions idle past TTL regardless of state", async () => {
+    it("does NOT reap running sessions even when poll-stale (cap is the backstop)", async () => {
+      vi.stubEnv("QWEN_SUPERVISOR_IDLE_TTL_MS", "60000");
+      const pool = createPool();
+
+      const s1 = await spawnSession(pool, "task A", {});
+      const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
+
+      // Running session, not polled in 70s — the inner Qwen could be in
+      // a long tool call. Reaper must skip it; lruEvict is the backstop
+      // when the pool is at cap.
+      session1.setState("running");
+      session1.last_polled_at = Date.now() - 70000;
+
+      reapSweep(pool);
+      expect(pool.sessions.has(s1.task_id)).toBe(true);
+      expect(session1.stopCalled).toBe(false);
+    });
+
+    it("reaps stale terminal (complete/error) sessions", async () => {
       vi.stubEnv("QWEN_SUPERVISOR_IDLE_TTL_MS", "60000");
       const pool = createPool();
 
@@ -263,11 +283,10 @@ describe("SessionPool", () => {
       const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
       const session2 = pool.sessions.get(s2.task_id) as InstanceType<typeof MockSession>;
 
-      // Both are idle past TTL
+      session1.setState("complete");
+      session2.setState("error");
       session1.last_polled_at = Date.now() - 70000;
       session2.last_polled_at = Date.now() - 70000;
-      // s2 is complete — still reap it (it's wasting pool space)
-      session2.setState("complete");
 
       reapSweep(pool);
       expect(pool.sessions.has(s1.task_id)).toBe(false);

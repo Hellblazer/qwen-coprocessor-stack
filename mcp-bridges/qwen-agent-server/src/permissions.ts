@@ -47,17 +47,14 @@ export const WRITE_TOOLS = new Set<string>([
 /**
  * Returns a CanUseTool callback for use with permissionMode='default'.
  *
- * Routing:
- *  - write tool  → emit permission_denied event + return deny
- *  - everything else → return allow (read tools, search, web_fetch, etc.)
- *
- * `ask_user_question` should never reach this callback because it's in
- * the inner Qwen's excludeTools list. If it somehow does, the
- * everything-else branch returns allow — but the SDK can't actually
- * execute ask_user_question in headless mode, so the inner Qwen would
- * likely hang. Defense-in-depth: we treat it as a write-equivalent
- * deny if encountered, since the supervisor's design assumes it never
- * fires.
+ * Routing (in order):
+ *  - `ask_user_question` → emit permission_denied event + return deny
+ *    with a hint message. Defense-in-depth: this tool is in the SDK
+ *    excludeTools list and should never reach the callback. If it does
+ *    (future SDK change, model bypass), denying is the safe choice —
+ *    the SDK can't execute ask_user_question in headless mode anyway.
+ *  - write tool → emit permission_denied event + return deny.
+ *  - everything else → return allow (read tools, search, web_fetch, etc.).
  */
 export function makeCanUseTool(session: QwenSession): CanUseTool {
   return async (

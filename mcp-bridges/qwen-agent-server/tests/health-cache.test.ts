@@ -87,3 +87,35 @@ describe("getCachedHealth — cold call", () => {
     expect(fetchSpy).toHaveBeenCalled();
   });
 });
+
+describe("probeHealth URL construction", () => {
+  it("probes /health at host root for /v1-suffixed backend (NOT /v1/health)", async () => {
+    fetchSpy.mockResolvedValue({ ok: true } as Response);
+    await getCachedHealth(local); // local.url === "http://localhost:8080/v1"
+
+    expect(fetchSpy).toHaveBeenCalled();
+    const firstCallUrl = fetchSpy.mock.calls[0]![0] as string;
+    expect(firstCallUrl).toBe("http://localhost:8080/health");
+  });
+
+  it("falls back to /v1/models when /health fails", async () => {
+    // First call (/health) fails; second call (/v1/models) succeeds.
+    fetchSpy
+      .mockResolvedValueOnce({ ok: false } as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+
+    const result = await getCachedHealth(local);
+    expect(result).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[0]![0]).toBe("http://localhost:8080/health");
+    expect(fetchSpy.mock.calls[1]![0]).toBe("http://localhost:8080/v1/models");
+  });
+
+  it("handles backends without /v1 suffix correctly", async () => {
+    const noV1: Backend = { ...local, id: "no-v1", url: "http://example.com:9000" };
+    fetchSpy.mockResolvedValue({ ok: true } as Response);
+
+    await getCachedHealth(noV1);
+    expect(fetchSpy.mock.calls[0]![0]).toBe("http://example.com:9000/health");
+  });
+});

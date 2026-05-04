@@ -10,7 +10,10 @@
 // See RDR-001 §Routing for the 6-step algorithm and §Q4 for cap/idle
 // rationale (cap/idle live in server.ts; this module only routes).
 
+import pino from "pino";
 import type { Backend, SpawnOpts } from "./types.js";
+
+const log = pino({ name: "qwen-backends" });
 
 // ─────────────────────────────────────────────────────────────────
 // Configuration
@@ -32,7 +35,7 @@ const HEAVY_THRESHOLD_DEFAULT = 2_000;
 /**
  * Read backends from QWEN_BACKENDS env var (JSON array of Backend) or
  * fall back to a single local backend at port 8080. Invalid JSON is
- * treated as "no override" — log on stderr and use default.
+ * treated as "no override" — log a warning and use default.
  */
 export function loadBackends(): Backend[] {
   const raw = process.env["QWEN_BACKENDS"];
@@ -44,8 +47,9 @@ export function loadBackends(): Backend[] {
     }
     return parsed as Backend[];
   } catch {
-    process.stderr.write(
-      "qwen-agent-server: QWEN_BACKENDS is not valid JSON; using default local backend\n",
+    log.warn(
+      { event_type: "config_invalid" },
+      "QWEN_BACKENDS is not valid JSON; using default local backend",
     );
     return [DEFAULT_BACKEND];
   }
@@ -106,16 +110,19 @@ export function resetHealthCache(): void {
   rrCounters.clear();
 }
 
-/** Fire one /health probe (or /v1/models fallback) with a hard timeout. */
+/** Fire one /health probe (or /v1/models fallback) with a hard timeout.
+ *
+ *  llama-server exposes /health at the host root (NOT under /v1), so we
+ *  derive a host base by stripping the /v1 suffix. The OpenAI-compat
+ *  /v1/models endpoint is the secondary probe — works across more
+ *  backends but is heavier than /health.
+ */
 export async function probeHealth(backend: Backend): Promise<boolean> {
-  const probeOne = async (path: string, timeoutMs: number): Promise<boolean> => {
+  const probeUrl = async (url: string, timeoutMs: number): Promise<boolean> => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), timeoutMs);
     try {
-      const r = await fetch(`${stripTrailingSlash(backend.url)}${path}`, {
-        method: "GET",
-        signal: ac.signal,
-      });
+      const r = await fetch(url, { method: "GET", signal: ac.signal });
       return r.ok;
     } catch {
       return false;
@@ -124,15 +131,14 @@ export async function probeHealth(backend: Backend): Promise<boolean> {
     }
   };
 
-  // Prefer /health (llama-server-style), fall back to /v1/models on 404
-  // or any non-OK. The 2s ceiling applies independently to each attempt.
-  const healthBase = backend.url.replace(/\/v1\/?$/, "");
-  if (await probeOne(`${healthBase.replace(backend.url, "")}/health`, COLD_PROBE_TIMEOUT_MS)) {
-    return true;
-  }
-  // healthBase computation above is fragile if url doesn't end in /v1; retry on absolute path
-  if (await probeOne("/health", COLD_PROBE_TIMEOUT_MS)) return true;
-  if (await probeOne("/models", COLD_PROBE_TIMEOUT_MS)) return true;
+  const baseUrl = stripTrailingSlash(backend.url);
+  const hostBase = baseUrl.replace(/\/v1$/, "");
+
+  // Prefer llama-server /health at the host root.
+  if (await probeUrl(`${hostBase}/health`, COLD_PROBE_TIMEOUT_MS)) return true;
+  // Fall back to OpenAI-compat /v1/models — universally available on any
+  // OpenAI-shaped backend.
+  if (await probeUrl(`${baseUrl}/models`, COLD_PROBE_TIMEOUT_MS)) return true;
   return false;
 }
 
