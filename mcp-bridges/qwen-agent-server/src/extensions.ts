@@ -2,7 +2,8 @@
 //
 // Per-spawn extension loadout helpers — RDR-002.
 //
-// This module currently exposes:
+// This module exposes the supervisor-side bridge between Claude's
+// orchestrator and the Qwen Code CLI's extensions surface:
 //
 //   resolveQwenRealBin(env, whichFn?)  — resolve the real qwen binary
 //     path the wrapper script will exec. Called once at supervisor
@@ -14,13 +15,26 @@
 //     wrapper is a fixed file; per-session variation is via env vars
 //     (QWEN_REAL_BIN, QWEN_AGENT_EXTENSIONS).
 //
-// Subsequent phases will add the installed-extensions cache and the
-// resolveExtensions(opts, sessionDefault, installedCache) algorithm.
+//   parseInstalledExtensions(stdout)  — pure parser for `qwen
+//     extensions list` output. Returns the list of installed names
+//     (lowercased) or [] on empty / unparseable input. Never throws.
+//
+//   createInstalledExtensionsCache(qwenRealBin, execFn?)  — async
+//     factory returning a cache object with get/reload/size methods.
+//     Initial population shells out to `<qwenRealBin> extensions list`;
+//     execFn is injected for testability.
+//
+// Subsequent phases will add the resolveExtensions(opts, sessionDefault,
+// installedCache) algorithm and the qwen_spawn handler integration.
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import pino from "pino";
+
+const log = pino({ name: "qwen-extensions" });
 
 /**
  * Default `which` implementation used when a caller doesn't inject one.
@@ -107,4 +121,149 @@ export function resolveQwenRealBin(
 export function resolveWrapperPath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   return resolve(here, "..", "scripts", "qwen-extensions-wrapper.sh");
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Installed-extensions cache
+
+/**
+ * Strip ANSI SGR escape sequences (chalk emits these around status
+ * glyphs) so the parser can match plain-text content.
+ */
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+/**
+ * First-line header of an extension block emitted by
+ * `extensionToOutputString` (cli.js:456690):
+ *
+ *     <glyph> <name> (<version>)
+ *
+ * where `<glyph>` is `✓` (U+2713) or `✗` (U+2717) and `<name>` is the
+ * `config.name` field of the extension manifest. The leading glyph is
+ * absent only in `inline2 = true` mode, which `handleList` does not use.
+ *
+ * The version sub-pattern `[^()]+` deliberately rejects nested parens,
+ * which keeps the second-line ` Source: ... (Type: ...)` from
+ * accidentally matching when block boundaries don't separate cleanly.
+ */
+const HEADER_RE = /^\s*(?:[✓✗]\s+)?(.+?)\s+\([^()]+\)\s*$/;
+
+/**
+ * Parse `qwen extensions list` stdout and return the lowercased
+ * `config.name` of each installed extension.
+ *
+ * Fail-soft per RDR-002 audit-note #4: empty input, the
+ * "No extensions installed." sentinel, and unrecognized output all
+ * yield `[]` rather than throwing — an upstream output-format change
+ * degrades gracefully (cache populates empty; future spawns reject
+ * unknown names) instead of bricking the supervisor.
+ */
+export function parseInstalledExtensions(stdout: string): string[] {
+  if (typeof stdout !== "string") return [];
+  const cleaned = stdout.replace(ANSI_RE, "");
+  if (cleaned.trim() === "") return [];
+  if (/no extensions installed/i.test(cleaned)) return [];
+
+  // Blocks are joined by `\n\n` (handleList in cli.js:456770). Take
+  // the first line of each block as the candidate header so the
+  // ` Path: ... (Type: ...)` second line never gets matched.
+  const blocks = cleaned.split(/\n{2,}/);
+  const names: string[] = [];
+  for (const block of blocks) {
+    const firstLine = block.split("\n")[0]?.trim() ?? "";
+    if (firstLine === "") continue;
+    const match = HEADER_RE.exec(firstLine);
+    if (match && match[1]) {
+      const name = match[1].trim();
+      if (name !== "") names.push(name.toLowerCase());
+    }
+  }
+  return names;
+}
+
+/**
+ * Async stdout-producing function for `qwen extensions list`. Injected
+ * into `createInstalledExtensionsCache` for testability; the production
+ * default shells out to `<qwenRealBin> extensions list`.
+ */
+export type ExecExtensionsListFn = (qwenRealBin: string) => Promise<string>;
+
+const defaultExecExtensionsList: ExecExtensionsListFn = (qwenRealBin) =>
+  new Promise((res, rej) => {
+    execFile(
+      qwenRealBin,
+      ["extensions", "list"],
+      { encoding: "utf8" },
+      (err, stdout) => {
+        if (err) {
+          rej(err);
+          return;
+        }
+        res(stdout);
+      },
+    );
+  });
+
+/**
+ * Process-lifetime cache of currently-installed extension names. Used
+ * by `qwen_spawn` (Phase 4) to validate caller-supplied extension
+ * names and by the admin tool `qwen_reload_extensions` (Phase 3) to
+ * pick up newly-installed extensions without restarting.
+ *
+ * In-flight sessions are unaffected by reload — their wrapper script
+ * already received `QWEN_AGENT_EXTENSIONS` at exec time and the SDK
+ * subprocess is bound to that resolved set for its lifetime
+ * (RDR-002 §The wrapper-script bridge — drain semantics).
+ */
+export interface InstalledExtensionsCache {
+  /** Snapshot of currently-installed extension names (lowercased). */
+  get(): Set<string>;
+  /** Re-shell `qwen extensions list`, parse, replace internal state. */
+  reload(): Promise<Set<string>>;
+  /** Convenience for response payloads / observability. */
+  size(): number;
+}
+
+/**
+ * Construct an `InstalledExtensionsCache` and prime it once.
+ *
+ * - Exec errors propagate (fail-fast at startup) — the supervisor
+ *   should not start if the qwen binary cannot be invoked.
+ * - Output that is non-empty but unparseable is treated as an empty
+ *   set; a structured-log warning records the first 200 chars of the
+ *   output so an operator can diagnose without a crash.
+ */
+export async function createInstalledExtensionsCache(
+  qwenRealBin: string,
+  execFn?: ExecExtensionsListFn,
+): Promise<InstalledExtensionsCache> {
+  const exec = execFn ?? defaultExecExtensionsList;
+  let names = new Set<string>();
+
+  async function loadOnce(): Promise<Set<string>> {
+    const stdout = await exec(qwenRealBin);
+    const parsed = parseInstalledExtensions(stdout);
+    if (
+      parsed.length === 0 &&
+      stdout.trim() !== "" &&
+      !/no extensions installed/i.test(stdout)
+    ) {
+      log.warn(
+        { stdout_preview: stdout.slice(0, 200) },
+        "qwen extensions list output did not match expected format; cache populated empty",
+      );
+    }
+    return new Set(parsed);
+  }
+
+  names = await loadOnce();
+
+  return {
+    get: () => names,
+    reload: async () => {
+      names = await loadOnce();
+      return names;
+    },
+    size: () => names.size,
+  };
 }

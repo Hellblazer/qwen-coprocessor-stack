@@ -345,6 +345,55 @@ describe("MCP tool handlers", () => {
     });
   });
 
+  // ── qwen_reload_extensions (admin gate) ────────────────────
+
+  describe("qwen_reload_extensions admin gate", () => {
+    function makeMockCache() {
+      let names = new Set(["alpha", "beta"]);
+      return {
+        get: () => names,
+        size: () => names.size,
+        reload: vi.fn().mockImplementation(async () => {
+          names = new Set(["alpha", "beta", "gamma"]);
+          return names;
+        }),
+      };
+    }
+
+    it("registers qwen_reload_extensions when QWEN_ADMIN_TOOLS=1 and a cache is provided", () => {
+      vi.stubEnv("QWEN_ADMIN_TOOLS", "1");
+      const cache = makeMockCache();
+      const handlers = createToolHandlers(undefined, cache);
+      expect(typeof handlers.qwen_reload_extensions).toBe("function");
+    });
+
+    it("does NOT register qwen_reload_extensions when QWEN_ADMIN_TOOLS is unset", () => {
+      // beforeEach already stubs QWEN_SUPERVISOR_MAX_SESSIONS but not
+      // QWEN_ADMIN_TOOLS, so it's effectively unset here.
+      const cache = makeMockCache();
+      const handlers = createToolHandlers(undefined, cache);
+      expect(handlers.qwen_reload_extensions).toBeUndefined();
+    });
+
+    it("does NOT register qwen_reload_extensions when admin env is set but no cache is provided", () => {
+      vi.stubEnv("QWEN_ADMIN_TOOLS", "1");
+      const handlers = createToolHandlers(undefined);
+      expect(handlers.qwen_reload_extensions).toBeUndefined();
+    });
+
+    it("calls cache.reload() and returns size + names when invoked", async () => {
+      vi.stubEnv("QWEN_ADMIN_TOOLS", "1");
+      const cache = makeMockCache();
+      const handlers = createToolHandlers(undefined, cache);
+      const result = await handlers.qwen_reload_extensions!({});
+      expect(cache.reload).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        size: 3,
+        names: expect.arrayContaining(["alpha", "beta", "gamma"]),
+      });
+    });
+  });
+
   // ── qwen_backends ──────────────────────────────────────────
 
   describe("qwen_backends", () => {

@@ -35,7 +35,12 @@ import {
   type SessionPool,
 } from "./pool.js";
 import { setupShutdown } from "./shutdown.js";
-import { resolveQwenRealBin, resolveWrapperPath } from "./extensions.js";
+import {
+  createInstalledExtensionsCache,
+  resolveQwenRealBin,
+  resolveWrapperPath,
+  type InstalledExtensionsCache,
+} from "./extensions.js";
 
 const log = pino({ name: "qwen-agent-server" });
 
@@ -124,11 +129,24 @@ export type ToolHandlers = {
   qwen_send: (args: { task_id: string; message: string }) => Promise<{ ack: boolean }>;
   qwen_stop: (args: { task_id: string }) => Promise<{ ack: boolean }>;
   qwen_backends: (args: Record<string, never>) => Promise<BackendInfo[]>;
+  /**
+   * Admin-only — present only when both:
+   *   (a) the supervisor was started with QWEN_ADMIN_TOOLS=1 in env, and
+   *   (b) an installed-extensions cache was provided to createToolHandlers.
+   *
+   * Triggers a fresh shell-out to `qwen extensions list` and replaces the
+   * cache contents. Affects future spawns only — running sessions see no
+   * change (RDR-002 §drain semantics).
+   */
+  qwen_reload_extensions?: (args: Record<string, never>) => Promise<{ size: number; names: string[] }>;
   /** Test-only: flip the shutting_down flag. */
   __setShuttingDown: (v: boolean) => void;
 };
 
-export function createToolHandlers(existingPool?: SessionPool): ToolHandlers {
+export function createToolHandlers(
+  existingPool?: SessionPool,
+  installedExtensionsCache?: InstalledExtensionsCache,
+): ToolHandlers {
   const pool = existingPool ?? createPool();
   const backends = pool.backends;
   let shuttingDown = false;
@@ -233,12 +251,33 @@ export function createToolHandlers(existingPool?: SessionPool): ToolHandlers {
     return results;
   };
 
+  // ── qwen_reload_extensions (admin-gated) ───────────────────
+  //
+  // Tool is only emitted when both QWEN_ADMIN_TOOLS=1 and a cache is
+  // present. main() registers the corresponding MCP tool only when
+  // this handler is non-undefined; tests assert on the gating directly.
+
+  const adminTools = process.env["QWEN_ADMIN_TOOLS"] === "1";
+  let qwen_reload_extensions: ToolHandlers["qwen_reload_extensions"] | undefined;
+  if (adminTools && installedExtensionsCache !== undefined) {
+    qwen_reload_extensions = async () => {
+      const newSet = await installedExtensionsCache.reload();
+      const names = Array.from(newSet);
+      log.info(
+        { event_type: "extensions_reloaded", size: names.length },
+        "installed-extensions cache reloaded",
+      );
+      return { size: names.length, names };
+    };
+  }
+
   return {
     qwen_spawn,
     qwen_poll,
     qwen_send,
     qwen_stop,
     qwen_backends,
+    ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
   };
 }
@@ -260,8 +299,17 @@ async function main(): Promise<void> {
     "extension bridge resolved",
   );
 
+  // Prime the installed-extensions cache once at startup. Exec errors
+  // propagate; unparseable output degrades to an empty cache + warn
+  // (RDR-002 audit-note #4 — no hard-brick on routine SDK output drift).
+  const installedExtensionsCache = await createInstalledExtensionsCache(qwenRealBin);
+  log.info(
+    { event_type: "extensions_cache_loaded", size: installedExtensionsCache.size() },
+    "installed-extensions cache primed",
+  );
+
   const pool = createPool({ qwenRealBin, wrapperPath });
-  const handlers = createToolHandlers(pool);
+  const handlers = createToolHandlers(pool, installedExtensionsCache);
 
   const mcpServer = new McpServer({
     name: "qwen-agent-server",
@@ -350,6 +398,25 @@ async function main(): Promise<void> {
       };
     },
   );
+
+  // Admin tool — registered only when createToolHandlers exposed it
+  // (QWEN_ADMIN_TOOLS=1 in env, cache available). Unrelated MCP clients
+  // never see this tool unless the operator opts in.
+  if (handlers.qwen_reload_extensions !== undefined) {
+    const reloadHandler = handlers.qwen_reload_extensions;
+    mcpServer.tool(
+      "qwen_reload_extensions",
+      "Admin only — reload the supervisor's installed-extensions cache from `qwen extensions list`. Affects future spawns; running sessions are unaffected.",
+      {},
+      async (_args) => {
+        const result = await reloadHandler({});
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        };
+      },
+    );
+    log.info("qwen_reload_extensions admin tool registered (QWEN_ADMIN_TOOLS=1)");
+  }
 
   // ── Reaper interval ─────────────────────────────────────────
   const reaperInterval = setInterval(() => {
