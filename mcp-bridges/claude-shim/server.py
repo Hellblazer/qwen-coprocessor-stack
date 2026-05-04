@@ -93,29 +93,53 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
 CLAUDE_CWD = os.environ.get("CLAUDE_SHIM_CWD") or "/tmp/claude-shim-cwd"
 os.makedirs(CLAUDE_CWD, exist_ok=True)
 
-# Why we don't override HOME for the subprocess:
+# Override HOME for the subprocess so it reads/writes a fully isolated
+# Claude Code config dir, never touching the user's real ~/.claude.json or
+# ~/.claude/. The trick we couldn't make work earlier — seeding the isolated
+# dir from copies of the user's real auth state — fails because Claude Code's
+# OAuth refresh path consults HOME-relative paths we can't fully replicate.
 #
-# We tried it. Setting HOME=/tmp/some-isolated-dir breaks subscription auth
-# even after seeding the isolated dir with copies of ~/.claude.json and
-# ~/.claude/. macOS Keychain access is nominally user-scoped, but Claude
-# Code's auth flow looks up state in HOME-relative paths during refresh and
-# fails to find them in the isolated dir. Auth dies silently with
-# "Not logged in".
+# So instead the user runs `scripts/setup-shim-auth.sh` once, which launches
+# an interactive Claude Code against this same CLAUDE_HOME with the gateway
+# env stripped. Inside, /login completes a fresh OAuth flow whose tokens get
+# stored in the isolated HOME. From then on, every shim subprocess has its
+# own auth and can't perturb the user's main config.
 #
-# Instead, we use two milder defenses that achieve the practical isolation
-# the user actually cares about:
-#
-#   1. `--setting-sources ""` on the subprocess command line skips loading
-#      user-level Claude Code settings — including a broken `model` pinning
-#      saved by a previous `/model` pick of a gateway route name.
-#   2. `--model <CLAUDE_MODEL>` always wins regardless of any saved default,
-#      so even if user settings did leak in, the subprocess uses our model.
-#
-# Residual writes the subprocess does still go to the real ~/.claude.json
-# (numStartups, lastReleaseNotesSeen, etc.). Those are benign telemetry.
-# The corruption-grade write — saving a gateway route as the default model
-# — only happens via interactive `/model` picks, which a non-interactive
-# subprocess never performs.
+# It's the same Anthropic account, the same subscription, the same billing —
+# just a separate persisted auth state for the shim.
+CLAUDE_HOME = os.environ.get("CLAUDE_SHIM_HOME") or "/tmp/claude-shim-home"
+os.makedirs(CLAUDE_HOME, exist_ok=True)
+
+
+def _check_isolated_auth() -> None:
+    """Warn loudly if the isolated HOME hasn't been logged in yet.
+
+    A real check requires actually invoking claude, which is expensive and
+    racy at module import. We do a cheap structural check: presence of
+    .claude.json with an oauthAccount field. If it's missing, every request
+    will fail with 'Not logged in' until setup-shim-auth.sh is run.
+    """
+    import json
+    cfg_path = os.path.join(CLAUDE_HOME, ".claude.json")
+    inner_cfg = os.path.join(CLAUDE_HOME, ".claude", ".claude.json")
+    has_oauth = False
+    for p in (cfg_path, inner_cfg):
+        if os.path.isfile(p):
+            try:
+                with open(p) as f:
+                    data = json.load(f)
+                if data.get("oauthAccount"):
+                    has_oauth = True
+                    break
+            except Exception:
+                pass
+    if not has_oauth:
+        logger.warning(
+            "claude-shim: isolated HOME at %s has no oauthAccount. "
+            "Run scripts/setup-shim-auth.sh once to log the shim in, "
+            "otherwise every escalation request will fail with 'Not logged in'.",
+            CLAUDE_HOME,
+        )
 
 if not CLAUDE_BIN:
     raise SystemExit(
@@ -144,6 +168,8 @@ class ClaudeSession:
 
     async def start(self) -> None:
         env = {k: v for k, v in os.environ.items() if k not in GATEWAY_ENV}
+        # Isolated HOME — see CLAUDE_HOME comment near the top of the file.
+        env["HOME"] = CLAUDE_HOME
         # `--tools ""` disables built-in tools so claude answers as an oracle
         # rather than spawning a Bash/Edit loop in the gateway's cwd.
         # `--no-session-persistence` keeps state in-memory only.
@@ -572,6 +598,7 @@ async def _handle_turn(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    _check_isolated_auth()
     manager = SessionManager()
     app.state.manager = manager
     reap_task = asyncio.create_task(manager.reap_idle())

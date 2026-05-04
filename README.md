@@ -95,6 +95,25 @@ for the fast default path, and `claude-qwen-thinking` keeps it on for the rare
 case where you want deeper reasoning. The router currently picks `coding` for
 default; pin `thinking` from the `/model` picker when needed.
 
+## One-time shim auth setup
+
+The shim runs `claude -p` subprocesses against an **isolated `HOME`** so they
+can't read or write your real `~/.claude.json` or `~/.claude/`. That isolated
+home needs its own OAuth login — it's the same Anthropic account, same
+subscription, same billing, just a separate persisted auth state for the
+shim.
+
+```bash
+./scripts/setup-shim-auth.sh
+```
+
+This launches Claude Code interactively against `/tmp/claude-shim-home`
+(override via `CLAUDE_SHIM_HOME`). Inside the TUI: `/login`, complete the
+OAuth flow in the browser, `/quit`. From then on the shim has its own auth
+state and won't perturb your main config.
+
+Re-run if your subscription auth changes (re-login, account swap, etc.).
+
 ## Subscription-billed escalation
 
 The `claude-escalation` route does **not** call the Anthropic API directly.

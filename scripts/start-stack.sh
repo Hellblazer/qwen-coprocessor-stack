@@ -65,6 +65,7 @@ fi
 # --- claude-shim (subscription-billed escalation backend) ---
 SHIM_PIDFILE="$LOGS/claude-shim.pid"
 SHIM_BIN="$ROOT/mcp-bridges/claude-shim/server.py"
+SHIM_HOME="${CLAUDE_SHIM_HOME:-/tmp/claude-shim-home}"
 if [ -f "$SHIM_PIDFILE" ] && kill -0 "$(cat "$SHIM_PIDFILE")" 2>/dev/null; then
   echo "[+] claude-shim already running (pid $(cat "$SHIM_PIDFILE"))"
 elif [ ! -x "$SHIM_BIN" ]; then
@@ -72,6 +73,12 @@ elif [ ! -x "$SHIM_BIN" ]; then
 elif ! command -v uv >/dev/null; then
   echo "[!] uv not on PATH; skipping claude-shim. Install uv (https://docs.astral.sh/uv/) to enable."
 else
+  if [ ! -f "$SHIM_HOME/.claude.json" ] && [ ! -f "$SHIM_HOME/.claude/.claude.json" ]; then
+    echo "[!] claude-shim isolated HOME at $SHIM_HOME has no auth state."
+    echo "    Run ./scripts/setup-shim-auth.sh once to log the shim in,"
+    echo "    otherwise claude-escalation will fail with 'Not logged in'."
+    echo "    (Continuing — shim itself starts fine; only escalation requests fail.)"
+  fi
   echo "[*] Starting claude-shim on :9000 ..."
   "$SHIM_BIN" > "$LOGS/claude-shim.log" 2>&1 &
   echo $! > "$SHIM_PIDFILE"
