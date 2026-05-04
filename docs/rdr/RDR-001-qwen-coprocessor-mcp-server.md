@@ -28,31 +28,26 @@ architecture documented in commits `9c97f49..25e8054` and the README's
 The repo's original architecture made Qwen the everyday workhorse and routed
 hard-question escalation to Claude through a custom LiteLLM proxy. Claude
 Code was redirected via `ANTHROPIC_BASE_URL` to the proxy, which dispatched
-among five named routes (local Qwen, remote Qwen, Claude-via-API-key,
-Claude-via-subscription-subprocess, and a heuristic auto-router). The
-subscription path used a `claude -p` subprocess wrapper (`claude-shim`)
-running with an isolated `HOME` to keep the user's main config clean.
+among five named routes by heuristic. That direction has two architectural
+problems independent of any external constraint:
 
-Two findings invalidated that direction:
+1. **It inverts the model-strengths gradient.** Claude is meaningfully
+   better than Qwen at hard reasoning. Gating Claude behind heuristics
+   that try to keep traffic off the more capable model is exactly
+   backwards — it works against the actual capability differential.
+   Putting Claude as orchestrator and delegating bulk/cheap work *to*
+   Qwen matches the gradient instead of fighting it.
+2. **It puts auth indirection in the request path.** Anthropic auth
+   crosses a user-built proxy, which forces decisions about token
+   handling, isolated config dirs, OAuth refresh paths, and
+   subscription-vs-API-key flows that aren't intrinsic to the agent
+   problem we're trying to solve. None of that complexity is necessary
+   if the only thing reaching Anthropic's servers is the unmodified
+   Claude Code client itself.
 
-1. **Anthropic ToS posture changed.** Per the revised Consumer ToS
-   (Feb 2026) and enforcement actions starting **Apr 4, 2026** (OpenClaw
-   block, account bans), using Pro/Max OAuth tokens "in any other product,
-   tool, or service — including the Agent SDK" is explicitly prohibited.
-   The subprocess-spawn pattern that powered our `claude-escalation` route
-   is in the prohibited zone regardless of the isolation-via-HOME nuance,
-   alongside ~10 other public projects (`claude-max-api-proxy` family,
-   `meridian`, `dario`, `RichardAtCT/claude-code-openai-wrapper`, etc.).
-2. **Routing-as-default does not match the model strengths.** Claude is
-   meaningfully better than Qwen at hard reasoning. Putting Claude as
-   orchestrator and delegating bulk/cheap work to Qwen matches reality
-   better than gating Claude behind heuristics that try to keep traffic
-   off the more capable model.
-
-The flip — Claude at the top, Qwen as a coprocessor — is ToS-compliant
-by construction (Qwen is open-weights; no Anthropic auth crosses any
-gateway) and architecturally simpler. A first-cut implementation already
-exists (`mcp-bridges/qwen-coprocessor/server.py`) with four shaped tools:
+The flip — Claude at the top, Qwen as a coprocessor — sidesteps both.
+A first-cut implementation already exists
+(`mcp-bridges/qwen-coprocessor/server.py`) with four shaped tools:
 `qwen`, `qwen_classify`, `qwen_summarize`, `qwen_extract`.
 
 This RDR addresses what the *next* iteration looks like: a stateful agent
@@ -62,9 +57,12 @@ sub-agent rather than calling a single function.
 
 ## Decision drivers
 
-- **D1. ToS-clean by construction.** No path can route Anthropic-bound
-  traffic through user-built infrastructure. Subscription auth used only
-  by the unmodified Claude Code CLI itself.
+- **D1. No auth indirection.** No path routes Anthropic-bound traffic
+  through user-built infrastructure. The unmodified Claude Code client
+  is the only thing that reaches Anthropic's servers. This eliminates
+  an entire class of problems (token refresh paths, isolated config
+  dirs, multi-account state, third-party harness restrictions) that
+  aren't intrinsic to the agent problem.
 - **D2. Conversational delegation.** The interface should support
   multi-turn supervision — spawn a long-running task, poll progress,
   inject additional context mid-flight, cancel — not just one-shot
@@ -220,9 +218,10 @@ claude mcp add --scope user qwen-agent-server \
 
 ### Positive
 
-- **ToS-clean.** No Anthropic auth ever leaves Claude Code; Qwen is
-  invoked locally via open-weights inference. Survives any future
-  Anthropic enforcement action against third-party harnesses.
+- **Auth stays where it belongs.** The unmodified Claude Code client is
+  the sole consumer of Anthropic credentials; Qwen is invoked locally
+  via open-weights inference. Removes the token-handling complexity
+  the gateway pattern accumulated.
 - **Conversational by design.** Long-running tasks become first-class.
   Bidirectional interaction works through polling + `qwen_send`, no
   reliance on MCP elicitation (which has uneven client support) or ACP.
@@ -295,9 +294,8 @@ claude mcp add --scope user qwen-agent-server \
   abstraction (tool-shaped helpers, not agent-supervisor). Complements
   rather than competes with this design.
 - **`mehdic/claude-proxy`, `CaddyGlow/ccproxy-api`, `rynfar/meridian`** —
-  community subprocess-pool / SDK-based Claude proxies. Architecturally
-  the closest analogues to what we're building, just for the wrong
-  vendor (Anthropic, with the ToS issues).
+  community subprocess-pool / SDK-based proxies for Claude Code.
+  Architecturally the closest analogues to what we're building.
 - **`@qwen-code/qwen-code-sdk`** — Qwen's official TypeScript SDK; the
   upstream-recommended path for programmatic Qwen Code use.
 - **Qwen Code Issue #874** — acknowledged that `qwen -p` headless mode
@@ -306,10 +304,6 @@ claude mcp add --scope user qwen-agent-server \
 
 ## References
 
-- Anthropic ToS update (Feb 2026):
-  https://www.theregister.com/2026/02/20/anthropic_clarifies_ban_third_party_claude_access
-- Anthropic OpenClaw enforcement (Apr 4, 2026):
-  https://techcrunch.com/2026/04/04/anthropic-says-claude-code-subscribers-will-need-to-pay-extra-for-openclaw-support/
 - Qwen Code repo: https://github.com/QwenLM/qwen-code
 - Qwen Code headless docs:
   https://qwenlm.github.io/qwen-code-docs/en/users/features/headless/
