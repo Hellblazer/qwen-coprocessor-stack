@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Start the M4 Max workhorse llama-server and the LiteLLM proxy.
+# Start the local llama-server (M4 Max Metal-accelerated Qwen 3.6 27B).
+# Claude Code talks to it via the qwen-agent-server MCP supervisor; see
+# mcp-bridges/qwen-agent-server/README.md for registration.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOGS="$ROOT/logs"
-mkdir -p "$LOGS/gpu" "$LOGS/litellm"
+mkdir -p "$LOGS/gpu"
 
-[ -f "$ROOT/.env" ] || { echo "[!] $ROOT/.env missing. Copy .env.example and fill in."; exit 1; }
-# shellcheck disable=SC1091
-set -a; . "$ROOT/.env"; set +a
+if [ -f "$ROOT/.env" ]; then
+  # shellcheck disable=SC1091
+  set -a; . "$ROOT/.env"; set +a
+fi
 
 LLAMA_DIR="${LLAMA_DIR:-$HOME/src/llama.cpp}"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
@@ -18,7 +21,6 @@ MODEL_ALIAS="${MODEL_ALIAS:-qwen3.6-27b-instruct}"
 
 [ -x "$LLAMA_BIN" ] || { echo "[!] llama-server not built. Run scripts/setup-mac-host.sh first."; exit 1; }
 [ -f "$MODEL_PATH" ] || { echo "[!] Model not present at $MODEL_PATH. Run scripts/setup-mac-host.sh first."; exit 1; }
-command -v docker >/dev/null || { echo "[!] Docker required."; exit 1; }
 
 PIDFILE="$ROOT/logs/llama-server.pid"
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
@@ -62,57 +64,15 @@ else
   done
 fi
 
-# --- claude-shim (subscription-billed escalation backend) ---
-SHIM_PIDFILE="$LOGS/claude-shim.pid"
-SHIM_BIN="$ROOT/mcp-bridges/claude-shim/server.py"
-SHIM_HOME="${CLAUDE_SHIM_HOME:-/tmp/claude-shim-home}"
-if [ -f "$SHIM_PIDFILE" ] && kill -0 "$(cat "$SHIM_PIDFILE")" 2>/dev/null; then
-  echo "[+] claude-shim already running (pid $(cat "$SHIM_PIDFILE"))"
-elif [ ! -x "$SHIM_BIN" ]; then
-  echo "[!] $SHIM_BIN not executable; skipping claude-shim. claude-escalation will fail."
-elif ! command -v uv >/dev/null; then
-  echo "[!] uv not on PATH; skipping claude-shim. Install uv (https://docs.astral.sh/uv/) to enable."
-else
-  if [ ! -f "$SHIM_HOME/.claude.json" ] && [ ! -f "$SHIM_HOME/.claude/.claude.json" ]; then
-    echo "[!] claude-shim isolated HOME at $SHIM_HOME has no auth state."
-    echo "    Run ./scripts/setup-shim-auth.sh once to log the shim in,"
-    echo "    otherwise claude-escalation will fail with 'Not logged in'."
-    echo "    (Continuing — shim itself starts fine; only escalation requests fail.)"
-  fi
-  echo "[*] Starting claude-shim on :9000 ..."
-  "$SHIM_BIN" > "$LOGS/claude-shim.log" 2>&1 &
-  echo $! > "$SHIM_PIDFILE"
-  for i in {1..20}; do
-    if curl -sf http://127.0.0.1:9000/health >/dev/null; then echo "[+] claude-shim healthy"; break; fi
-    if ! kill -0 "$(cat "$SHIM_PIDFILE")" 2>/dev/null; then
-      echo "[!] claude-shim died on startup:"; tail -n 20 "$LOGS/claude-shim.log"; exit 1
-    fi
-    [ "$i" -eq 20 ] && { echo "[!] claude-shim health timeout"; tail -n 20 "$LOGS/claude-shim.log"; exit 1; }
-    sleep 0.5
-  done
-fi
-
-echo "[*] Starting LiteLLM proxy ..."
-( cd "$ROOT" && docker compose up -d litellm-proxy )
-
-echo -n "[*] Waiting for LiteLLM health"
-for i in {1..30}; do
-  if curl -sf http://localhost:4000/health/liveliness >/dev/null; then echo " ok"; break; fi
-  echo -n "."
-  [ "$i" -eq 30 ] && { echo " FAIL"; docker logs --tail 50 qwen-coprocessor-proxy; exit 1; }
-  sleep 2
-done
-
 cat <<EOF
 
-[+] Stack up.
-    llama-server : http://localhost:8080
-    LiteLLM      : http://localhost:4000
+[+] llama-server up at http://localhost:8080.
 
-To run Claude Code through it:
-    source $ROOT/claude-code/env.sh
-    claude
+Claude Code reaches it through the qwen-agent-server MCP supervisor.
+Register it once with:
 
-Smoke test the model list:
-    curl -s http://localhost:4000/v1/models -H "Authorization: Bearer \$LITELLM_MASTER_KEY" | jq .
+    claude mcp add --scope user qwen-agent-server \\
+      node $ROOT/mcp-bridges/qwen-agent-server/dist/server.js
+
+Or run scripts/setup-qwen-agent-server.sh to build + register in one go.
 EOF

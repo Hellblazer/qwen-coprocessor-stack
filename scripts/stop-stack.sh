@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop the LiteLLM proxy and the local llama-server cleanly.
+# Stop the local llama-server cleanly.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -21,10 +21,6 @@ stop_pidfile() {
   fi
 }
 
-echo "[*] Stopping LiteLLM ..."
-( cd "$ROOT" && docker compose down --remove-orphans ) || true
-
-stop_pidfile "claude-shim"   "$ROOT/logs/claude-shim.pid"
 stop_pidfile "llama-server"  "$ROOT/logs/llama-server.pid"
 
 echo "[+] Stopped."
