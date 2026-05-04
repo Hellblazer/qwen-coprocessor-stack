@@ -28,6 +28,15 @@ extensions subcommand surface (report at `/tmp/rdr-002-cli-spike.md`,
 T2 record `002-research-005`) further simplified Layer 1 to a thin
 shell-out wrapper — see "Decision" → "Layer 1."
 
+A third spike (`/tmp/qwen-bridge-spike/spike.mjs`, T2 record
+`002-research-006`) verified the Layer 2 wrapper bridge end-to-end
+against the live SDK: `pathToQwenExecutable` accepts a script path,
+`QueryOptions.env` reaches the wrapper subprocess, and the SDK's
+constructed argv is structured such that prepending `--extensions
+<list>` is safe. The behavior is now pinned as Pin 4 of
+`tests/integration/sdk-behavior.test.ts` — any future SDK change
+that breaks one of these assumptions is caught in CI.
+
 **Terminology revision:** Qwen Code (the upstream tool the SDK
 embeds) calls these things **extensions**, not "plugins." The
 manifest file is `qwen-extension.json`; the on-disk directory is
@@ -301,7 +310,7 @@ Claude can request "for this code-refactoring task, use only the
 serena extension." The supervisor honours it for that session
 without affecting any other session.
 
-### The wrapper-script bridge
+### The wrapper-script bridge (verified)
 
 A small shell wrapper, shipped with the supervisor at
 `mcp-bridges/qwen-agent-server/scripts/qwen-extensions-wrapper.sh`,
@@ -328,6 +337,26 @@ Per-session, the supervisor sets:
 The wrapper is a fixed file; per-session variation is via the env
 vars. No per-session temp file, no symlinks, no filesystem state
 for the bridge.
+
+**Verified end-to-end against `@qwen-code/sdk@0.1.7`** (spike
+`/tmp/qwen-bridge-spike/spike.mjs`, T2 record `002-research-006`,
+2026-05-04). The SDK:
+
+- Exec's a script path set as `pathToQwenExecutable` without
+  validating that it's a real binary.
+- Passes `QueryOptions.env` into the subprocess's environment
+  intact (alongside `OPENAI_BASE_URL`, `OPENAI_API_KEY`, etc.).
+- Constructs argv as a series of `--flag value` pairs (`--input-format
+  stream-json --output-format stream-json --channel=SDK --model
+  <m> --approval-mode <p> --exclude-tools <list> --auth-type <a>
+  --session-id <id>`). Yargs accepts `--extensions <list>`
+  prepended at any position.
+
+These behaviors are pinned by **Pin 4** of
+`tests/integration/sdk-behavior.test.ts`. Any future SDK change
+that strips `env`, validates `pathToQwenExecutable` as a binary,
+or constructs argv with positional arguments fails the pin and
+blocks the SDK upgrade.
 
 ### Framework-required extensions (today: empty)
 

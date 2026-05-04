@@ -2,24 +2,33 @@
 //
 // SDK pin integration tests — lock @qwen-code/sdk@0.1.7 behavior in place.
 //
-// Three load-bearing assertions (RDR-001 §Q1, §C1, §C2):
-//   1. KV-cache locality: turn-2 cache_read_input_tokens > 0
-//   2. ask_user_question (when not excluded) is emitted as a ToolUseBlock
-//      with structured input.questions[] — pins the SDK message shape.
-//   3. streamInput multi-turn answer delivery: a follow-up SDKUserMessage
-//      pushed after turn 1's result is consumed by the model in turn 2.
-//      This is the mechanism the supervisor relies on (post-spike rework).
+// Four load-bearing assertions:
+//   1. (RDR-001 §C1) KV-cache locality: turn-2 cache_read_input_tokens > 0
+//   2. (RDR-001 §C2) ask_user_question (when not excluded) is emitted as a
+//      ToolUseBlock with structured input.questions[] — pins SDK message shape.
+//   3. (RDR-001 §Q1) streamInput multi-turn answer delivery: a follow-up
+//      SDKUserMessage pushed after turn 1's result is consumed by the model
+//      in turn 2. The mechanism the supervisor relies on (post-spike rework).
+//   4. (RDR-002 Layer 2) pathToQwenExecutable wrapper bridge: the SDK exec's
+//      a script-path executable, passes QueryOptions.env into its environment,
+//      and constructs an argv that's compatible with prepending --extensions.
+//      Required for per-spawn extension loadout (RDR-002 §Decision).
 //
-// REQUIRES: llama-server on localhost:8080 running qwen3.6-27b-instruct.
-// If unreachable, all tests skip cleanly — no false-fail in CI without infra.
+// Pins 1-3 REQUIRE llama-server on localhost:8080. Pin 4 does NOT — its
+// wrapper exits before any HTTP call.
 //
-// Empirical reference: /tmp/qwen-sdk-probe/probe.mjs (Spike A) and
-// /tmp/qwen-sdk-probe/probe-tool-result.mjs (post-spike falsification of
-// the original deny-with-message path; see RDR-001 §Q1).
+// Empirical references:
+//   /tmp/qwen-sdk-probe/probe.mjs (Spike A) and
+//   /tmp/qwen-sdk-probe/probe-tool-result.mjs (post-spike falsification of
+//   the original deny-with-message path; see RDR-001 §Q1).
+//   /tmp/qwen-bridge-spike/spike.mjs (wrapper bridge proof; RDR-002).
 
-import { describe, expect, it, beforeAll } from "vitest";
+import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { query } from "@qwen-code/sdk";
 import type { SDKMessage } from "@qwen-code/sdk";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // ─────────────────────────────────────────────────────────────────
 // Backend availability check
@@ -405,6 +414,134 @@ describe("Pin 3 — streamInput multi-turn answer delivery", () => {
         combined,
         `turn-2 response must reference '${SENTINEL}' — streamInput multi-turn delivery regression`,
       ).toContain(SENTINEL);
+    },
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Pin 4: pathToQwenExecutable wrapper bridge (RDR-002 Layer 2)
+//
+// The supervisor's per-spawn extension loadout depends on three SDK
+// behaviors, none of them documented as a public contract:
+//
+//   (a) `QueryOptions.pathToQwenExecutable` accepts a SCRIPT path — not
+//       just a real binary. The SDK exec's whatever we point at without
+//       additional validation.
+//   (b) `QueryOptions.env` reaches the subprocess's environment. The
+//       wrapper reads QWEN_AGENT_EXTENSIONS from there and prepends
+//       `--extensions <list>` to the CLI's argv.
+//   (c) The SDK constructs argv that's compatible with PREPENDING
+//       additional flags. (Yargs is order-insensitive for these flags
+//       in the bundled CLI, but a future SDK change to positional
+//       arguments could break this.)
+//
+// If any of these assumptions break, RDR-002 Layer 2 falls apart and
+// the supervisor must fall back to per-session symlinked extension
+// directories under <cwd>/.qwen/extensions/ (heavier, not designed).
+//
+// This pin does NOT require llama-server. The wrapper exits before any
+// HTTP call. Always runs.
+
+describe("Pin 4 — pathToQwenExecutable wrapper bridge", () => {
+  let tmpDir: string;
+  let wrapperPath: string;
+  let logPath: string;
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "qwen-bridge-pin-"));
+    wrapperPath = join(tmpDir, "wrapper.sh");
+    logPath = join(tmpDir, "wrapper-invoked.log");
+    const wrapper = `#!/usr/bin/env bash
+# Pin-4 wrapper: capture argv + env, exit non-zero so the SDK's subprocess
+# error is the signal we observe. No real qwen exec.
+{
+  echo "ARGV[$#]:"
+  for a in "$@"; do printf '  [%s]\\n' "$a"; done
+  echo "ENV.QWEN_AGENT_EXTENSIONS=[\${QWEN_AGENT_EXTENSIONS:-<unset>}]"
+  echo "ENV.OPENAI_BASE_URL=[\${OPENAI_BASE_URL:-<unset>}]"
+  echo "PATHTYPE=[script]"
+} > "${logPath}" 2>&1
+exit 42
+`;
+    writeFileSync(wrapperPath, wrapper, { encoding: "utf8" });
+    chmodSync(wrapperPath, 0o755);
+  });
+
+  afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it(
+    "exec's a wrapper script set as pathToQwenExecutable; QueryOptions.env reaches the subprocess",
+    { timeout: 60_000 },
+    async () => {
+      const sentinel = "ext-foo,ext-bar";
+
+      let observedError: unknown = null;
+      try {
+        const iter = query({
+          prompt: "hello",
+          options: {
+            cwd: "/tmp",
+            model: "any-model-id",
+            pathToQwenExecutable: wrapperPath,
+            env: {
+              QWEN_AGENT_EXTENSIONS: sentinel,
+              OPENAI_BASE_URL: "http://localhost:8080/v1",
+              OPENAI_API_KEY: "sk-pin",
+            },
+            authType: "openai",
+            permissionMode: "yolo",
+            excludeTools: ["agent", "ask_user_question"],
+          },
+        });
+        for await (const _msg of iter) {
+          // wrapper exits 42 before producing any stream-json, so the iter
+          // throws. We catch below.
+        }
+      } catch (err) {
+        observedError = err;
+      }
+
+      // (a) The wrapper file must have been exec'd by the SDK.
+      expect(
+        existsSync(logPath),
+        "wrapper log absent — pathToQwenExecutable did not exec the script (regression of assumption a)",
+      ).toBe(true);
+
+      const log = readFileSync(logPath, "utf8");
+
+      // (b) QueryOptions.env reaches the wrapper's environment.
+      expect(
+        log,
+        "QWEN_AGENT_EXTENSIONS env did not reach the wrapper subprocess (regression of assumption b)",
+      ).toMatch(/ENV\.QWEN_AGENT_EXTENSIONS=\[ext-foo,ext-bar\]/);
+      expect(
+        log,
+        "OPENAI_BASE_URL env did not reach the wrapper subprocess",
+      ).toMatch(/ENV\.OPENAI_BASE_URL=\[http:\/\/localhost:8080\/v1\]/);
+
+      // (c) The SDK's argv is structured (key/value pairs and flag/value
+      //     pairs) such that prepending `--extensions <list>` ahead of it
+      //     produces a valid yargs invocation. We assert the SDK uses the
+      //     well-known stream-json arg shape rather than arbitrary
+      //     positional args, which would break prepending.
+      expect(
+        log,
+        "SDK argv missing --input-format stream-json — argv shape changed; prepending may be unsafe",
+      ).toMatch(/\[--input-format\][\s\S]*\[stream-json\]/);
+      expect(
+        log,
+        "SDK argv missing --output-format stream-json",
+      ).toMatch(/\[--output-format\][\s\S]*\[stream-json\]/);
+
+      // The SDK should also pass excludeTools through; spot-check.
+      expect(log).toMatch(/\[--exclude-tools\][\s\S]*\[agent,ask_user_question\]/);
+
+      // The SDK's subprocess error is expected (wrapper exited 42). We
+      // just confirm we got an error, so future SDK changes that
+      // somehow make exit-42 succeed would be flagged.
+      expect(observedError).not.toBeNull();
     },
   );
 });
