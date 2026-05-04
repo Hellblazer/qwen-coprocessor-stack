@@ -271,7 +271,7 @@ describe("QwenSession", () => {
       ctrl.end();
     });
 
-    it("transitions to complete when SDK emits result", async () => {
+    it("transitions to idle (not complete) when SDK emits a turn result", async () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;
 
@@ -279,59 +279,64 @@ describe("QwenSession", () => {
       ctrl.push(resultMsg("all done"));
       await flush();
 
-      expect(session.state).toBe("complete");
-      expect(session.poll({}).result).toBe("all done");
-    });
-
-    it("running → awaiting_input when ask_user_question fires", async () => {
-      const ctrl = makeControllableIter();
-      _makeIter = () => ctrl.iter;
-
-      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ write_authority: false }));
-
-      // Simulate the SDK invoking canUseTool for ask_user_question.
-      const canUseTool = capturedOptions?.canUseTool!;
-      const pendingPromise = canUseTool(
-        "ask_user_question",
-        { tool_use_id: "tuid-1", questions: [{ question: "Which file?" }] },
-        { signal: new AbortController().signal },
-      );
-
-      await flush();
-      expect(session.state).toBe("awaiting_input");
-
-      // Send answer → awaiting_input → running.
-      session.send("file_a.ts");
-      await flush();
-
-      expect(session.state).toBe("running");
-
-      // Confirm the Promise resolved with deny-message (§Q1).
-      const result = await pendingPromise;
-      expect(result).toEqual({ behavior: "deny", message: "file_a.ts" });
+      // Result message ends a TURN, not the session. Session stays alive
+      // waiting for the next user message via send().
+      expect(session.state).toBe("idle");
+      const polled = session.poll({});
+      expect(polled.last_message).toBe("all done");
+      // result is only set on `complete` state; absent in idle.
+      expect(polled.result).toBeUndefined();
 
       ctrl.end();
     });
 
-    it("awaiting_input → running on send(answer)", async () => {
+    it("idle → running on send(message); next turn is delivered via input generator", async () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;
 
       const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
-      const canUseTool = capturedOptions?.canUseTool!;
 
-      void canUseTool(
-        "ask_user_question",
-        { tool_use_id: "t2" },
-        { signal: new AbortController().signal },
-      );
-
+      // Turn 1: emit result, session goes idle.
+      ctrl.push(resultMsg("turn 1 done"));
       await flush();
-      expect(session.state).toBe("awaiting_input");
+      expect(session.state).toBe("idle");
 
-      session.send("my answer");
+      // Caller pushes the next user message.
+      session.send("follow up");
       await flush();
       expect(session.state).toBe("running");
+      // last_user_message tracks the latest send.
+      // (verified indirectly via error path's last_known.last_user_message)
+
+      ctrl.end();
+    });
+
+    it("send() while running queues the message for after the current turn", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+
+      // Still running — push a second message before any result.
+      expect(() => session.send("interrupt")).not.toThrow();
+      expect(session.state).toBe("running");
+
+      ctrl.end();
+    });
+
+    it("emits a turn_complete event on each result", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      ctrl.push(resultMsg("turn done"));
+      await flush();
+
+      const turnComplete = session.poll({}).recent_events.find(
+        (e) => e.type === "turn_complete",
+      );
+      expect(turnComplete).toBeDefined();
+      expect(turnComplete?.summary).toContain("turn 1 complete");
 
       ctrl.end();
     });
@@ -510,11 +515,37 @@ describe("QwenSession", () => {
   // ── stop() ──────────────────────────────────────────────────
 
   describe("stop()", () => {
-    it("transitions to error state after stop()", () => {
+    it("transitions to complete (not error) after stop() from running", () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;
 
       const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      session.stop();
+      expect(session.state).toBe("complete");
+    });
+
+    it("transitions to complete after stop() from idle", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      ctrl.push(resultMsg("turn done"));
+      await flush();
+      expect(session.state).toBe("idle");
+
+      session.stop();
+      expect(session.state).toBe("complete");
+    });
+
+    it("preserves error state if stop() called after error", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      ctrl.error(new Error("boom"));
+      await flush();
+      expect(session.state).toBe("error");
+
       session.stop();
       expect(session.state).toBe("error");
     });
@@ -526,6 +557,16 @@ describe("QwenSession", () => {
       const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
       session.stop();
       expect(() => session.send("answer")).toThrow();
+    });
+
+    it("stop() is idempotent", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      session.stop();
+      expect(() => session.stop()).not.toThrow();
+      expect(session.state).toBe("complete");
     });
   });
 
@@ -543,7 +584,31 @@ describe("QwenSession", () => {
       ctrl.push(resultMsg("finished"));
       await flush();
 
-      expect(session.state).toBe("complete");
+      expect(session.state).toBe("idle");
+    });
+  });
+
+  // ── ask_user_question excluded by default ──────────────────
+
+  describe("default tool exclusions (§Q1)", () => {
+    it("excludeTools includes 'ask_user_question' by default", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      expect(capturedOptions?.excludeTools).toContain("ask_user_question");
+      ctrl.end();
+    });
+
+    it("excludeTools still includes 'ask_user_question' when allow_subagents===true", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ allow_subagents: true }));
+      // 'agent' is dropped; 'ask_user_question' is NOT.
+      expect(capturedOptions?.excludeTools).toContain("ask_user_question");
+      expect(capturedOptions?.excludeTools).not.toContain("agent");
+      ctrl.end();
     });
   });
 });

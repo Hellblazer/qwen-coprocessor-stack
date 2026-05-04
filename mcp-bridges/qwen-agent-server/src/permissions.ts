@@ -3,19 +3,25 @@
 // makeCanUseTool — factory for the CanUseTool callback injected into the
 // @qwen-code/sdk QueryOptions.
 //
+// Scope (post-2026-05-04 spike): canUseTool is responsible ONLY for
+// write-tool permission gating. The original RDR §Q1 design also had
+// canUseTool intercept ask_user_question to deliver answers via the
+// deny-message field; that mechanism was empirically confirmed to fail
+// (probe-tool-result.mjs, 2026-05-04 — the model treats the deny as
+// "user cancelled with reason X", not "user answered X"). The
+// supervisor now excludes ask_user_question from the inner Qwen's
+// tool surface entirely (see session.ts DEFAULT_EXCLUDED_TOOLS); the
+// model is told to ask in plain text and the user replies via
+// streamInput-driven multi-turn input.
+//
 // Critical pins (RDR-001):
-//   §Q1  ask_user_question: transition to awaiting_input, hold the Promise.
-//        The answer is delivered by resolving the Promise as
-//        { behavior: 'deny', message: <answer> }.
-//        Empirically verified in /tmp/qwen-sdk-probe/probe.mjs Spike B
-//        (2026-05-04): the SDK ferries the answer back to the model via
-//        the deny-message field of PermissionResult, NOT via a separate
-//        streamInput call. See RDR §Q1 for full justification and the
-//        fallback path (re-inject via streamInput with parent_tool_use_id)
-//        if this stops working in a future SDK version.
-//   §S4  Write tools: emit a synthetic permission_denied event, return deny.
-//        This ensures denials are visible in the poll stream rather than
-//        silently swallowed by the SDK.
+//   §S4  Write tools when write_authority=false: emit a synthetic
+//        permission_denied event AND return deny. The event is
+//        important — without it, denials are silently swallowed by
+//        the SDK and the supervisor has no visibility into what the
+//        inner Qwen tried to do.
+//   §S4  Write tools when write_authority=true: this callback isn't
+//        invoked — permissionMode='yolo' bypasses canUseTool entirely.
 
 import type { CanUseTool, PermissionResult, ToolInput } from "@qwen-code/sdk";
 import type { QwenSession } from "./session.js";
@@ -41,12 +47,17 @@ export const WRITE_TOOLS = new Set<string>([
 /**
  * Returns a CanUseTool callback for use with permissionMode='default'.
  *
- * Routing logic:
- *  1. ask_user_question  → setAwaitingInput on session; hold Promise;
- *                          resolve with deny-message when qwen_send arrives
- *                          (see §Q1 spike-B note above).
- *  2. write tools        → emit permission_denied event; return deny.
- *  3. everything else    → return allow (read tools, search tools, etc.).
+ * Routing:
+ *  - write tool  → emit permission_denied event + return deny
+ *  - everything else → return allow (read tools, search, web_fetch, etc.)
+ *
+ * `ask_user_question` should never reach this callback because it's in
+ * the inner Qwen's excludeTools list. If it somehow does, the
+ * everything-else branch returns allow — but the SDK can't actually
+ * execute ask_user_question in headless mode, so the inner Qwen would
+ * likely hang. Defense-in-depth: we treat it as a write-equivalent
+ * deny if encountered, since the supervisor's design assumes it never
+ * fires.
  */
 export function makeCanUseTool(session: QwenSession): CanUseTool {
   return async (
@@ -54,30 +65,21 @@ export function makeCanUseTool(session: QwenSession): CanUseTool {
     input: ToolInput,
     _opts: { signal: AbortSignal },
   ): Promise<PermissionResult> => {
-    // ── Branch 1: ask_user_question ───────────────────────────
+    // Defense-in-depth: ask_user_question shouldn't reach us (excluded
+    // at the SDK level); if it does, deny with a clear hint.
     if (toolName === "ask_user_question") {
-      const tool_use_id = (input["tool_use_id"] as string | undefined) ?? "";
-      const questions = input["questions"] as
-        | Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }>
-        | undefined;
-
-      return new Promise<PermissionResult>((resolve) => {
-        session.setAwaitingInput({
-          tool_use_id,
-          tool_name: toolName,
-          ...(questions !== undefined ? { questions } : {}),
-          // When qwen_send calls pending.resolve(answer), we return
-          // { behavior: 'deny', message: answer } — this is the proven
-          // mechanism by which the SDK ferries the answer back to the model
-          // (Spike B, 2026-05-04; see §Q1 for fallback path).
-          resolve: (answer: string) => {
-            resolve({ behavior: "deny", message: answer });
-          },
-        });
-      });
+      session.pushEvent(
+        "permission_denied",
+        `ask_user_question reached canUseTool — should be excluded`,
+        { tool_name: toolName, input },
+      );
+      return {
+        behavior: "deny",
+        message:
+          "ask_user_question is not available; ask in plain text in your response and the user will reply.",
+      };
     }
 
-    // ── Branch 2: write tools (gated by write_authority) ──────
     if (WRITE_TOOLS.has(toolName)) {
       session.pushEvent(
         "permission_denied",
@@ -87,7 +89,7 @@ export function makeCanUseTool(session: QwenSession): CanUseTool {
       return { behavior: "deny", message: "write_authority not granted" };
     }
 
-    // ── Branch 3: read / other tools (auto-allow) ─────────────
+    // Read tools / search tools / web_fetch / etc. — auto-allow.
     return { behavior: "allow", updatedInput: input };
   };
 }

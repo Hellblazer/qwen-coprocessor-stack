@@ -15,7 +15,6 @@
 import { describe, expect, it } from "vitest";
 
 import type {
-  AwaitingInput,
   Backend,
   BackendInfo,
   Event,
@@ -87,7 +86,7 @@ describe("types.ts compile-only assertions", () => {
       "tool_result",
       "permission_denied",
       "model_message_summary",
-      "awaiting_input",
+      "turn_complete",
       "error",
     ];
     expect(types.length).toBe(6);
@@ -104,42 +103,20 @@ describe("types.ts compile-only assertions", () => {
   it("SessionState covers four states", () => {
     const states: SessionState[] = [
       "running",
-      "awaiting_input",
+      "idle",
       "complete",
       "error",
     ];
     expect(states.length).toBe(4);
   });
 
-  it("AwaitingInput supports structured questions", () => {
-    const _a: AwaitingInput = {
-      tool_name: "ask_user_question",
-      tool_use_id: "tu_abc123",
-      questions: [
-        {
-          question: "Which file?",
-          header: "Codebase",
-          options: [
-            { label: "A.ts", description: "first match" },
-            { label: "B.ts", description: "second match" },
-          ],
-        },
-      ],
-    };
-    void _a;
-    expect(true).toBe(true);
-  });
-
-  it("PollResult shape with awaiting_input", () => {
+  it("PollResult shape on idle includes last_message", () => {
     const _p: PollResult = {
-      state: "awaiting_input",
+      state: "idle",
       recent_events: [],
       more_events_available: false,
       latest_event_id: "evt-7",
-      awaiting_input: {
-        tool_name: "ask_user_question",
-        tool_use_id: "tu_x",
-      },
+      last_message: "Which file should I refactor?",
     };
     void _p;
     expect(true).toBe(true);

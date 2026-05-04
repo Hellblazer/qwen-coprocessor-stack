@@ -87,7 +87,7 @@ export type EventType =
   | "tool_result"
   | "permission_denied"
   | "model_message_summary"
-  | "awaiting_input"
+  | "turn_complete"
   | "error";
 
 /**
@@ -106,38 +106,31 @@ export interface Event {
 /**
  * State machine values for a session.
  *
- * `running`         — actively generating or executing tools
- * `awaiting_input`  — paused on canUseTool (write-tool permission OR
- *                     ask_user_question); supervisor needs qwen_send
- *                     to unblock
- * `complete`        — final SDK result received successfully
- * `error`           — backend failure or SDK-level error; check error field
+ * `running`   — SDK is actively generating or executing tools
+ * `idle`      — current turn complete; supervisor is waiting for the
+ *               caller to push the next user message via `qwen_send`,
+ *               or to terminate via `qwen_stop`. The model's last
+ *               assistant text is available in PollResult.last_message.
+ * `complete`  — caller has stopped the session, or the SDK closed its
+ *               iterator without expectation of further input
+ * `error`     — backend failure or SDK-level error; check error field
+ *
+ * Empirical note (RDR-001 §Q1, post-2026-05-04 spike): the original
+ * design used an `awaiting_input` state triggered by `canUseTool` when
+ * Qwen called `ask_user_question`. That model fails because:
+ *  (a) `canUseTool` deny closes the tool's lifecycle so a follow-up
+ *      tool_result is treated as orphaned by the model;
+ *  (b) `canUseTool` deny-with-message is interpreted by the model as
+ *      "user cancelled with reason X", not "user answered X".
+ * The supervisor now excludes `ask_user_question` from the inner
+ * Qwen's tool surface and relies on plain multi-turn streamInput for
+ * answer delivery. The state machine flattens to running/idle/etc.
  */
 export type SessionState =
   | "running"
-  | "awaiting_input"
+  | "idle"
   | "complete"
   | "error";
-
-/**
- * Pending awaiting-input details. When a session is `awaiting_input`,
- * this carries the question(s) Qwen wants answered. For
- * `ask_user_question` calls there are typically multiple questions
- * with options; for write-tool denials there's a single tool-name
- * prompt.
- */
-export interface AwaitingInput {
-  /** The tool name that triggered the pause (e.g. "ask_user_question"). */
-  tool_name: string;
-  /** Captured tool_use_id; used to thread the answer back to the SDK. */
-  tool_use_id: string;
-  /** Structured questions, when applicable. */
-  questions?: Array<{
-    question: string;
-    header?: string;
-    options?: Array<{ label: string; description?: string }>;
-  }>;
-}
 
 /**
  * Snapshot of session state surfaced when a session ends in `error`.
@@ -160,7 +153,9 @@ export interface PollResult {
   more_events_available: boolean;
   /** Cursor to pass back as opts.since on the next poll. */
   latest_event_id: string;
-  awaiting_input?: AwaitingInput;
+  /** Model's last assistant text. Present in `idle` and `complete` states. */
+  last_message?: string;
+  /** Final result text when state is `complete`. */
   result?: string;
   error?: { code: "backend_offline" | "backend_internal" | "timeout"; message: string };
   last_known?: LastKnown;

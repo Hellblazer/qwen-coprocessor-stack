@@ -176,8 +176,8 @@ The supervisor exposes the following tool surface to MCP clients:
 | Tool                                         | Returns                                              | Notes |
 |----------------------------------------------|------------------------------------------------------|-------|
 | `qwen_spawn(task, opts?)`                    | `{ task_id, chosen_backend }`                        | Returns immediately. `opts` may include `backend` (explicit pin), `tier` (`local`/`remote`), `capacity` (`fast`/`heavy`), `write_authority` (default `false`), `allow_subagents` (default `false`), `prior_context` (for crash recovery — see S2 below), and `system` prompt override. |
-| `qwen_poll(task_id, opts?)`                  | `{ state, recent_events, more_events_available, latest_event_id, awaiting_input?, result?, error? }` | `state` ∈ `{running, awaiting_input, complete, error}`. Surfaces `ask_user_question` events as `awaiting_input` for human round-trip via `qwen_send`. `opts.since` is an event-id cursor for incremental polling; `opts.max_events` caps the per-call payload (default 16). |
-| `qwen_send(task_id, message)`                | `{ ack }`                                            | Injects text into the running session. If the session is `awaiting_input` on a tool call (e.g. `ask_user_question`), the message is delivered as a `tool_result`; otherwise as a fresh user turn. |
+| `qwen_poll(task_id, opts?)`                  | `{ state, recent_events, more_events_available, latest_event_id, last_message?, result?, error? }` | `state` ∈ `{running, idle, complete, error}`. After each turn the SDK emits a `result` message and the supervisor transitions `running → idle`; `last_message` carries the final assistant text from the turn (this is where plain-text questions surface). `opts.since` is an event-id cursor for incremental polling; `opts.max_events` caps the per-call payload (default 16). |
+| `qwen_send(task_id, message)`                | `{ ack }`                                            | Pushes the next user turn into the session via the streamInput async generator. Wakes the generator's resolver so the SDK consumes the message and starts the next turn; `idle → running`. |
 | `qwen_stop(task_id)`                         | `{ ack }`                                            | Cancels and tears down the session. |
 | `qwen_backends()`                            | `[{ id, url, model, tier, capacity, healthy }]`      | Discovery — lets the calling agent see what's available and bias selection. |
 
@@ -360,62 +360,79 @@ subprocess path's `stream-json` input direction is *also* officially
 under construction — both paths carry upstream-stability risk; the
 SDK's is at least typed and documented.
 
-### Q1 (RESOLVED, empirically verified) — Awaiting-input signal
+### Q1 (RESOLVED, empirically verified — REWRITTEN 2026-05-04 after spike falsification) — Multi-turn input via excluded `ask_user_question`
 
-**One mechanism — `canUseTool` — gating multiple tool categories.**
-Earlier drafts of this RDR claimed a bifurcation between permission
-gating and `ask_user_question`. Empirical spike B
-(`/tmp/qwen-sdk-probe/probe.mjs`, 2026-05-04) ran a session that
-forced `ask_user_question` and observed:
+**Spike result that falsified earlier drafts.** An earlier draft of
+this RDR claimed `canUseTool` was a single mechanism gating both
+write-authority *and* `ask_user_question` answer delivery, with the
+SDK's `{behavior: "deny", message: <answer>}` path delivering content
+back to the model. A follow-up integration probe
+(`/tmp/qwen-sdk-probe/probe-tool-result.mjs`, 2026-05-04) ran two
+patterns end-to-end against the live llama-server:
 
-- The inner Qwen emitted `ToolUseBlock` with `name: "ask_user_question"`
-  and structured `input.questions[]` (each entry with `question`,
-  `header`, `options[]`).
-- The SDK invoked `canUseTool` for the call (auto-denied since the
-  spike registered no callback).
-- The denial returned to the model as a tool result; the model then
-  treated the deny `message` as the user's answer.
+| Pattern | Result | Explanation |
+|---------|--------|-------------|
+| `canUseTool` returns `{behavior: "deny", message: "BLUE-FOX"}` | ❌ FAIL — model says "user cancelled" | The model interprets the deny as cancellation with reason; not an answer. |
+| `canUseTool` deny, then `streamInput` a `ToolResultBlock` whose `parent_tool_use_id` references the asked-for `tool_use_id` | ❌ FAIL — model treats it as orphaned | The deny closes the tool-call lifecycle from the model's POV; the late `tool_result` is dropped. |
 
-So all tools requiring approval — writes, shell, AND
-`ask_user_question` — flow through a single `canUseTool` callback. The
-supervisor distinguishes by `toolName`:
+Both candidate "answer-delivery" channels through `canUseTool` were
+empirically broken. The original deny-with-message claim was
+incorrect — earlier observations conflated the deny's `message`
+*reaching* the model (which it does, as a cancellation reason) with
+the model *treating it as an answer* (which it does not).
+
+**Resolved mechanism: exclude `ask_user_question`; use streamInput
+multi-turn for all input delivery.** The supervisor configures the
+inner Qwen with:
+
+- `excludeTools: ["ask_user_question", ...]` — the model never sees
+  the tool. It cannot call it.
+- A system-prompt preamble that tells the model: "the
+  `ask_user_question` tool is not available; if you need
+  clarification, ask in plain text in your response and stop. The
+  user will reply on the next turn." (`COPROCESSOR_PREAMBLE` in
+  `src/session.ts`.)
+- An async-generator `prompt` argument to `query()` that yields
+  `SDKUserMessage` items as the supervisor's `qwen_send(message)`
+  pushes them. When the queue is empty the generator awaits a
+  resolver; `qwen_send` flips that resolver to push the next turn.
+
+**State machine, post-rewrite.** The `awaiting_input` state is
+removed. After each turn, the SDK emits a `result` message; the
+supervisor transitions `running → idle` and stays there until either
+`qwen_send` (transition `idle → running`, deliver next user message)
+or `qwen_stop` (transition to `complete`).
+
+**Tool-category routing through `canUseTool`.** With
+`ask_user_question` excluded, `canUseTool` is now a simpler callback
+gating only write-authority:
 
 | Tool category                          | Supervisor action |
 |----------------------------------------|-------------------|
-| `ask_user_question`                    | Extract `input.questions[]`, set session state to `awaiting_input`, hold the Promise pending. On `qwen_send(answer)`, resolve as `{behavior: "deny", message: <answer>}`. The deny-with-message semantic is how the SDK currently delivers content back to the model (counterintuitive but empirically verified). |
-| Write tools, `write_authority: true`   | Resolve immediately as `{behavior: "allow"}` |
-| Write tools, `write_authority: false`  | Resolve as `{behavior: "deny", message: "write_authority not granted"}` and emit synthetic `permission_denied` event into the session log |
-| Other tools needing approval           | Same write-authority gating as above |
+| `ask_user_question`                    | Excluded at the SDK level — never reaches the model. Defense-in-depth: if it somehow does (future SDK change, model bypass), `canUseTool` denies with a hint message and emits a `permission_denied` event. |
+| Write tools, `write_authority: true`   | `permissionMode: 'yolo'` — `canUseTool` is not consulted. |
+| Write tools, `write_authority: false`  | Resolve as `{behavior: "deny", message: "write_authority not granted"}` and emit synthetic `permission_denied` event into the session log. |
+| Read tools (`read_file`, `grep_search`, `glob`, `web_fetch`, …) | `canUseTool` returns `allow` — non-blocking. |
 
-Reads (`read_file`, `grep_search`, `glob`, `web_fetch`, etc.) **do
-not invoke `canUseTool`** — they execute autonomously. Their
-`ToolUseBlock` events appear in the message stream but are
-non-blocking.
+Default `canUseTool` timeout is 60 s; the supervisor overrides to
+600 s (10 min) via `QueryOptions.timeouts.canUseTool` to accommodate
+slow tool-result paths even though the multi-turn answer path no
+longer flows through `canUseTool`.
 
-Default `canUseTool` timeout is 60 s (override via
-`QueryOptions.timeouts.canUseTool`); fail-safe deny on timeout. For
-human-in-the-loop tasks where Claude may take minutes between turns,
-**raise this to ~10 minutes** so the SDK doesn't auto-deny while the
-outer agent is thinking.
+**Sources.** Empirical: `/tmp/qwen-sdk-probe/probe-tool-result.mjs`
+(2026-05-04) — both deny-with-message and post-deny streamInput
+ToolResultBlock failed. SDK type definitions:
+`@qwen-code/sdk@0.1.7/dist/index.d.ts`: `SDKUserMessage`,
+`Query.streamInput`, `QueryOptions.prompt` (`AsyncIterable<SDKUserMessage>`),
+`CanUseTool`. Implementation:
+`mcp-bridges/qwen-agent-server/src/session.ts` (`_inputGenerator`,
+`_inputQueue`, `_inputResolver`, `send()`, `stop()`).
 
-**Sources.** Empirical: `/tmp/qwen-sdk-probe/probe.mjs` spike B output
-(observed `ToolUseBlock` with `name: "ask_user_question"` and the
-denial-as-answer pattern). Type definitions:
-`@qwen-code/sdk@0.1.7/dist/index.d.ts`: `SDKAssistantMessage`,
-`ToolUseBlock`, `CanUseTool`, `QueryOptions.timeouts`.
-
-**Stability hedge — fallback if deny-with-message stops delivering
-answers.** The mechanism is explicitly experimental. An integration
-test in the supervisor's repo MUST pin this behavior and gate every
-`@qwen-code/sdk` version bump (CI fails if the test breaks; the SDK
-upgrade does not land until the test is fixed or a fallback is
-implemented). The fallback path, if needed: after `canUseTool` deny
-fails to deliver content, the supervisor calls `query.streamInput()`
-with a fresh `SDKUserMessage` whose `parent_tool_use_id` references
-the captured `ask_user_question` `tool_use_id` and whose content is
-a `ToolResultBlock` containing the answer. This is the path described
-in the discarded earlier draft of this RDR; it remains valid as a
-fallback even though spike B showed deny-with-message works today.
+**Stability pin.** Pin 3 of `tests/integration/sdk-behavior.test.ts`
+exercises the full multi-turn loop: turn-1 plain-text question, then
+push the sentinel "BLUE-FOX" via streamInput, then assert turn-2
+text references the sentinel. CI fails if the SDK or model changes
+behavior so that streamInput follow-up messages stop being honored.
 
 ### Q2 (RESOLVED) — Tool restriction
 
@@ -522,7 +539,7 @@ recent). The response always includes:
 
 Events are categorical, not raw SDK messages: `{ id, type, ts,
 summary, data? }` where `type` ∈ `{tool_call, tool_result,
-permission_denied, model_message_summary, awaiting_input, error}`.
+permission_denied, model_message_summary, turn_complete, error}`.
 The `data` payload is sized small — full assistant prose is replaced
 with a one-sentence `summary`. This keeps `qwen_poll` returns from
 inflating Claude's context with verbose model output Claude doesn't
@@ -585,8 +602,9 @@ this the same way they handle LRU eviction: re-spawn with
 
 | RDR field                  | Concrete API                                          |
 |----------------------------|-------------------------------------------------------|
-| Awaiting-input (all tools)  | `canUseTool` Promise pending; question content extracted from `input.questions[]`; resumed via deny-with-message containing the caller's answer |
-| `canUseTool` timeout         | `QueryOptions.timeouts.canUseTool: 600_000` (10 min). Default 60 s is too tight for human-in-the-loop where Claude may take minutes between turns. |
+| Multi-turn input            | `query()` is invoked once per session with `prompt: AsyncIterable<SDKUserMessage>`. The supervisor's async generator yields the initial task immediately, then awaits an internal resolver that `qwen_send(message)` flips. Each `result` message ends a turn; supervisor transitions `running → idle` and the generator blocks until the next `qwen_send`. |
+| Plain-text questions        | The system-prompt preamble (`COPROCESSOR_PREAMBLE`) instructs the inner Qwen to ask in plain text. The question text surfaces in the final assistant message of the turn, accessible via `qwen_poll.last_message`. The `ask_user_question` tool itself is in `excludeTools` and never reaches the model. |
+| `canUseTool` timeout         | `QueryOptions.timeouts.canUseTool: 600_000` (10 min). Default 60 s is too tight even though `canUseTool` no longer carries the answer-delivery path — write-tool gates can still pause behind slow tool-result execution. |
 | `opts.allow_subagents`      | `excludeTools: ['agent']` unless flag set             |
 | `opts.write_authority`      | `permissionMode: 'default'` + denying `canUseTool` (visible) → `'yolo'` (full auto) |
 | Tool surface                | Full default minus `agent` (unless overridden)        |

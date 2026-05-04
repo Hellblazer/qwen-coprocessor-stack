@@ -8,7 +8,7 @@
 // The 5 tools:
 //   qwen_spawn    — create a new session
 //   qwen_poll     — read events / state
-//   qwen_send     — deliver an answer to awaiting_input
+//   qwen_send     — push the next user message into a session
 //   qwen_stop     — cancel a session
 //   qwen_backends — list backend health
 
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
 
   mcpServer.tool(
     "qwen_send",
-    "Send a message/answer to a session awaiting_input.",
+    "Push the next user message into a running or idle session. Wakes idle sessions for the next turn.",
     {
       task_id: z.string().describe("Session task ID"),
       message: z.string().describe("The answer or message to deliver"),

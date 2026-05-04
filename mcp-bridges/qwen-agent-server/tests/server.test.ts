@@ -17,7 +17,7 @@ const { MockSession, mockInstances, resetMockInstances } = vi.hoisted(() => {
     readonly task_id: string;
     readonly backend: { id: string };
     last_polled_at: number = Date.now();
-    private _state: "running" | "complete" | "error" | "awaiting_input" = "running";
+    private _state: "running" | "idle" | "complete" | "error" = "running";
     stopCalled = false;
 
     constructor(backend: { id: string }, _prompt: string, _opts: SpawnOpts) {
@@ -31,7 +31,7 @@ const { MockSession, mockInstances, resetMockInstances } = vi.hoisted(() => {
 
     stop = vi.fn().mockImplementation(() => {
       this.stopCalled = true;
-      this._state = "error";
+      this._state = "complete";
     });
 
     poll = vi.fn().mockImplementation((_opts: PollOpts): PollResult => ({

@@ -17,7 +17,7 @@ const { mockSessions, MockSession, getMockCounter, resetMockCounter } = vi.hoist
     readonly task_id: string;
     readonly backend: { id: string };
     last_polled_at: number = Date.now();
-    private _state: "running" | "complete" | "error" | "awaiting_input" = "running";
+    private _state: "running" | "idle" | "complete" | "error" = "running";
     stopCalled = false;
 
     constructor(backend: { id: string; url: string; model: string; tier: string; capacity: string }, _prompt: string, _opts: unknown) {
@@ -31,7 +31,7 @@ const { mockSessions, MockSession, getMockCounter, resetMockCounter } = vi.hoist
 
     stop() {
       this.stopCalled = true;
-      this._state = "error";
+      this._state = "complete";
     }
 
     poll(_opts: unknown) {

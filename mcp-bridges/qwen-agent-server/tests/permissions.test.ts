@@ -5,7 +5,7 @@
 // permissions from the full session lifecycle.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Backend, SpawnOpts } from "../src/types.js";
+import type { Backend } from "../src/types.js";
 
 // ─────────────────────────────────────────────────────────────────
 // SDK Mock (same pattern as session.test.ts; must appear before imports)
@@ -35,45 +35,24 @@ interface EventRecord {
   data?: unknown;
 }
 
-function makeStubSession(overrides: Partial<{
-  state: string;
-  write_authority: boolean;
-}> = {}): {
+function makeStubSession(): {
   session: QwenSession;
   events: EventRecord[];
-  awaitingInputCalls: Array<{ tool_use_id: string; tool_name: string }>;
 } {
   const events: EventRecord[] = [];
-  const awaitingInputCalls: Array<{ tool_use_id: string; tool_name: string }> = [];
 
-  // We construct a partial stub that satisfies the permissions.ts contract.
+  // Permissions.ts only touches `pushEvent` on the session.
   const session = {
-    state: overrides.state ?? "running",
+    state: "running",
     backend: {} as Backend,
     task_id: "q-test",
     pushEvent(type: string, summary: string, data?: unknown) {
       events.push({ type, summary, data });
       return { id: "1", type, ts: Date.now(), summary, data };
     },
-    setAwaitingInput(pending: { tool_use_id: string; tool_name: string; resolve: (a: string) => void; questions?: unknown }) {
-      awaitingInputCalls.push({ tool_use_id: pending.tool_use_id, tool_name: pending.tool_name });
-      // Simulate what QwenSession does: transition state.
-      (session as { state: string }).state = "awaiting_input";
-      // Store resolve so test can call it.
-      (session as { _resolve?: (a: string) => void })._resolve = pending.resolve;
-    },
-    send(answer: string) {
-      const s = session as { _resolve?: (a: string) => void; state: string };
-      if (s._resolve) {
-        const r = s._resolve;
-        s._resolve = undefined;
-        s.state = "running";
-        r(answer);
-      }
-    },
   } as unknown as QwenSession;
 
-  return { session, events, awaitingInputCalls };
+  return { session, events };
 }
 
 const ABORT_SIGNAL = new AbortController().signal;
@@ -90,54 +69,41 @@ describe("makeCanUseTool", () => {
     vi.clearAllMocks();
   });
 
-  // ── ask_user_question routing ──────────────────────────────
+  // ── ask_user_question defense-in-depth ─────────────────────
+  //
+  // Post-2026-05-04 spike: ask_user_question is now in
+  // DEFAULT_EXCLUDED_TOOLS so the SDK shouldn't ever invoke canUseTool
+  // for it. If it somehow does (model bypass, future SDK change), we
+  // deny with a clear hint message rather than allowing it through.
 
-  describe("ask_user_question routing (§Q1)", () => {
-    it("routes ask_user_question to setAwaitingInput, not write-gating", async () => {
-      const { session, events, awaitingInputCalls } = makeStubSession();
+  describe("ask_user_question defense-in-depth (§Q1)", () => {
+    it("denies ask_user_question with a hint about plain-text questions", async () => {
+      const { session, events } = makeStubSession();
       const canUseTool = makeCanUseTool(session);
 
-      // Start the call but don't await — it holds a Promise.
-      const prom = canUseTool(
+      const result = await canUseTool(
         "ask_user_question",
         { tool_use_id: "tuid-99", questions: [{ question: "Which branch?" }] },
         { signal: ABORT_SIGNAL },
       );
 
-      // Give microtasks a tick to run.
-      await Promise.resolve();
-
-      // setAwaitingInput should have been called.
-      expect(awaitingInputCalls).toHaveLength(1);
-      expect(awaitingInputCalls[0]!.tool_name).toBe("ask_user_question");
-      expect(awaitingInputCalls[0]!.tool_use_id).toBe("tuid-99");
-
-      // No permission_denied event for ask_user_question.
-      expect(events.find((e) => e.type === "permission_denied")).toBeUndefined();
-
-      // Send answer → promise resolves with deny-message (§Q1 spike-B).
-      (session as unknown as { send: (a: string) => void }).send("main");
-      const result = await prom;
-
-      expect(result).toEqual({ behavior: "deny", message: "main" });
+      expect(result.behavior).toBe("deny");
+      expect((result as { message: string }).message).toContain("ask in plain text");
     });
 
-    it("ask_user_question Promise resolves with deny+message when answer delivered", async () => {
-      const { session } = makeStubSession();
+    it("emits a permission_denied event when ask_user_question is denied", async () => {
+      const { session, events } = makeStubSession();
       const canUseTool = makeCanUseTool(session);
 
-      const prom = canUseTool(
+      await canUseTool(
         "ask_user_question",
         { tool_use_id: "t-abc" },
         { signal: ABORT_SIGNAL },
       );
 
-      await Promise.resolve();
-      (session as unknown as { send: (a: string) => void }).send("the answer");
-
-      const result = await prom;
-      expect(result.behavior).toBe("deny");
-      expect((result as { behavior: "deny"; message: string }).message).toBe("the answer");
+      const denied = events.find((e) => e.type === "permission_denied");
+      expect(denied).toBeDefined();
+      expect(denied?.summary).toContain("ask_user_question");
     });
   });
 
@@ -166,7 +132,7 @@ describe("makeCanUseTool", () => {
     );
 
     it("write_file with write_authority:false returns deny message", async () => {
-      const { session } = makeStubSession({ write_authority: false });
+      const { session } = makeStubSession();
       const canUseTool = makeCanUseTool(session);
 
       const result = await canUseTool("write_file", {}, { signal: ABORT_SIGNAL });

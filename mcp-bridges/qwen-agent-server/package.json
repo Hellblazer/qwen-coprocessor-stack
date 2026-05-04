@@ -7,7 +7,7 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "test": "vitest run",
+    "test": "vitest run --exclude 'tests/integration/**'",
     "test:integration": "vitest run --dir tests/integration",
     "start": "node dist/server.js"
   },
