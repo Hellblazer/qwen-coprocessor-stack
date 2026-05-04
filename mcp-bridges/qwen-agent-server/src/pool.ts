@@ -13,6 +13,7 @@ import pino from "pino";
 import type { Backend, SpawnOpts } from "./types.js";
 import { QwenSession } from "./session.js";
 import { chooseBackend, loadBackends } from "./backends.js";
+import type { ResolveExtensionsResult } from "./extensions.js";
 
 const log = pino({ name: "qwen-pool" });
 
@@ -161,11 +162,17 @@ export function reapSweep(pool: SessionPool): void {
 /**
  * Spawn a new session, applying LRU eviction if at cap first.
  * Returns the new QwenSession.
+ *
+ * `resolvedExtensions` is the output of `resolveExtensions()` from the
+ * qwen_spawn handler — pre-validated; spawnSession does not re-validate.
+ * Pass undefined for code paths (notably tests) that don't supply a
+ * resolution; the session will fall through to default SDK behaviour.
  */
 export async function spawnSession(
   pool: SessionPool,
   task: string,
   opts: Partial<SpawnOpts>,
+  resolvedExtensions?: ResolveExtensionsResult,
 ): Promise<QwenSession> {
   const spawnOpts: SpawnOpts = {
     write_authority: opts.write_authority ?? false,
@@ -183,10 +190,16 @@ export async function spawnSession(
     throw new Error("no backend available");
   }
 
-  const session = new QwenSession(backend, task, spawnOpts, {
-    qwenRealBin: pool.qwenRealBin,
-    wrapperPath: pool.wrapperPath,
-  });
+  const session = new QwenSession(
+    backend,
+    task,
+    spawnOpts,
+    {
+      qwenRealBin: pool.qwenRealBin,
+      wrapperPath: pool.wrapperPath,
+    },
+    resolvedExtensions,
+  );
   const pooledSession: PooledSession = Object.assign(session, { last_polled_at: Date.now() });
   pool.sessions.set(session.task_id, pooledSession);
 

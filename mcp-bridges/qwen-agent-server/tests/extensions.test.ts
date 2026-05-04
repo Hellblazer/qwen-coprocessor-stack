@@ -8,7 +8,10 @@ import { existsSync, statSync } from "node:fs";
 
 import {
   createInstalledExtensionsCache,
+  ExtensionResolutionError,
+  getSessionDefaultExtensions,
   parseInstalledExtensions,
+  resolveExtensions,
   resolveQwenRealBin,
   resolveWrapperPath,
 } from "../src/extensions.js";
@@ -208,5 +211,185 @@ describe("createInstalledExtensionsCache", () => {
       async () => "No extensions installed.\n",
     );
     expect(cache.size()).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// getSessionDefaultExtensions
+
+describe("getSessionDefaultExtensions", () => {
+  it("returns 'leave-defaults' when QWEN_DEFAULT_EXTENSIONS is unset", () => {
+    expect(getSessionDefaultExtensions({})).toBe("leave-defaults");
+  });
+
+  it("returns 'leave-defaults' when QWEN_DEFAULT_EXTENSIONS is empty", () => {
+    expect(getSessionDefaultExtensions({ QWEN_DEFAULT_EXTENSIONS: "" })).toBe("leave-defaults");
+  });
+
+  it("parses a comma-separated list and lowercases names", () => {
+    expect(
+      getSessionDefaultExtensions({ QWEN_DEFAULT_EXTENSIONS: "Serena, Web-Fetch , CUSTOM" }),
+    ).toEqual(["serena", "web-fetch", "custom"]);
+  });
+
+  it("dedupes repeated names", () => {
+    expect(
+      getSessionDefaultExtensions({ QWEN_DEFAULT_EXTENSIONS: "a,b,a,b,c" }),
+    ).toEqual(["a", "b", "c"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// resolveExtensions — RDR-002 §Resolution-algorithm steps 1–9
+
+describe("resolveExtensions", () => {
+  // Installed cache used by all tests; the resolver lowercases input
+  // before lookup so case-insensitive matching is exercised by the
+  // dedicated case below.
+  const cache = new Set(["a", "b", "c", "serena", "web-fetch"]);
+
+  // ── leave-defaults branch ─────────────────────────────────────
+
+  it("opts undefined + session leave-defaults → leave-defaults sentinel", () => {
+    const result = resolveExtensions(undefined, "leave-defaults", cache);
+    expect(result).toEqual({ envValue: null, resolved: "leave-defaults" });
+  });
+
+  it("opts {} + session leave-defaults → leave-defaults sentinel", () => {
+    const result = resolveExtensions({}, "leave-defaults", cache);
+    expect(result).toEqual({ envValue: null, resolved: "leave-defaults" });
+  });
+
+  // ── only-mode (exact-set semantics) ───────────────────────────
+
+  it("only=['a'] → resolved=['a'], envValue='a' (enable/disable IGNORED)", () => {
+    const result = resolveExtensions(
+      { only: ["a"], enable: ["b"], disable: ["c"] },
+      ["a", "b", "c"],
+      cache,
+    );
+    expect(result).toEqual({ envValue: "a", resolved: ["a"] });
+  });
+
+  it("only=['a','b'] → resolved=['a','b'], envValue='a,b'", () => {
+    const result = resolveExtensions({ only: ["a", "b"] }, "leave-defaults", cache);
+    expect(result).toEqual({ envValue: "a,b", resolved: ["a", "b"] });
+  });
+
+  it("only=[] (explicit empty) → resolved='none', envValue='none'", () => {
+    const result = resolveExtensions({ only: [] }, "leave-defaults", cache);
+    expect(result).toEqual({ envValue: "none", resolved: "none" });
+  });
+
+  // ── session-default base + enable / disable ───────────────────
+
+  it("session-default ['a','b'], no opts → resolved=['a','b'], envValue='a,b'", () => {
+    const result = resolveExtensions(undefined, ["a", "b"], cache);
+    expect(result).toEqual({ envValue: "a,b", resolved: ["a", "b"] });
+  });
+
+  it("session-default ['a','b'], enable=['c'] → ['a','b','c']", () => {
+    const result = resolveExtensions({ enable: ["c"] }, ["a", "b"], cache);
+    expect(result).toEqual({ envValue: "a,b,c", resolved: ["a", "b", "c"] });
+  });
+
+  it("session-default ['a','b'], disable=['a'] → ['b']", () => {
+    const result = resolveExtensions({ disable: ["a"] }, ["a", "b"], cache);
+    expect(result).toEqual({ envValue: "b", resolved: ["b"] });
+  });
+
+  it("session-default ['a','b'], enable=['c'], disable=['a'] → ['b','c']", () => {
+    const result = resolveExtensions(
+      { enable: ["c"], disable: ["a"] },
+      ["a", "b"],
+      cache,
+    );
+    expect(result).toEqual({ envValue: "b,c", resolved: ["b", "c"] });
+  });
+
+  it("disable wins on overlap with enable (enable=['a'], disable=['a'])", () => {
+    const result = resolveExtensions(
+      { enable: ["a"], disable: ["a"] },
+      ["b"],
+      cache,
+    );
+    expect(result).toEqual({ envValue: "b", resolved: ["b"] });
+  });
+
+  it("session-default ['a'], disable=['a'] → 'none' (resolved-to-empty)", () => {
+    const result = resolveExtensions({ disable: ["a"] }, ["a"], cache);
+    expect(result).toEqual({ envValue: "none", resolved: "none" });
+  });
+
+  // ── case-insensitive matching ────────────────────────────────
+
+  it("case-insensitive: only=['SERENA'] matches cache entry 'serena'", () => {
+    const result = resolveExtensions({ only: ["SERENA"] }, "leave-defaults", cache);
+    expect(result).toEqual({ envValue: "serena", resolved: ["serena"] });
+  });
+
+  it("dedupes repeated names within an input list", () => {
+    const result = resolveExtensions(
+      { only: ["a", "a", "b", "a"] },
+      "leave-defaults",
+      cache,
+    );
+    expect(result).toEqual({ envValue: "a,b", resolved: ["a", "b"] });
+  });
+
+  // ── unknown-name validation (step 6) ─────────────────────────
+
+  it("only=['nonexistent'] → ExtensionResolutionError listing 'nonexistent'", () => {
+    expect(() =>
+      resolveExtensions({ only: ["nonexistent"] }, "leave-defaults", cache),
+    ).toThrowError(ExtensionResolutionError);
+    try {
+      resolveExtensions({ only: ["nonexistent"] }, "leave-defaults", cache);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExtensionResolutionError);
+      expect((err as ExtensionResolutionError).unknown).toEqual(["nonexistent"]);
+      expect((err as Error).message).toMatch(/nonexistent/);
+    }
+  });
+
+  it("enable=['nonexistent'] (without only) → ExtensionResolutionError", () => {
+    expect(() =>
+      resolveExtensions({ enable: ["nonexistent"] }, ["a"], cache),
+    ).toThrowError(/nonexistent/);
+  });
+
+  it("multi-unknown listing: only=['x','a','y'] → reports both x and y", () => {
+    try {
+      resolveExtensions({ only: ["x", "a", "y"] }, "leave-defaults", cache);
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExtensionResolutionError);
+      expect((err as ExtensionResolutionError).unknown).toEqual(["x", "y"]);
+    }
+  });
+
+  it("enable with unknown name is NOT validated when only is set (only wins)", () => {
+    // Step 2a: enable / disable IGNORED when only is specified. Therefore
+    // an unknown name in enable doesn't cause an error in this branch.
+    const result = resolveExtensions(
+      { only: ["a"], enable: ["nonexistent-but-ignored"] },
+      "leave-defaults",
+      cache,
+    );
+    expect(result).toEqual({ envValue: "a", resolved: ["a"] });
+  });
+
+  // ── leave-defaults + enable/disable rejection ────────────────
+
+  it("session leave-defaults + enable without only → ExtensionResolutionError", () => {
+    expect(() =>
+      resolveExtensions({ enable: ["c"] }, "leave-defaults", cache),
+    ).toThrowError(ExtensionResolutionError);
+  });
+
+  it("session leave-defaults + disable without only → ExtensionResolutionError", () => {
+    expect(() =>
+      resolveExtensions({ disable: ["a"] }, "leave-defaults", cache),
+    ).toThrowError(ExtensionResolutionError);
   });
 });

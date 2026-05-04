@@ -267,3 +267,178 @@ export async function createInstalledExtensionsCache(
     size: () => names.size,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Resolution algorithm — RDR-002 §Resolution-algorithm steps 1–9
+
+/**
+ * Per-spawn opts.extensions shape, matching the SpawnOpts.extensions
+ * field declared in src/types.ts.
+ */
+interface ExtensionOpts {
+  enable?: string[];
+  disable?: string[];
+  only?: string[];
+}
+
+/**
+ * Resolution result consumed by the QwenSession constructor.
+ *
+ *   - envValue: comma-list / "none" / null. Non-null values are set
+ *     verbatim into QueryOptions.env.QWEN_AGENT_EXTENSIONS; null tells
+ *     the wrapper to drop the --extensions flag entirely (CLI defaults
+ *     apply).
+ *   - resolved: the same shape rendered for observability — a string[]
+ *     of names, the literal "none" sentinel, or "leave-defaults". Goes
+ *     into the extensions_loaded event's payload so qwen_poll surfaces
+ *     "what was the tool surface for this session?" without inference.
+ */
+export interface ResolveExtensionsResult {
+  envValue: string | null;
+  resolved: string[] | "leave-defaults" | "none";
+}
+
+/**
+ * Thrown by `resolveExtensions` when the resolved set contains a name
+ * the supervisor's installed-extensions cache does not know, or when
+ * the caller asked for enable/disable without a session-default base
+ * to mutate. Caught by the qwen_spawn handler and translated into a
+ * `{ error: { code: 'spawn_error', message } }` envelope.
+ */
+export class ExtensionResolutionError extends Error {
+  readonly unknown: string[];
+  constructor(message: string, unknown: string[] = []) {
+    super(message);
+    this.name = "ExtensionResolutionError";
+    this.unknown = unknown;
+  }
+}
+
+/**
+ * Read the supervisor's session-default extension set from the
+ * environment. Empty / unset returns the "leave-defaults" sentinel,
+ * meaning the wrapper drops the --extensions flag and the CLI defaults
+ * (all enabled per extension-enablement.json) apply.
+ */
+export function getSessionDefaultExtensions(
+  env: NodeJS.ProcessEnv,
+): string[] | "leave-defaults" {
+  const raw = env["QWEN_DEFAULT_EXTENSIONS"];
+  if (raw === undefined || raw === "") return "leave-defaults";
+  return dedupeLower(
+    raw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
+  );
+}
+
+function dedupeLower(input: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of input) {
+    const lower = name.toLowerCase();
+    if (lower === "" || seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(lower);
+  }
+  return out;
+}
+
+/**
+ * Resolve the active extension set for a single qwen_spawn call,
+ * implementing steps 1–9 of RDR-002 §Resolution-algorithm.
+ *
+ * Steps (verbatim from the RDR):
+ *   1. Determine session-default — caller passes it in.
+ *   2. Compute base — `only` wins exact-set semantics; otherwise
+ *      session-default is the base.
+ *   3. Apply `enable` additively.
+ *   4. Apply `disable` subtractively (disable wins on overlap).
+ *   5. enable / disable independent.
+ *   6. Validate against installedCache; throw ExtensionResolutionError
+ *      with the unknown names if any.
+ *   7. Union with framework-required (today: empty).
+ *   8. Render — non-empty → comma-list; explicit empty → "none".
+ *   9. "leave-defaults" → null envValue.
+ */
+export function resolveExtensions(
+  opts: ExtensionOpts | undefined,
+  sessionDefault: string[] | "leave-defaults",
+  installedCache: Set<string>,
+): ResolveExtensionsResult {
+  const onlyProvided = opts?.only !== undefined;
+  const enableProvided = opts?.enable !== undefined && opts.enable.length > 0;
+  const disableProvided = opts?.disable !== undefined && opts.disable.length > 0;
+
+  // Step 2: compute base.
+  // 2a: only wins (enable/disable IGNORED).
+  // 2b: else base is session-default.
+  if (onlyProvided) {
+    const base = dedupeLower(opts!.only!);
+    // Step 6: validate.
+    validateInstalled(base, installedCache);
+    // Step 7: union with framework-required (empty today).
+    // Step 8: render.
+    if (base.length === 0) {
+      return { envValue: "none", resolved: "none" };
+    }
+    return { envValue: base.join(","), resolved: base };
+  }
+
+  // No `only`. Need a base to apply enable/disable against.
+  if (sessionDefault === "leave-defaults") {
+    if (enableProvided || disableProvided) {
+      // Cannot compute a deterministic resolved set without enumerating
+      // the implicit CLI-defaults set; reject so the caller gets a
+      // visible error rather than silent surprise.
+      throw new ExtensionResolutionError(
+        "cannot apply opts.extensions.enable/disable when QWEN_DEFAULT_EXTENSIONS is unset; " +
+          "set a session default or use opts.extensions.only to specify the exact set",
+      );
+    }
+    // No mutations and no base — pass through to leave-defaults.
+    return { envValue: null, resolved: "leave-defaults" };
+  }
+
+  // Session-default is a concrete list. Apply enable additively, then
+  // disable subtractively.
+  let base = dedupeLower(sessionDefault);
+  if (enableProvided) {
+    const additions = dedupeLower(opts!.enable!);
+    const seen = new Set(base);
+    for (const name of additions) {
+      if (!seen.has(name)) {
+        base.push(name);
+        seen.add(name);
+      }
+    }
+  }
+  if (disableProvided) {
+    const removals = new Set(dedupeLower(opts!.disable!));
+    base = base.filter((name) => !removals.has(name));
+  }
+
+  // Step 6: validate.
+  validateInstalled(base, installedCache);
+
+  // Step 7: union with framework-required (today: empty).
+
+  // Step 8: render. An empty base reached by subtraction renders as
+  // "none" — same as an explicit only=[]. The only path that produces
+  // null/leave-defaults is the no-op branch handled above.
+  if (base.length === 0) {
+    return { envValue: "none", resolved: "none" };
+  }
+  return { envValue: base.join(","), resolved: base };
+}
+
+function validateInstalled(names: string[], installed: Set<string>): void {
+  const unknown: string[] = [];
+  for (const name of names) {
+    if (!installed.has(name)) unknown.push(name);
+  }
+  if (unknown.length > 0) {
+    throw new ExtensionResolutionError(
+      `unknown extension(s): ${unknown.join(", ")}`,
+      unknown,
+    );
+  }
+}

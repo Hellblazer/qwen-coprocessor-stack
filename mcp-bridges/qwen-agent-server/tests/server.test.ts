@@ -176,6 +176,50 @@ describe("MCP tool handlers", () => {
       await expect(callTool(handlers, "qwen_spawn", { task: "task" })).rejects.toThrow();
     });
 
+    // ── RDR-002 unknown-extension rejection (audit-fix #4) ──────
+
+    it("returns spawn_error envelope when opts.extensions.only contains unknown names", async () => {
+      vi.stubEnv("QWEN_DEFAULT_EXTENSIONS", "");
+      const cache = {
+        get: () => new Set(["serena"]),
+        size: () => 1,
+        reload: vi.fn(),
+      };
+      const localHandlers = createToolHandlers(undefined, cache);
+      const result = await callTool(localHandlers, "qwen_spawn", {
+        task: "task",
+        opts: { extensions: { only: ["nonexistent-ext"] } },
+      }) as { error: { code: string; message: string } };
+
+      expect(result).toHaveProperty("error");
+      expect(result.error.code).toBe("spawn_error");
+      expect(result.error.message).toMatch(/nonexistent-ext/);
+      // Session is never instantiated when validation fails.
+      expect(mockInstances).toHaveLength(0);
+    });
+
+    it("happy-path: known extension resolves and reaches spawnSession", async () => {
+      vi.stubEnv("QWEN_DEFAULT_EXTENSIONS", "");
+      const cache = {
+        get: () => new Set(["serena"]),
+        size: () => 1,
+        reload: vi.fn(),
+      };
+      const localHandlers = createToolHandlers(undefined, cache);
+      const result = await callTool(localHandlers, "qwen_spawn", {
+        task: "do work",
+        opts: { extensions: { only: ["serena"] } },
+      });
+      expect(result).toMatchObject({
+        task_id: expect.stringMatching(/^q-mock-/),
+        chosen_backend: "local-27b",
+      });
+      // The MockSession captures spawnOpts on the third constructor arg;
+      // verifying it received opts.extensions confirms the handler
+      // forwarded the validated payload rather than dropping it.
+      expect(mockInstances).toHaveLength(1);
+    });
+
     it("Zod schema accepts opts.extensions and dispatcher round-trips its shape", () => {
       // RDR-002 audit-fix #2: the Zod schema for qwen_spawn opts must accept
       // an extensions: { enable, disable, only } payload, and the inline

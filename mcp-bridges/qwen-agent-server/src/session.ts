@@ -37,6 +37,7 @@ import type {
   SpawnOpts,
 } from "./types.js";
 import { makeCanUseTool } from "./permissions.js";
+import type { ResolveExtensionsResult } from "./extensions.js";
 
 /**
  * Per-spawn bridge infrastructure (RDR-002).
@@ -152,12 +153,25 @@ export class QwenSession {
     prompt: string,
     opts: SpawnOpts,
     infra?: SpawnInfra,
+    resolvedExtensions?: ResolveExtensionsResult,
   ) {
     this.task_id = `q-${randomBytes(4).toString("hex")}`;
     this.backend = backend;
     this.write_authority = opts.write_authority === true;
     this._abortController = new AbortController();
     this._last_user_message = prompt;
+
+    // RDR-002 step 11: extensions_loaded is the first event in the
+    // session's log when a resolution is provided. Populating before
+    // _run() means qwen_poll surfaces it immediately, even before the
+    // SDK emits its first message.
+    if (resolvedExtensions !== undefined) {
+      this.pushEvent(
+        "extensions_loaded",
+        describeResolvedExtensions(resolvedExtensions.resolved),
+        { resolved: resolvedExtensions.resolved },
+      );
+    }
 
     // Seed the queue with the initial user message.
     this._inputQueue.push(this._mkUserMessage(prompt));
@@ -189,6 +203,13 @@ export class QwenSession {
     };
     if (bridgeActive) {
       env["QWEN_REAL_BIN"] = infra.qwenRealBin;
+    }
+    // RDR-002 step 8: render the resolved extension set into the env
+    // var the wrapper reads. envValue===null means "leave-defaults"
+    // (wrapper drops --extensions). Setting QWEN_AGENT_EXTENSIONS only
+    // when bridgeActive avoids leaking it to non-bridged tests.
+    if (bridgeActive && resolvedExtensions?.envValue !== undefined && resolvedExtensions.envValue !== null) {
+      env["QWEN_AGENT_EXTENSIONS"] = resolvedExtensions.envValue;
     }
 
     const queryOptions: import("@qwen-code/sdk").QueryOptions = {
@@ -485,6 +506,20 @@ export class QwenSession {
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
+
+/**
+ * Render the resolved extension set into a one-line summary suitable
+ * for the extensions_loaded event's `summary` field. The full structured
+ * payload still goes into `data.resolved` for callers that want it.
+ */
+function describeResolvedExtensions(
+  resolved: ResolveExtensionsResult["resolved"],
+): string {
+  if (resolved === "leave-defaults") return "extensions: leave-defaults (CLI defaults apply)";
+  if (resolved === "none") return "extensions: none (explicitly disabled)";
+  if (resolved.length === 0) return "extensions: none";
+  return `extensions: ${resolved.join(", ")}`;
+}
 
 /**
  * Build a system-prompt string from the coprocessor preamble, the

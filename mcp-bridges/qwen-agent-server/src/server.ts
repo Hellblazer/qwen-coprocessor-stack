@@ -37,6 +37,9 @@ import {
 import { setupShutdown } from "./shutdown.js";
 import {
   createInstalledExtensionsCache,
+  ExtensionResolutionError,
+  getSessionDefaultExtensions,
+  resolveExtensions,
   resolveQwenRealBin,
   resolveWrapperPath,
   type InstalledExtensionsCache,
@@ -161,9 +164,38 @@ export function createToolHandlers(
       };
     }
 
+    // RDR-002 step 6 — pre-spawn validation. Only run when an installed-
+    // extensions cache is wired (production main()). Tests that don't
+    // supply a cache skip resolution and fall through to default SDK
+    // behaviour. Mirrors the shutting_down envelope shape (server.ts
+    // lines just above) — caller never sees an McpError throw for
+    // caller-supplied invalid input.
+    let resolvedExtensions: import("./extensions.js").ResolveExtensionsResult | undefined;
+    if (installedExtensionsCache !== undefined) {
+      try {
+        const sessionDefault = getSessionDefaultExtensions(process.env);
+        resolvedExtensions = resolveExtensions(
+          opts.extensions,
+          sessionDefault,
+          installedExtensionsCache.get(),
+        );
+      } catch (err) {
+        if (err instanceof ExtensionResolutionError) {
+          log.warn(
+            { event_type: "spawn_rejected", reason: "extension_resolution", err: err.message },
+            "qwen_spawn rejected: extension resolution",
+          );
+          return {
+            error: { code: "spawn_error", message: err.message },
+          };
+        }
+        throw err;
+      }
+    }
+
     let session;
     try {
-      session = await spawnSession(pool, task, opts);
+      session = await spawnSession(pool, task, opts, resolvedExtensions);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn({ event_type: "spawn_no_backend", err: message }, "spawnSession failed");

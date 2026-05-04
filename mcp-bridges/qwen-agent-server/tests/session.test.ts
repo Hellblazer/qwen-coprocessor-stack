@@ -329,6 +329,87 @@ describe("QwenSession", () => {
       ctrl.end();
       ctrl2.end();
     });
+
+    it("sets QWEN_AGENT_EXTENSIONS in QueryOptions.env when envValue is non-null", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA, {
+        envValue: "serena,web-fetch",
+        resolved: ["serena", "web-fetch"],
+      });
+      expect((capturedOptions?.env as Record<string, string> | undefined)?.["QWEN_AGENT_EXTENSIONS"])
+        .toBe("serena,web-fetch");
+      ctrl.end();
+    });
+
+    it("does NOT set QWEN_AGENT_EXTENSIONS when envValue is null (leave-defaults)", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA, {
+        envValue: null,
+        resolved: "leave-defaults",
+      });
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["QWEN_AGENT_EXTENSIONS"]).toBeUndefined();
+      ctrl.end();
+    });
+
+    it("renders QWEN_AGENT_EXTENSIONS=none when only=[] resolved to 'none'", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA, {
+        envValue: "none",
+        resolved: "none",
+      });
+      expect((capturedOptions?.env as Record<string, string> | undefined)?.["QWEN_AGENT_EXTENSIONS"])
+        .toBe("none");
+      ctrl.end();
+    });
+
+    it("emits 'extensions_loaded' as the first event when resolution is provided", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA, {
+        envValue: "serena",
+        resolved: ["serena"],
+      });
+      const result = session.poll({});
+      expect(result.recent_events.length).toBeGreaterThanOrEqual(1);
+      const firstEvent = result.recent_events[0]!;
+      expect(firstEvent.type).toBe("extensions_loaded");
+      expect((firstEvent.data as { resolved: unknown }).resolved).toEqual(["serena"]);
+      ctrl.end();
+    });
+
+    it("emits 'extensions_loaded' with the leave-defaults sentinel in data", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA, {
+        envValue: null,
+        resolved: "leave-defaults",
+      });
+      const result = session.poll({});
+      const firstEvent = result.recent_events[0]!;
+      expect(firstEvent.type).toBe("extensions_loaded");
+      expect((firstEvent.data as { resolved: unknown }).resolved).toBe("leave-defaults");
+      ctrl.end();
+    });
+
+    it("does NOT emit extensions_loaded when no resolution is provided (back-compat)", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      const result = session.poll({});
+      const types = result.recent_events.map((e) => e.type);
+      expect(types).not.toContain("extensions_loaded");
+      ctrl.end();
+    });
   });
 
   // ── State transitions ────────────────────────────────────────
