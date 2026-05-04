@@ -58,6 +58,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,19 @@ CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
 SHIM_PORT = int(os.environ.get("CLAUDE_SHIM_PORT", "9000"))
 TURN_TIMEOUT_SECS = int(os.environ.get("CLAUDE_TURN_TIMEOUT_SECS", "600"))
 SESSION_IDLE_SECS = int(os.environ.get("CLAUDE_SHIM_IDLE_SECS", "1800"))
+
+# Pass --model explicitly so the inner claude doesn't inherit a saved default
+# from ~/.claude.json — which can easily be a gateway route name (e.g.
+# "claude-escalation") that's meaningless outside the gateway and causes
+# every subprocess to error out with "selected model may not exist".
+# Override with CLAUDE_MODEL=opus to use Opus, or a full model id.
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
+
+# Spawn the inner claude in a neutral working directory so it doesn't
+# auto-discover CLAUDE.md / git status from wherever the gateway happens to
+# live. Created on import; OK to share across sessions (claude only reads).
+CLAUDE_CWD = os.environ.get("CLAUDE_SHIM_CWD") or "/tmp/claude-shim-cwd"
+os.makedirs(CLAUDE_CWD, exist_ok=True)
 
 if not CLAUDE_BIN:
     raise SystemExit(
@@ -109,6 +123,8 @@ class ClaudeSession:
         # `--tools ""` disables built-in tools so claude answers as an oracle
         # rather than spawning a Bash/Edit loop in the gateway's cwd.
         # `--no-session-persistence` keeps state in-memory only.
+        # cwd=CLAUDE_CWD points the inner claude at a neutral directory so it
+        # doesn't auto-pick-up CLAUDE.md / git status from the gateway repo.
         self.proc = await asyncio.create_subprocess_exec(
             CLAUDE_BIN,
             "-p",
@@ -116,12 +132,15 @@ class ClaudeSession:
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--session-id", self.claude_uuid,
+            "--model", CLAUDE_MODEL,
             "--no-session-persistence",
+            "--include-partial-messages",
             "--tools", "",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            cwd=CLAUDE_CWD,
         )
         # Drain stderr in the background to prevent the pipe from filling and
         # blocking the subprocess. Errors land in our log only.
@@ -195,6 +214,59 @@ class ClaudeSession:
         for txt in user_texts:
             last = await self.submit_one(txt)
         return last
+
+    async def stream_turn(self, user_text: str):
+        """Submit one user turn and yield text deltas as they arrive.
+
+        Yields plain str chunks. The caller is responsible for wrapping each
+        chunk in whatever SSE shape the client protocol requires. After the
+        last delta the generator returns; on error it raises.
+        """
+        if not self.alive():
+            raise RuntimeError("session process is not alive")
+        assert self.proc is not None and self.proc.stdin is not None and self.proc.stdout is not None
+
+        msg = {
+            "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": user_text}]},
+        }
+        self.proc.stdin.write((json.dumps(msg) + "\n").encode())
+        await self.proc.stdin.drain()
+
+        deadline = asyncio.get_event_loop().time() + TURN_TIMEOUT_SECS
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError("turn exceeded timeout")
+            try:
+                line = await asyncio.wait_for(self.proc.stdout.readline(), timeout=remaining)
+            except asyncio.TimeoutError:
+                raise
+            if not line:
+                raise RuntimeError("unexpected EOF from claude stdout")
+            try:
+                event = json.loads(line.decode())
+            except json.JSONDecodeError:
+                continue
+
+            t = event.get("type")
+            if t == "stream_event":
+                inner = event.get("event", {})
+                if inner.get("type") == "content_block_delta":
+                    delta = inner.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        if text:
+                            yield text
+            elif t == "result":
+                self.last_activity = time.monotonic()
+                self.turns_seen += 1
+                if event.get("subtype") == "success":
+                    return
+                raise RuntimeError(
+                    f"claude result subtype={event.get('subtype')} "
+                    f"error={event.get('error', '')}"
+                )
 
     async def close(self) -> None:
         if self.proc is None:
@@ -318,6 +390,102 @@ def _session_key(headers: dict[str, str], messages: list[dict]) -> str:
     return f"anon:{uuid.uuid4()}"
 
 
+def _extract_text(content: Any) -> str:
+    """Pull plain text out of an OpenAI/Anthropic-shaped content field."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            c.get("text", "") for c in content
+            if isinstance(c, dict) and c.get("type") in ("text", "input_text", "output_text")
+        )
+    return str(content) if content else ""
+
+
+def _build_seed_for_history(
+    messages: list[dict], system: str | None
+) -> str | None:
+    """Build a single user-message seed that faithfully replays a prior
+    conversation. Returns None if there is no history to replay (i.e. only
+    one user message).
+
+    Used when a session arrives fresh on a multi-turn conversation — either
+    because the user pinned `claude-escalation` mid-conversation, or because
+    a prior session process died and we're recreating it.
+
+    Stream-json input only accepts user messages, so the only way to inject
+    prior assistant turns into the inner Claude's context is to quote them
+    inside a user message. Lossy for prior tool calls, faithful for text.
+    """
+    user_idx = [i for i, m in enumerate(messages) if m.get("role") == "user"]
+    if len(user_idx) < 1:
+        return None
+    last_user_pos = user_idx[-1]
+    history = messages[:last_user_pos]
+    last_user = _extract_text(messages[last_user_pos].get("content", ""))
+    if not history and not system:
+        # Truly fresh first turn — no replay needed.
+        return None
+
+    parts: list[str] = []
+    parts.append(
+        "You are continuing a conversation that started elsewhere. "
+        "What follows is the prior exchange transcribed for context, "
+        "then the new user message you should respond to."
+    )
+    if system:
+        parts.append(f"## System instructions in effect\n{system.strip()}")
+    if history:
+        lines: list[str] = []
+        for m in history:
+            role = m.get("role")
+            text = _extract_text(m.get("content", "")).strip()
+            if not text:
+                continue
+            if role == "system":
+                lines.append(f"### System\n{text}")
+            elif role == "assistant":
+                lines.append(f"### Assistant (prior turn)\n{text}")
+            elif role == "user":
+                lines.append(f"### User (prior turn)\n{text}")
+        if lines:
+            parts.append("## Prior exchange\n\n" + "\n\n".join(lines))
+    parts.append(f"## New user message — answer this\n{last_user.strip()}")
+    return "\n\n".join(parts)
+
+
+async def _resolve_prompt_for_session(
+    session: "ClaudeSession",
+    messages: list[dict],
+    system: str | None,
+    user_texts: list[str],
+) -> str:
+    """Prepare the *single* prompt to submit for this turn.
+
+    Submits any history-replay or seed turns synchronously so the caller can
+    stream just one final response. Must be called while holding session.lock.
+    """
+    if session.turns_seen == 0:
+        seed = _build_seed_for_history(messages, system)
+        if seed is not None:
+            return seed
+        first = user_texts[0]
+        if system:
+            first = f"# System\n{system}\n\n# User\n{first}"
+        return first
+    new_turns = user_texts[session.turns_seen:]
+    if not new_turns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"no new user turns (history has {len(user_texts)}, "
+                   f"session already saw {session.turns_seen})",
+        )
+    # Submit any earlier-but-still-new turns synchronously; only stream the last.
+    for earlier in new_turns[:-1]:
+        await session.submit_one(earlier)
+    return new_turns[-1]
+
+
 async def _handle_turn(
     request: Request,
     messages: list[dict],
@@ -336,21 +504,30 @@ async def _handle_turn(
     session = await manager.get_or_create(session_key)
 
     async with session.lock:
-        # If we have a system prompt and this is the very first turn for this
-        # session, prepend it to the first user message so claude sees it.
-        if session.turns_seen == 0 and system:
-            user_texts = [f"# System\n{system}\n\n# User\n{user_texts[0]}"] + user_texts[1:]
-
-        new_count = len(user_texts) - session.turns_seen
-        if new_count <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"no new user turns (history has {len(user_texts)}, session already saw {session.turns_seen})",
-            )
-        new_turns = user_texts[session.turns_seen:]
-
         try:
-            answer = await session.submit_turns(new_turns)
+            if session.turns_seen == 0:
+                # First turn for this session. Either the conversation is
+                # genuinely starting now, or it began elsewhere and the
+                # client has handed us a multi-turn history (mid-conversation
+                # pin or crash recovery).
+                seed = _build_seed_for_history(messages, system)
+                if seed is not None:
+                    answer = await session.submit_one(seed)
+                else:
+                    # Single user turn, no prior history.
+                    first = user_texts[0]
+                    if system:
+                        first = f"# System\n{system}\n\n# User\n{first}"
+                    answer = await session.submit_one(first)
+            else:
+                # Continuation — submit only any new user turns since last call.
+                new_turns = user_texts[session.turns_seen:]
+                if not new_turns:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"no new user turns (history has {len(user_texts)}, session already saw {session.turns_seen})",
+                    )
+                answer = await session.submit_turns(new_turns)
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail=f"turn exceeded {TURN_TIMEOUT_SECS}s")
         except RuntimeError as e:
@@ -469,10 +646,98 @@ def _anthropic_system_text(req: MessagesRequest) -> str | None:
     )
 
 
+def _sse(event_name: str, data: dict) -> str:
+    """Format an SSE record."""
+    return f"event: {event_name}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _stream_anthropic_messages(
+    req: "MessagesRequest", request: Request
+):
+    """Async generator emitting Anthropic Messages SSE events."""
+    msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    user_texts = _extract_user_texts(req.messages)
+    if not user_texts:
+        yield _sse(
+            "error",
+            {"type": "error", "error": {"type": "invalid_request_error", "message": "no user messages"}},
+        )
+        return
+
+    session_key = _session_key(
+        {k.lower(): v for k, v in request.headers.items()}, req.messages
+    )
+    manager: SessionManager = request.app.state.manager
+    session = await manager.get_or_create(session_key)
+    system = _anthropic_system_text(req)
+
+    async with session.lock:
+        try:
+            prompt = await _resolve_prompt_for_session(session, req.messages, system, user_texts)
+        except HTTPException as e:
+            yield _sse(
+                "error",
+                {"type": "error", "error": {"type": "invalid_request_error", "message": e.detail}},
+            )
+            return
+
+        yield _sse("message_start", {
+            "type": "message_start",
+            "message": {
+                "id": msg_id,
+                "type": "message",
+                "role": "assistant",
+                "model": req.model,
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
+        })
+        yield _sse("content_block_start", {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        })
+
+        output_tokens = 0
+        try:
+            async for chunk in session.stream_turn(prompt):
+                if not chunk:
+                    continue
+                output_tokens += len(chunk.split())
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": chunk},
+                })
+        except (asyncio.TimeoutError, RuntimeError) as e:
+            # Tear the session down — next request will recreate it.
+            await session.close()
+            async with manager.dict_lock:
+                manager.sessions.pop(session_key, None)
+            yield _sse(
+                "error",
+                {"type": "error", "error": {"type": "api_error", "message": str(e)}},
+            )
+            return
+
+        yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
+        yield _sse("message_delta", {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": output_tokens},
+        })
+        yield _sse("message_stop", {"type": "message_stop"})
+
+
 @app.post("/v1/messages")
-async def messages(req: MessagesRequest, request: Request) -> dict:
+async def messages(req: MessagesRequest, request: Request):
     if req.stream:
-        raise HTTPException(status_code=400, detail="streaming not yet implemented")
+        return StreamingResponse(
+            _stream_anthropic_messages(req, request),
+            media_type="text/event-stream",
+        )
     answer, _ = await _handle_turn(request, req.messages, system=_anthropic_system_text(req))
     return {
         "id": f"msg_{uuid.uuid4().hex[:24]}",
@@ -522,10 +787,124 @@ def _responses_to_messages(req: ResponsesRequest) -> list[dict]:
     return out
 
 
+async def _stream_openai_responses(
+    req: "ResponsesRequest", request: Request
+):
+    """Async generator emitting OpenAI Responses API SSE events."""
+    rid = f"resp_{uuid.uuid4().hex[:24]}"
+    item_id = f"msg_{uuid.uuid4().hex[:24]}"
+    msgs = _responses_to_messages(req)
+    user_texts = _extract_user_texts(msgs)
+    if not user_texts:
+        yield _sse("error", {"error": {"message": "no user messages"}})
+        return
+
+    session_key = _session_key(
+        {k.lower(): v for k, v in request.headers.items()}, msgs
+    )
+    manager: SessionManager = request.app.state.manager
+    session = await manager.get_or_create(session_key)
+
+    async with session.lock:
+        try:
+            prompt = await _resolve_prompt_for_session(
+                session, msgs, req.instructions, user_texts
+            )
+        except HTTPException as e:
+            yield _sse("error", {"error": {"message": e.detail}})
+            return
+
+        created = int(time.time())
+
+        # response.created
+        yield _sse("response.created", {
+            "type": "response.created",
+            "response": {
+                "id": rid, "object": "response", "created_at": created,
+                "model": req.model, "status": "in_progress", "output": [],
+            },
+        })
+        # response.output_item.added (the message)
+        yield _sse("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "type": "message", "id": item_id, "status": "in_progress",
+                "role": "assistant", "content": [],
+            },
+        })
+        # response.content_part.added (the output_text part)
+        yield _sse("response.content_part.added", {
+            "type": "response.content_part.added",
+            "item_id": item_id, "output_index": 0, "content_index": 0,
+            "part": {"type": "output_text", "text": "", "annotations": []},
+        })
+
+        accumulated: list[str] = []
+        try:
+            async for chunk in session.stream_turn(prompt):
+                if not chunk:
+                    continue
+                accumulated.append(chunk)
+                yield _sse("response.output_text.delta", {
+                    "type": "response.output_text.delta",
+                    "item_id": item_id, "output_index": 0, "content_index": 0,
+                    "delta": chunk,
+                })
+        except (asyncio.TimeoutError, RuntimeError) as e:
+            await session.close()
+            async with manager.dict_lock:
+                manager.sessions.pop(session_key, None)
+            yield _sse("error", {"error": {"message": str(e)}})
+            return
+
+        full_text = "".join(accumulated)
+        # response.output_text.done
+        yield _sse("response.output_text.done", {
+            "type": "response.output_text.done",
+            "item_id": item_id, "output_index": 0, "content_index": 0,
+            "text": full_text,
+        })
+        yield _sse("response.content_part.done", {
+            "type": "response.content_part.done",
+            "item_id": item_id, "output_index": 0, "content_index": 0,
+            "part": {"type": "output_text", "text": full_text, "annotations": []},
+        })
+        yield _sse("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "message", "id": item_id, "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": full_text, "annotations": []}],
+            },
+        })
+        out_tokens = len(full_text.split())
+        yield _sse("response.completed", {
+            "type": "response.completed",
+            "response": {
+                "id": rid, "object": "response", "created_at": created,
+                "model": req.model, "status": "completed",
+                "output": [{
+                    "type": "message", "id": item_id, "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": full_text, "annotations": []}],
+                }],
+                "usage": {
+                    "input_tokens": 0, "output_tokens": out_tokens,
+                    "total_tokens": out_tokens,
+                },
+            },
+        })
+
+
 @app.post("/v1/responses")
-async def responses(req: ResponsesRequest, request: Request) -> dict:
+async def responses(req: ResponsesRequest, request: Request):
     if req.stream:
-        raise HTTPException(status_code=400, detail="streaming not yet implemented")
+        return StreamingResponse(
+            _stream_openai_responses(req, request),
+            media_type="text/event-stream",
+        )
     msgs = _responses_to_messages(req)
     answer, _ = await _handle_turn(request, msgs, system=req.instructions)
     return {
