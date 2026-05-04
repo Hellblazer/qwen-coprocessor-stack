@@ -35,6 +35,7 @@ import {
   type SessionPool,
 } from "./pool.js";
 import { setupShutdown } from "./shutdown.js";
+import { resolveQwenRealBin, resolveWrapperPath } from "./extensions.js";
 
 const log = pino({ name: "qwen-agent-server" });
 
@@ -248,7 +249,18 @@ export function createToolHandlers(existingPool?: SessionPool): ToolHandlers {
 async function main(): Promise<void> {
   log.info("qwen-agent-server starting");
 
-  const pool = createPool();
+  // RDR-002 §The wrapper-script bridge — fail-fast at startup if the
+  // real qwen binary cannot be located. An operator who hasn't installed
+  // Qwen Code can't recover later by registering more sessions; only
+  // by fixing the install. Resolve once here and stash on the pool.
+  const qwenRealBin = resolveQwenRealBin(process.env);
+  const wrapperPath = resolveWrapperPath();
+  log.info(
+    { qwen_real_bin: qwenRealBin, wrapper_path: wrapperPath },
+    "extension bridge resolved",
+  );
+
+  const pool = createPool({ qwenRealBin, wrapperPath });
   const handlers = createToolHandlers(pool);
 
   const mcpServer = new McpServer({

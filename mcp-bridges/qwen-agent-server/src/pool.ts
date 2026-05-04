@@ -28,17 +28,37 @@ export interface PooledSession {
   stop(): void;
 }
 
+/**
+ * Per-spawn extension-bridge infrastructure resolved once at supervisor
+ * startup (RDR-002 §The wrapper-script bridge):
+ *   - qwenRealBin — absolute path to the real Qwen Code binary the
+ *     wrapper will `exec`.
+ *   - wrapperPath — absolute path to the bash wrapper shipped in this
+ *     package; passed to the SDK as `pathToQwenExecutable`.
+ *
+ * Both default to empty strings to keep test pools (which mock the
+ * QwenSession constructor) and existing call sites green. When either
+ * is empty, QwenSession falls back to default SDK behaviour (no
+ * extension bridging). Production main() always provides both.
+ */
 export interface SessionPool {
   sessions: Map<string, PooledSession>;
   maxSessions: number;
   idleTtlMs: number;
   backends: Backend[];
+  qwenRealBin: string;
+  wrapperPath: string;
+}
+
+export interface CreatePoolOpts {
+  qwenRealBin?: string;
+  wrapperPath?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────
 // Factory
 
-export function createPool(): SessionPool {
+export function createPool(opts: CreatePoolOpts = {}): SessionPool {
   const maxSessions =
     parseInt(process.env["QWEN_SUPERVISOR_MAX_SESSIONS"] ?? "", 10) || 3;
   const idleTtlMs =
@@ -50,6 +70,8 @@ export function createPool(): SessionPool {
     maxSessions,
     idleTtlMs,
     backends,
+    qwenRealBin: opts.qwenRealBin ?? "",
+    wrapperPath: opts.wrapperPath ?? "",
   };
 }
 
@@ -161,7 +183,10 @@ export async function spawnSession(
     throw new Error("no backend available");
   }
 
-  const session = new QwenSession(backend, task, spawnOpts);
+  const session = new QwenSession(backend, task, spawnOpts, {
+    qwenRealBin: pool.qwenRealBin,
+    wrapperPath: pool.wrapperPath,
+  });
   const pooledSession: PooledSession = Object.assign(session, { last_polled_at: Date.now() });
   pool.sessions.set(session.task_id, pooledSession);
 

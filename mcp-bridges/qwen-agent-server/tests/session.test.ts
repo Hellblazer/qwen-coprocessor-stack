@@ -259,6 +259,78 @@ describe("QwenSession", () => {
     });
   });
 
+  // ── RDR-002 wrapper-script bridge ───────────────────────────
+
+  describe("wrapper-script bridge (RDR-002)", () => {
+    const INFRA = {
+      qwenRealBin: "/usr/local/bin/qwen-real",
+      wrapperPath: "/path/to/scripts/qwen-extensions-wrapper.sh",
+    };
+
+    it("sets pathToQwenExecutable to wrapperPath when infra is provided", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA);
+      expect(capturedOptions?.pathToQwenExecutable).toBe(INFRA.wrapperPath);
+      ctrl.end();
+    });
+
+    it("forwards QWEN_REAL_BIN via QueryOptions.env when infra is provided", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA);
+      expect((capturedOptions?.env as Record<string, string> | undefined)?.["QWEN_REAL_BIN"])
+        .toBe(INFRA.qwenRealBin);
+      ctrl.end();
+    });
+
+    it("preserves existing OPENAI_BASE_URL/OPENAI_API_KEY/QWEN_MODEL env entries", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), INFRA);
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["OPENAI_BASE_URL"]).toBe(LOCAL_BACKEND.url);
+      expect(env?.["QWEN_MODEL"]).toBe(LOCAL_BACKEND.model);
+      expect(typeof env?.["OPENAI_API_KEY"]).toBe("string");
+      ctrl.end();
+    });
+
+    it("does NOT set pathToQwenExecutable when infra is omitted", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      expect(capturedOptions?.pathToQwenExecutable).toBeUndefined();
+      ctrl.end();
+    });
+
+    it("does NOT set pathToQwenExecutable when either infra field is empty", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), {
+        qwenRealBin: "",
+        wrapperPath: "/some/path",
+      });
+      expect(capturedOptions?.pathToQwenExecutable).toBeUndefined();
+
+      const ctrl2 = makeControllableIter();
+      _makeIter = () => ctrl2.iter;
+      capturedOptions = null;
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts(), {
+        qwenRealBin: "/some/bin",
+        wrapperPath: "",
+      });
+      expect(capturedOptions?.pathToQwenExecutable).toBeUndefined();
+
+      ctrl.end();
+      ctrl2.end();
+    });
+  });
+
   // ── State transitions ────────────────────────────────────────
 
   describe("state transitions", () => {

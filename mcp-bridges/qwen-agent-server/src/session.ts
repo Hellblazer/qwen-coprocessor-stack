@@ -38,6 +38,26 @@ import type {
 } from "./types.js";
 import { makeCanUseTool } from "./permissions.js";
 
+/**
+ * Per-spawn bridge infrastructure (RDR-002).
+ *
+ *   - qwenRealBin: absolute path to the real Qwen Code binary; forwarded
+ *     to the wrapper subprocess via `QueryOptions.env.QWEN_REAL_BIN`.
+ *   - wrapperPath: absolute path to the bash wrapper script set as
+ *     `QueryOptions.pathToQwenExecutable`. The wrapper reads
+ *     `QWEN_AGENT_EXTENSIONS` from env at exec time and prepends
+ *     `--extensions <list>` to the CLI argv.
+ *
+ * Both fields are required when a caller wants extension bridging; an
+ * empty string for either signals "skip the bridge" and the session
+ * falls back to default SDK behaviour. This keeps existing tests that
+ * construct QwenSession without infrastructure context unaffected.
+ */
+export interface SpawnInfra {
+  qwenRealBin: string;
+  wrapperPath: string;
+}
+
 const log = pino({ name: "qwen-session" });
 
 // ─────────────────────────────────────────────────────────────────
@@ -127,7 +147,12 @@ export class QwenSession {
   private _inputResolver: (() => void) | null = null;
   private _inputClosed = false;
 
-  constructor(backend: Backend, prompt: string, opts: SpawnOpts) {
+  constructor(
+    backend: Backend,
+    prompt: string,
+    opts: SpawnOpts,
+    infra?: SpawnInfra,
+  ) {
     this.task_id = `q-${randomBytes(4).toString("hex")}`;
     this.backend = backend;
     this.write_authority = opts.write_authority === true;
@@ -149,14 +174,27 @@ export class QwenSession {
     // §S4 Permission mode: yolo only when write_authority===true.
     const permissionMode = opts.write_authority === true ? "yolo" : "default";
 
+    // RDR-002 wrapper bridge: when both fields are populated, route the
+    // SDK's qwen invocation through the wrapper script and forward the
+    // resolved real-binary path via env. Empty strings fall through to
+    // default SDK behaviour so existing tests that don't configure
+    // infra (and unit-test constructions in general) stay unaffected.
+    const bridgeActive =
+      infra !== undefined && infra.qwenRealBin !== "" && infra.wrapperPath !== "";
+
+    const env: Record<string, string> = {
+      OPENAI_BASE_URL: backend.url,
+      OPENAI_API_KEY: process.env["OPENAI_API_KEY"] ?? "sk-local",
+      QWEN_MODEL: backend.model,
+    };
+    if (bridgeActive) {
+      env["QWEN_REAL_BIN"] = infra.qwenRealBin;
+    }
+
     const queryOptions: import("@qwen-code/sdk").QueryOptions = {
       cwd: process.cwd(),
       model: backend.model,
-      env: {
-        OPENAI_BASE_URL: backend.url,
-        OPENAI_API_KEY: process.env["OPENAI_API_KEY"] ?? "sk-local",
-        QWEN_MODEL: backend.model,
-      },
+      env,
       authType: "openai",
       permissionMode,
       excludeTools,
@@ -167,6 +205,7 @@ export class QwenSession {
         ? { canUseTool: makeCanUseTool(this) }
         : {}),
       systemPrompt,
+      ...(bridgeActive ? { pathToQwenExecutable: infra.wrapperPath } : {}),
     };
 
     this._sdkIter = query({
