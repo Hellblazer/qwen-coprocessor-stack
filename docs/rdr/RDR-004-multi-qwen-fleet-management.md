@@ -25,6 +25,16 @@ expresses, brings up, observes, and tears down a fleet of
 llama-server instances across machines) to a follow-up. This RDR is
 that follow-up.
 
+**Design revision (2026-05-04):** an earlier draft of this RDR
+introduced a stateless `qwen-fleet-agent` HTTP→tmux adapter on each
+host. On review, that component carried no weight: the supervisor
+never needs to talk to a remote agent (it reads `backends.json` on
+the local workstation and probes `backend.url` directly), and
+`qwenctl` can SSH-exec tmux commands without one. The agent has been
+removed from the design. Option D below is the chosen approach;
+Option E (with-agent) is retained as a "considered, not now"
+alternative for future restricted-network scenarios.
+
 ## Context
 
 RDR-001 imagined a Mac M4 Max running one llama-server (Metal,
@@ -183,68 +193,80 @@ llama-server processes itself (spawn, supervise, restart, status).
 Rejected as the primary mechanism; partially adopted for status RPC
 in Option E.
 
-### Option D — Tmux-as-lifecycle, SSH/mosh for transport, no agent
+### Option D — Tmux-as-lifecycle, SSH/mosh for transport, no agent (CHOSEN)
 
-`qwenctl` SSHes to the remote and runs `tmux` commands directly.
-Each instance is a tmux window in a per-host session named
-`qwen-fleet`. Existence of the window means "running"; killing it
-stops the server. `qwenctl ps` parses `tmux list-windows` output
-remotely. `qwenctl attach <host>` resolves to `mosh <host> -- tmux
-attach -t qwen-fleet`.
+`qwenctl` SSH-execs `tmux` commands directly on the remote. Each
+instance is a tmux window in a per-host session named `qwen-fleet`.
+Existence of the window means "running"; killing it stops the
+server. `qwenctl ps` runs `tmux list-windows -F '<format-string>'`
+over SSH and parses the structured output. `qwenctl attach <host>`
+resolves to `mosh <host> -- tmux attach -t qwen-fleet`.
+
+The supervisor does NOT call into the remote at all. It reads
+`backends.json` from the local workstation (written by `qwenctl
+apply`) and probes `backend.url` directly — the same HTTP health
+probe (`probeHealth` in `backends.ts`) it already does. Hot-reload
+is supervisor-local: SIGHUP, `fs.watch`, or admin-only
+`qwen_reload_backends` MCP tool.
 
 - ✅ Cross-platform — tmux runs everywhere we care about
 - ✅ Lifecycle and observation surface are one and the same — no
   duplicate "agent thinks it's running" / "tmux says it's not"
-- ✅ Operator gets the dashboard for free — they're attaching to
-  the *real* runtime state, not a copy
-- ✅ Crash-safe: agent failure modes don't exist because there's
-  no agent. SSH transport flakiness at most fails a command, never
-  damages state
-- ⚠️ Status queries to the supervisor (the hot-reload path) need
-  *something* HTTP-shaped — supervisor can't shell out to SSH on
-  every reload
-- ⚠️ Tmux output parsing is shell-text fragile
+- ✅ Operator's `qwenctl attach` is the *real* runtime state, not a
+  status mirror
+- ✅ No daemon to compose with the supervisor; no "agent crashed"
+  failure mode
+- ✅ One Go binary (`qwenctl`) instead of two; one cross-compile
+  matrix
+- ⚠️ Tmux format-string parsing is shell-text. Mitigated by using
+  `tmux -F '#{...}'` exclusively (a documented stable API), with
+  unit tests pinning the expected format
+- ⚠️ SSH ControlMaster + mosh required for low-latency operator
+  flows; standard tooling, well documented
 
-Mostly correct, but the supervisor-side hot-reload story needs an
-HTTP-shaped surface. This is what Option E adds.
+**Decision: Option D.** Tmux is the lifecycle and observation
+surface. SSH (with ControlMaster persistence) is the transport.
+mosh is the operator-attach transport for resilient long sessions.
+No agent.
 
-### Option E — Tmux-as-lifecycle + tiny stateless RPC agent for status (HYBRID)
+### Option E — Option D plus stateless HTTP→tmux agent (CONSIDERED, NOT NOW)
 
-Option D's tmux-as-lifecycle, plus a small stateless `qwen-fleet-agent`
-on each host that exposes an HTTP RPC interface:
+Same as Option D plus a small stateless `qwen-fleet-agent` on each
+host exposing `GET /instances`, `POST /instances/<id>/start|stop`.
+The agent shells out to tmux internally; tmux remains the source of
+truth.
 
-- `GET /instances` returns the current state (parsed from `tmux
-  list-windows` + procfs).
-- `POST /instances/<id>/start` runs the tmux command to add a window.
-- `POST /instances/<id>/stop` kills the window.
-- `GET /healthz` for the agent itself.
+This was the previous draft's choice. It doesn't carry its weight:
 
-The agent is *stateless*: restarting it does not touch tmux or
-llama-server. Tmux is the source of truth; the agent is a thin
-HTTP-shaped reader/writer of it.
+- The supervisor never calls the agent — it reads a local file and
+  probes URLs directly.
+- `qwenctl` can SSH-exec tmux commands at well under 100 ms each
+  (with ControlMaster), which is fine for an interactive operator
+  tool. No HTTP daemon needed.
+- The agent adds a cross-compile target, a deploy step, a
+  supervision concern (what restarts the agent?), and a class of
+  failure modes ("agent stale", "agent unreachable") that don't
+  exist in Option D.
 
-- ✅ Tmux-as-lifecycle still owns liveness and observation
-- ✅ Supervisor's hot-reload calls `GET /instances` over HTTP — no
-  SSH dependence in the runtime path
-- ✅ Agent is small (~300 LoC, single binary), trivially restartable,
-  no recovery logic
-- ✅ Cross-platform via Go cross-compile
-- ⚠️ One more thing to bootstrap; mitigated by `qwenctl bootstrap`
-
-**Decision: Option E.** Tmux is the lifecycle and observation; a
-stateless agent provides the HTTP surface for the supervisor's
-hot-reload. `qwenctl attach` continues to use mosh+tmux directly,
-not the agent — because the agent is for machine-to-machine RPC,
-not human attachment.
+Where Option E would help: networks where SSH-exec is blocked but
+HTTP through a known port is allowed (rare). If that scenario
+materializes, this RDR's successor adds the agent as an alternate
+transport without changing the operator-facing surface (`fleet.toml`,
+`qwenctl` commands). The decision today is to not pre-build for it.
 
 ## Decision
 
-A four-component system, layered:
+A three-component system:
 
-1. **`fleet.toml`** — declarative state.
-2. **`qwenctl`** — operator CLI; reconciler.
-3. **`qwen-fleet-agent`** — stateless HTTP→tmux adapter on each host.
-4. **Supervisor changes** — file-watch + SIGHUP for backend hot-reload.
+1. **`fleet.toml`** — declarative state on the operator's
+   workstation.
+2. **`qwenctl`** — operator CLI; reconciler. SSH-execs tmux commands
+   on remote hosts; runs tmux directly for the local host.
+3. **Supervisor changes** — `fs.watch`/SIGHUP/`qwen_reload_backends`
+   for backend hot-reload, plus drain semantics on backend removal.
+
+Remote hosts run only their existing tooling: `tmux`, `mosh-server`,
+`llama-server`. No supervisor-authored daemon on the remote.
 
 ### `fleet.toml` — declarative fleet
 
@@ -340,7 +362,7 @@ Single Go binary. Commands:
 | `qwenctl status`                     | Supervisor view: configured backends, health, in-flight sessions |
 | `qwenctl apply [FILE]`               | Reconcile: apply fleet.toml. Default `~/.config/qwen-fleet/fleet.toml` |
 | `qwenctl diff [FILE]`                | Show what `apply` would change (no execute) |
-| `qwenctl bootstrap HOST`             | Deploy `qwen-fleet-agent` + check tmux/mosh availability |
+| `qwenctl bootstrap HOST`             | Check tmux + mosh-server + llama.cpp availability on HOST; create `~/.qwen-fleet/{logs,models}`; print suggested fleet.toml block |
 | `qwenctl pull-model HOST FILE`       | rsync a model file from local to the host's `models_dir` |
 | `qwenctl reload-supervisor`          | Tell `qwen-agent-server` to re-read backends |
 | `qwenctl shell HOST`                 | mosh into HOST (no tmux) — quick escape hatch |
@@ -350,53 +372,62 @@ Reconciliation algorithm (`qwenctl apply`):
 
 ```
 1. Parse and validate fleet.toml.
-2. Resolve cross-host dependencies: bootstrap missing agents.
-3. For each host in fleet.toml:
-   a. Connect to qwen-fleet-agent at the host's well-known socket.
-   b. Diff (declared instances on this host) vs (running instances per agent).
-   c. For new instances: POST /instances/<id>/start; wait for llama-server /health.
-   d. For removed instances: POST /instances/<id>/stop after a drain check
-      (see "Drain semantics" below).
-   e. For changed instances (port, model, context, etc.): restart in place.
-4. Generate $XDG_CONFIG_HOME/qwen-agent-server/backends.json (the
-   supervisor's read-only backend list).
-5. Send the supervisor a reload (SIGHUP or MCP qwen_reload_backends).
-6. Print qwenctl ps for confirmation.
+2. For each host in fleet.toml:
+   a. Open (or reuse) an SSH ControlMaster connection.
+   b. Run `tmux list-windows -F '<format>'` in the qwen-fleet session;
+      ensure the session exists, create empty if not.
+   c. Diff (declared instances on this host) vs (running windows).
+   d. For new instances: tmux new-window with the rendered llama-server
+      command; wait for the llama-server's HTTP /health.
+   e. For removed instances: drain check (see "Drain semantics") then
+      tmux kill-window.
+   f. For changed instances (port, model, context, etc.): kill-window
+      then new-window in place.
+3. Generate $XDG_CONFIG_HOME/qwen-agent-server/backends.json on the
+   operator's workstation (the supervisor's read-only backend list).
+4. Send the supervisor a reload (SIGHUP or MCP qwen_reload_backends);
+   alternatively, the supervisor's optional fs.watch picks it up.
+5. Print qwenctl ps for confirmation.
 ```
 
 The reconcile is deterministic and idempotent — re-running `apply`
-without changing `fleet.toml` is a no-op.
+without changing `fleet.toml` is a no-op (tmux windows that already
+exist with the right command are left alone).
 
-### `qwen-fleet-agent` — the small one
+### Remote-host operations — SSH-only, no daemon
 
-Single Go binary. Built statically, cross-compiled for `darwin-arm64`,
-`linux-x86_64`, `linux-arm64`. ~300 LoC.
+`qwenctl` interacts with each remote exclusively through SSH. There
+is no agent process on the remote.
 
-Listens on `~/.qwen-fleet/agent.sock` (Unix socket; reachable
-remotely via SSH local-forward — `qwenctl` opens the forward
-transparently).
+Operations:
 
-Endpoints:
+| Operation                  | Implementation                                                     |
+|----------------------------|--------------------------------------------------------------------|
+| List instances on host     | `ssh HOST 'tmux list-windows -t qwen-fleet -F "#{window_name} #{pane_pid} #{window_activity}"'` |
+| Start instance             | `ssh HOST 'tmux new-window -t qwen-fleet -n <id> -- <llama-server cmd>'` |
+| Stop instance              | `ssh HOST 'tmux send-keys -t qwen-fleet:<id> C-c; sleep 5; tmux kill-window -t qwen-fleet:<id>'` (graceful then hard) |
+| Probe instance health      | `curl -sf http://HOST:PORT/health` from the operator workstation (the supervisor uses the same path) |
+| Tail instance log          | `ssh HOST 'tail -f ~/.qwen-fleet/logs/<id>.log'` |
+| Capture pane content       | `ssh HOST 'tmux capture-pane -t qwen-fleet:<id> -p -J -S -2000'` (used to surface pre-flush output if the on-disk log is buffered) |
+| Per-instance config render | qwenctl renders the llama-server command-line on the workstation; SSH-exec runs it inside tmux |
 
-```
-GET  /healthz                       → 200 OK with version
-GET  /instances                     → [{id, port, state, started_at, model, pid}]
-GET  /instances/<id>                → single record
-POST /instances/<id>/start          → idempotent; body has the instance config
-POST /instances/<id>/stop           → idempotent
-GET  /instances/<id>/log?since=...  → log content from the on-disk log file
-GET  /tmux/session                  → name of the tmux session this agent manages
-```
+SSH ControlMaster (`-o ControlMaster=auto -o ControlPersist=10m`) is
+strongly recommended in `host.<name>.ssh_options` to amortize SSH
+connection setup across many small commands. With ControlMaster, a
+five-host `qwenctl ps` typically completes in under 200 ms.
 
-Internally the agent shells out to `tmux` for state changes — `tmux
-new-session -d -s qwen-fleet`, `tmux new-window -n <id>`,
-`tmux send-keys`, `tmux kill-window`. State queries parse `tmux
-list-windows -F`. No state held in-process beyond a config snapshot
-for the current request.
+Tmux output is parsed using `-F '#{...}'` format strings exclusively
+— a documented stable tmux API. Unit tests in `qwenctl/internal/tmux`
+pin the expected format strings against snapshots from supported tmux
+versions; format drift in a future tmux is caught immediately rather
+than silently producing wrong fleet state.
 
-Restarting the agent: kills the agent, restart from scratch. Tmux
-session and llama-server processes untouched. The next `qwenctl ps`
-re-reads tmux state.
+### Local-host operations — same shape, no SSH
+
+For `host.<name>.transport = "local"` (the operator's own machine),
+`qwenctl` runs the same tmux commands directly without SSH. The code
+path is one branch around `ssh HOST` becoming `bash -c`. The local
+host appears in `qwenctl ps` and `qwenctl attach` like any other.
 
 ### Tmux session layout (per host, session name `qwen-fleet`)
 
@@ -471,13 +502,10 @@ works.
 
 ```
 $ qwenctl bootstrap strix
-[1/5] connecting to hal@strix.local …  ok (uname=Linux x86_64)
-[2/5] checking tmux …  ok (3.4)
-[3/5] checking mosh-server …  ok (1.4.0)
-[4/5] uploading qwen-fleet-agent (linux-x86_64) → ~/.qwen-fleet/bin/  ok
-[5/5] starting agent in tmux session qwen-fleet, window agent …  ok
-       agent listening on ~/.qwen-fleet/agent.sock
-       version 0.1.0, healthz: 200 OK
+[1/4] connecting to hal@strix.local …  ok (uname=Linux x86_64)
+[2/4] checking tmux …  ok (3.4)
+[3/4] checking mosh-server …  ok (1.4.0)
+[4/4] creating ~/.qwen-fleet/{logs,models} …  ok
 
 llama.cpp build: NOT FOUND at /usr/local/bin/llama-server
         Run scripts/setup-strix-halo.sh to build llama.cpp with Vulkan support,
@@ -488,6 +516,7 @@ Suggested fleet.toml additions (paste into your fleet.toml):
 [host.strix]
 transport   = "ssh"
 ssh_target  = "hal@strix.local"
+ssh_options = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
 arch        = "linux-x86_64"
 inference   = "vulkan"
 models_dir  = "/srv/qwen/models"
@@ -497,9 +526,9 @@ llama_bin   = "/usr/local/bin/llama-server"
 transport   = "mosh"
 ```
 
-Bootstrap is idempotent: re-running on an already-bootstrapped host
-upgrades the agent binary in place (a brief restart) and re-prints
-the suggested config block.
+Bootstrap is idempotent: it only checks preconditions and creates
+directories. Nothing on the remote needs upgrading between
+`qwenctl` releases — there's no agent binary to keep in sync.
 
 ### Drain semantics
 
@@ -529,30 +558,26 @@ this, so the abrupt failure is intended.
 |----------------------------------------------------|-----------------------------------------------------------------------------|
 | Operator's laptop suspends mid-`attach`            | Mosh roams; tmux session intact. Reattach: state preserved.                 |
 | SSH transport flakes during `qwenctl up`           | Operation idempotent; re-run. tmux windows are named — already-started instances skipped. |
-| `qwen-fleet-agent` crashes                          | Tmux + llama-servers unaffected. `qwenctl ps` falls back to last-cached state until agent restart. |
-| llama-server crashes inside its tmux window        | Pane shows the crash. `qwenctl ps` reports `crashed`. `qwenctl restart <id>` recreates. |
-| Network partition between operator and remote      | Supervisor's health probe marks remote unhealthy → routes around. Sessions on that backend follow §S2 (error + last_known). |
+| ControlMaster socket goes stale                    | Next `qwenctl` command silently re-establishes the connection. No state damaged. |
+| llama-server crashes inside its tmux window        | Pane shows the crash. `qwenctl ps` reports the window has no live pane process → `crashed`. `qwenctl restart <id>` recreates. |
+| Network partition between operator and remote      | Supervisor's health probe marks remote unhealthy → routes around. Sessions on that backend follow §S2 (error + last_known). `qwenctl ps` cannot SSH to the host; reports `unreachable` for that host's instances. |
 | Operator forgets `qwenctl down` before laptop reboot | Remote llama-servers continue (tmux survives operator reboot). `qwenctl ps` reconciles on next run. |
 | Remote host reboots                                | Tmux session lost; llama-servers gone. Next `qwenctl apply` re-creates. Supervisor health probe drains affected backends per §S2. |
-| Conflict: a model file expected by `fleet.toml` doesn't exist on the host | Bootstrap-time check fails with a clear error and a `qwenctl pull-model` suggestion. |
-| Two `qwenctl apply` invocations race               | Each operates against the agent's HTTP surface, which serializes. Last write wins; both see the post-state via `ps`. |
+| Conflict: a model file expected by `fleet.toml` doesn't exist on the host | `qwenctl apply` runs a per-instance pre-flight (`ssh HOST 'test -f <path>'`) and fails clearly with a `qwenctl pull-model` suggestion. |
+| Two `qwenctl apply` invocations race               | Each holds an advisory lock on the operator-side `fleet.toml` for the duration of apply. Concurrent invocations on the same operator workstation serialize; ones from different workstations are out of scope (Q7). |
 
 ### Implementation map
 
 ```
-qwenctl/                         (new repo; or scripts/qwenctl/ subdir to start)
+qwenctl/                         (new; scripts/qwenctl/ to start, own repo later)
   cmd/qwenctl/                   Go main; CLI surface
-  internal/agent/                HTTP client for qwen-fleet-agent
   internal/fleet/                fleet.toml parser, validator, differ
-  internal/ssh/                  SSH/mosh transport with control-master
+  internal/ssh/                  SSH/mosh transport with ControlMaster
+  internal/tmux/                 tmux command helpers + format-string parsers,
+                                 with snapshot tests against supported tmux versions
+  internal/instance/             llama-server config rendering
   internal/supervisor/           reload-supervisor (SIGHUP + MCP)
-  internal/tmux/                 tmux command helpers (used directly by qwenctl
-                                 for `attach` / `tmux` escape hatches)
-
-qwen-fleet-agent/                (new; same repo or sibling)
-  cmd/qwen-fleet-agent/          Go main; HTTP server on unix socket
-  internal/tmux/                 tmux read/write
-  internal/instance/             llama-server config rendering + status
+  internal/host/                 ssh-exec vs local-exec branch
 
 mcp-bridges/qwen-agent-server/
   src/fleet-config.ts            (new) parse backends.json
@@ -561,9 +586,11 @@ mcp-bridges/qwen-agent-server/
   src/pool.ts                    (modified) drain semantics
 ```
 
-The agent and qwenctl are both Go: cross-compile is one command per
-target arch, no runtime needed on the remote, single-file deploy
-matches D8.
+`qwenctl` is the only new binary. Go for cross-compile ergonomics —
+one toolchain produces every target the operator's workstation might
+need (typically just `darwin-arm64` plus whatever they ssh-into).
+Remote hosts run nothing supervisor-authored; they need only
+`tmux`, `mosh-server`, and `llama-server`.
 
 ## Consequences
 
@@ -578,12 +605,15 @@ matches D8.
 - Hot-reload preserves in-flight sessions across config changes —
   fixes the "restart kills all the work" friction that motivates
   this RDR.
-- The agent is small enough (~300 LoC) that "what does it do?" has
-  a one-paragraph answer; no recovery state, no protocol drift.
+- No supervisor-authored daemon on remote hosts. Remote
+  prerequisites are just `tmux`, `mosh-server`, and `llama-server`
+  — all standard, none authored here.
 - Operators get a single-pane-of-glass dashboard per host without
   any custom UI code — tmux is the UI.
 - The two control planes (runtime: supervisor; operator: qwenctl)
   remain cleanly separate. Failure in one doesn't propagate.
+- One Go binary (`qwenctl`) instead of two. Single cross-compile
+  matrix, single deploy, single upgrade story.
 
 ### Negative
 
@@ -592,9 +622,11 @@ matches D8.
   guidance documented.
 - Mosh is recommended, not required. Hosts without mosh lose
   laptop-roam — fallback to plain SSH attach. Operator picks.
-- One more daemon to compose with the supervisor
-  (`qwen-fleet-agent`). Stateless and single-binary, but still a
-  thing to deploy.
+- SSH-exec is the only remote mechanism. Networks where SSH-exec
+  is blocked but a known HTTP port would be reachable are not
+  supported today. If that scenario lands, a follow-up RDR adds
+  Option E's agent as an alternate transport (the operator-facing
+  surface in this RDR is unchanged by such a successor).
 - Out-of-band changes (someone hand-launches a llama-server) are
   invisible to `qwenctl ps`. This is correct (declarative is the
   point) but operators must internalize "if it's not in fleet.toml,
@@ -617,60 +649,55 @@ matches D8.
 
 ## Research findings (open questions)
 
-### Q1 — Agent binary language
+### Q1 — `qwenctl` binary language
 
-**Status:** Tentative — Go.
+**Status:** Resolved — Go.
 
 Go for cross-compile ergonomics (one toolchain produces every
-target), single-binary deploy, fast startup, and a strong tmux/SSH
+target), single-binary deploy, fast startup, and a strong SSH/tmux
 ecosystem (`os/exec`, `golang.org/x/crypto/ssh`). Rust would yield
 a smaller binary; the size delta isn't worth a second toolchain.
 
-Consider: are there Node.js packages that ship as standalone binaries
-(`pkg`, `nexe`) that would let us reuse the supervisor's TypeScript?
-A spike could verify but the size-on-disk cost (40-80 MB embedded
-Node) makes it unattractive vs. a 10 MB Go binary. Default Go;
-revisit only if a bridging argument appears.
+Reusing the supervisor's TypeScript via `pkg`/`nexe` was considered
+but rejected — embedded-Node binaries are 40–80 MB vs. ~10 MB Go,
+and bundling adds startup latency for an interactive operator tool.
 
 ### Q2 — tmux output parsing fragility
 
-**Status:** Open. Plan: use `tmux list-windows -F '#{...}' format
-strings` exclusively, never parse human-readable output.
+**Status:** Resolved — use `tmux list-windows -F '#{...}'` format
+strings exclusively, never parse human-readable output.
 
-`tmux` provides a stable format-string vocabulary. The agent's
-parsers should never crack human-readable lines. A few unit tests
-fix the parser around a snapshot of `tmux 3.x` format output to
-detect future drift.
+`tmux` provides a stable format-string vocabulary. `qwenctl`'s
+parser only consumes structured output. Unit tests in
+`internal/tmux` snapshot the expected format strings against
+supported tmux versions; format drift in a future tmux is a hard
+test failure rather than silent fleet-state corruption.
 
-### Q3 — Auth between qwenctl and the agent's unix socket
+### Q3 — Auth between qwenctl and remote hosts
 
-**Status:** Resolved as: SSH local-forward + unix socket perms.
+**Status:** Resolved — SSH access. No additional auth.
 
-`qwenctl` opens an SSH connection to the host (using SSH config
-auth) and forwards the agent's unix socket to a local socket. HTTP
-calls go over the forward. Authentication = "you have SSH access
-to the host." No agent-side tokens, no certs. Matches D8.
+Authentication is whatever `~/.ssh/config` and `host.<name>.ssh_options`
+configure. No tokens, no certs, no daemons-with-auth. The operator
+already has SSH access to hosts they want to manage; `qwenctl` uses
+that. Matches D8 (minimal authority on remotes).
 
-For local-host (`mac-local`), the socket is at `~/.qwen-fleet/agent.sock`
-directly; permissions `0600` so only the operator user can talk to
-it.
+For local-host (`mac-local`), `qwenctl` runs commands directly
+without SSH.
 
-### Q4 — Should the agent stream live tmux pane content?
+### Q4 — Live log streaming
 
-**Status:** Deferred.
+**Status:** Resolved — hybrid: capture-pane snapshot + tail-on-disk.
 
-`qwenctl logs <inst> -f` could either tail the on-disk log file
-(simple, doesn't see live stdout if logging is buffered) or stream
-the tmux pane's history (`tmux capture-pane -p -J`) at intervals
-(complete, but heavier).
+`qwenctl logs <inst> -f` first captures the tmux pane's recent
+history (`tmux capture-pane -p -J -S -2000`) so the operator sees
+anything not yet flushed to disk, then tails the on-disk log
+(`tail -f ~/.qwen-fleet/logs/<inst>.log`) for live output. Both
+pieces are SSH-exec'd; the resulting stream is a clean union.
 
-Lean: hybrid — first read pane history once (catches anything not
-yet flushed to disk), then `tail -f` the on-disk log. Implementation
-detail; document as expected behavior.
+### Q5 — `tmux-resurrect` for survival across host reboot
 
-### Q5 — What about tmux-resurrect for survival across host reboot?
-
-**Status:** Resolved as: NOT default-enabled.
+**Status:** Resolved — NOT default-enabled.
 
 Auto-resurrecting llama-servers on host reboot surprises operators
 ("why is the GPU at 100% — I didn't start anything") and may silently
@@ -680,51 +707,60 @@ load stale model paths after a model directory rename. Explicit
 Operators who *want* persistence can install tmux-resurrect manually;
 they're informed but on their own.
 
-### Q6 — Concurrent operator activity (two humans, same fleet)
+### Q6 — Concurrent `qwenctl apply` on the same operator workstation
 
-**Status:** Open.
+**Status:** Resolved — file lock on the operator-side `fleet.toml`.
 
-Two operators running `qwenctl apply` simultaneously is rare but
-needs a clear answer. Options:
+`qwenctl apply` acquires an advisory lock on `fleet.toml` for the
+duration of the reconcile. Concurrent invocations on the same
+workstation serialize. `qwenctl apply` is fast (typically seconds
+for a small fleet), so the lock is rarely contended.
 
-- (a) Lock fleet.toml by file lock for the duration of apply.
-- (b) Lock the agent socket per host.
-- (c) Last-write-wins; both see the post-state.
-
-Lean: (b) — the agent's request handler serializes start/stop on a
-per-instance lock. fleet.toml locking is harder (it's on the
-operator's workstation, not the agent's host). Acceptable race:
-both invocations succeed in different orders; the eventual state is
-deterministic given the final fleet.toml.
-
-### Q7 — Multi-supervisor (multiple Mac workstations sharing one Strix Halo)
+### Q7 — Multi-operator (different workstations sharing one remote fleet)
 
 **Status:** Out of scope; revisit if the use case lands.
 
-Today the supervisor and qwenctl coexist on one machine. If two
-operators on different workstations point at the same Strix Halo,
-their `fleet.toml`s could conflict.
+Two operators on different workstations both running `qwenctl
+apply` against the same Strix Halo would conflict (no shared file
+lock). The current design assumes one operator workstation is
+canonical for any given remote host.
 
-Two readings:
+Mitigations if multi-operator lands:
 
-- Each workstation runs its own supervisor; the Strix llama-servers
-  are a shared resource. Then who owns `fleet.toml`? — needs
-  arbitration.
-- One workstation is "primary"; the other reads. Supervisor's
-  `qwen_backends` tool already supports this read shape.
+- Per-host advisory file lock on `~/.qwen-fleet/.lock` (acquired
+  via SSH-exec'd `flock`). Adds latency to every `apply` but makes
+  multi-operator safe.
+- Or: a designated "owner" operator workstation per host, others
+  read-only.
 
-No code changes here; the design holds with single-supervisor. Flag
-for RDR-005 if multi-operator becomes real.
+Flag for RDR-005 if real.
 
-### Q8 — Do we need cross-host model storage?
+### Q8 — Cross-host model storage
 
-**Status:** Resolved as: per-host `models_dir`. `qwenctl pull-model`
-moves model files between hosts (rsync). No shared filesystem
-assumed. Each host has its own copy.
+**Status:** Resolved — per-host `models_dir`. `qwenctl pull-model`
+moves model files between hosts (rsync over SSH). No shared
+filesystem assumed. Each host has its own copy.
 
 For a fleet of 3-5 hosts and ~25 GB models, total disk cost is
 acceptable. Operators with many hosts and many models can switch to
 a shared NFS path manually — `models_dir` accepts any path.
+
+### Q9 — When does Option E (HTTP agent) come back?
+
+**Status:** Out of scope today; tracked.
+
+Option E was rejected because (a) the supervisor doesn't need a
+remote RPC surface — it reads a local file and probes URLs
+directly — and (b) `qwenctl` can SSH-exec tmux commands at well
+under 100 ms each.
+
+Option E's agent would be the right tool if a real deployment
+appears where SSH-exec is blocked but HTTP through a known port is
+allowed. The operator-facing surface (`fleet.toml`, `qwenctl`
+commands, tmux session layout) does not change in such a successor;
+only the transport between `qwenctl` and the remote does. The
+agent, if added, would shell out to the same tmux commands
+`qwenctl` runs over SSH today — keeping tmux as the source of truth.
 
 ## Related decisions and prior art
 
