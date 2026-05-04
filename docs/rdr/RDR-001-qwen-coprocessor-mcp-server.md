@@ -84,6 +84,15 @@ sub-agent rather than calling a single function.
 - **D5. No infrastructure overhead beyond what's needed.** A single Node
   process plus llama-server. No Docker proxy unless it earns its
   keep through observability or features we genuinely use.
+- **D6. Plugin parity is in-repo, not inherited.** Qwen Code's
+  extension format claims compatibility with Claude Code plugins, but
+  reliance on that compatibility surface couples our supervisor to
+  upstream's translation layer. Instead, plugins, agents, skills,
+  commands, and hooks for the inner Qwen are authored *in this repo*
+  under `plugins/`, targeting Qwen Code's extension format directly.
+  This gives us a stable, version-controlled extension fleet that
+  evolves with the supervisor, independent of cross-platform compat
+  weather.
 
 ## Options considered
 
@@ -163,9 +172,9 @@ The supervisor exposes the following tool surface to MCP clients:
 
 | Tool                                         | Returns                                              | Notes |
 |----------------------------------------------|------------------------------------------------------|-------|
-| `qwen_spawn(task, opts?)`                    | `{ task_id, chosen_backend }`                        | Returns immediately. `opts` may include `backend` (explicit pin), `tier` (`local`/`remote`), `capacity` (`fast`/`heavy`), and `system` prompt override. |
-| `qwen_poll(task_id)`                         | `{ state, recent_events, awaiting_input?, result? }` | `state` ∈ `{running, awaiting_input, complete, error}`. Surfaces `ask_user_question` events as `awaiting_input` so the MCP client can route them to a human and answer via `qwen_send`. |
-| `qwen_send(task_id, message)`                | `{ ack }`                                            | Injects text into the running session at the next tool-round boundary. |
+| `qwen_spawn(task, opts?)`                    | `{ task_id, chosen_backend }`                        | Returns immediately. `opts` may include `backend` (explicit pin), `tier` (`local`/`remote`), `capacity` (`fast`/`heavy`), `write_authority` (default `false`), `allow_subagents` (default `false`), `prior_context` (for crash recovery — see S2 below), and `system` prompt override. |
+| `qwen_poll(task_id, opts?)`                  | `{ state, recent_events, more_events_available, latest_event_id, awaiting_input?, result?, error? }` | `state` ∈ `{running, awaiting_input, complete, error}`. Surfaces `ask_user_question` events as `awaiting_input` for human round-trip via `qwen_send`. `opts.since` is an event-id cursor for incremental polling; `opts.max_events` caps the per-call payload (default 16). |
+| `qwen_send(task_id, message)`                | `{ ack }`                                            | Injects text into the running session. If the session is `awaiting_input` on a tool call (e.g. `ask_user_question`), the message is delivered as a `tool_result`; otherwise as a fresh user turn. |
 | `qwen_stop(task_id)`                         | `{ ack }`                                            | Cancels and tears down the session. |
 | `qwen_backends()`                            | `[{ id, url, model, tier, capacity, healthy }]`      | Discovery — lets the calling agent see what's available and bias selection. |
 
@@ -186,8 +195,11 @@ Routing algorithm at `qwen_spawn`:
 
 1. Explicit `opts.backend` pin wins.
 2. Filter pool by `opts.tier` if given.
-3. Classify task `capacity` need (`fast` vs `heavy`) by length and
-   keyword markers; filter accordingly.
+3. Classify task `capacity` need: `heavy` if approx token count
+   ≥ `ROUTER_HEAVY_THRESHOLD_TOKENS` (default 2000) **or** the
+   prompt matches any of `ROUTER_HEAVY_KEYWORDS` (default
+   `prove,derive,architect,design`); otherwise `fast`. Filter pool
+   to backends with matching `capacity`.
 4. Drop unhealthy backends (cached `/health` probe, ~30 s TTL).
 5. Pick from survivors by round-robin (or weighted, if `weight` set).
 6. If no candidates, fall back to local; if local is also out, return
@@ -195,8 +207,44 @@ Routing algorithm at `qwen_spawn`:
 
 After spawn, the chosen backend is pinned in `QwenSession.backend` and
 all subsequent SDK calls for that task use it. **No mid-conversation
-backend migration** — KV-cache locality and debuggability outweigh any
-load-balancing benefit.
+backend migration.** Reasons:
+
+- **Prefix-cache locality at the backend (verified ~98% hit rate).**
+  llama-server caches KV state by prompt prefix. Within a session,
+  every turn sends the growing message history via OpenAI Chat
+  Completions; if every turn goes to the same backend, the prefix
+  already-in-cache makes turn N+1's prompt-eval near-free. Spike A
+  (`/tmp/qwen-sdk-probe/probe.mjs`, 2026-05-04) measured this
+  empirically against our local llama-server:
+
+  | Turn | input_tokens | cache_read_input_tokens | hit rate |
+  |------|--------------|-------------------------|----------|
+  | 1    | 16 964       | 16 448                  | 96.9%    |
+  | 2    | 33 946       | 33 408                  | 98.4%    |
+
+  Switching backends mid-conversation forces a full recompute on the
+  new backend (turn 2 would pay ~33k tokens of prompt-eval cost
+  instead of ~538). For a 27B model on Metal at ~127 tok/s prompt-eval,
+  that's the difference between ~4 s and ~4.5 minutes of latency
+  on the same turn. The SDK exposes `usage.cache_read_input_tokens`
+  on each result — the supervisor can log this for visibility into
+  whether affinity is actually helping per session.
+
+  (Mechanism: this is a *backend* property, not an SDK-level
+  optimisation; the SDK and underlying CLI send full context each
+  turn over OpenAI Chat Completions, which is stateless on the
+  wire. The cache benefit is real because the backend deduplicates
+  prefixes server-side.)
+- **Debuggability.** A whole conversation lives in one backend's
+  logs. Splitting across backends fragments observability.
+- **Simplicity.** Migration would require replaying the full history
+  to the new backend on every switch, which is approximately equal in
+  cost to the failure-recovery path described in S2 — so there's no
+  speed benefit to migration during normal operation.
+
+The cost is paid only when a backend dies mid-conversation (rare for
+local infra), and the recovery path documented in S2 below handles it
+explicitly.
 
 Implementation layout:
 
@@ -208,9 +256,26 @@ mcp-bridges/qwen-agent-server/
 │   ├── server.ts               # MCP server, 5 tools wired
 │   ├── session.ts              # QwenSession state machine + SDK integration
 │   ├── backends.ts             # Pool, router, health cache
+│   ├── permissions.ts          # canUseTool callback (write_authority gating + denial events)
+│   ├── shutdown.ts             # SIGTERM/SIGINT graceful close
 │   └── types.ts                # shared types
 └── dist/                       # build output; what we register with MCP
+
+plugins/                         # in-repo extension fleet (per D6)
+├── README.md                    # what's here, how it gets installed
+├── nx-search-bridge/            # one extension per directory
+│   └── extension.json           # Qwen Code extension manifest
+├── serena-code-nav/
+│   └── extension.json
+├── context7-docs/
+│   └── extension.json
+└── (others — see RDR-002)
 ```
+
+The supervisor's setup script (`scripts/setup-qwen-agent-server.sh`)
+installs `plugins/*` into the isolated Qwen home (`~/.qwen` under
+`CLAUDE_SHIM_HOME` equivalent for the agent server) before the first
+`qwen_spawn`. Plugin choice and load order are in scope of RDR-002.
 
 Registration:
 
@@ -272,46 +337,82 @@ Findings from probing the SDK source directly (`@qwen-code/sdk` v0.1.7,
 implementations (`mehdic/claude-proxy`, `rynfar/meridian`,
 `CaddyGlow/ccproxy-api`).
 
-### Package name correction
+### Package identity and dependency-stability posture
 
-The SDK is published as **`@qwen-code/sdk`** (v0.1.7), not the
-hypothesised `@qwen-code/sdk`. Self-described as *"a minimum
-experimental TypeScript SDK"*. Bundles the CLI from v0.1.1 onward —
-`pathToQwenExecutable` is auto-detected; the SDK manages the underlying
-subprocess transparently. Our build can depend on this single package.
+The published package is **`@qwen-code/sdk`** (v0.1.7) — not
+`@qwen-code/qwen-code-sdk`, which 404s on npm and was an early-draft
+hypothesis. Self-described as *"a minimum experimental TypeScript
+SDK"*. Bundles the CLI from v0.1.1 onward — `pathToQwenExecutable` is
+auto-detected; the SDK manages the underlying subprocess transparently.
 
-### Q1 (RESOLVED) — Awaiting-input signal
+**Dependency-stability risk.** v0.1.7 is pre-1.0; the package
+explicitly markets itself as experimental. Two consequences for our
+architecture: (a) the API surface may shift in minor version bumps,
+(b) bugs are likely in edge cases we haven't probed. Mitigations:
+pin a specific version in `package.json`; `npm install` should never
+auto-upgrade to a new minor; integration tests catch regressions on
+deliberate bumps. The architectural decision to use the SDK rather
+than the subprocess CLI directly remains correct because the
+subprocess path's `stream-json` input direction is *also* officially
+under construction — both paths carry upstream-stability risk; the
+SDK's is at least typed and documented.
 
-**Two distinct mechanisms, not one.**
+### Q1 (RESOLVED, empirically verified) — Awaiting-input signal
 
-- **Tool-permission gating (write tools, shell, etc.):** the SDK
-  invokes a `canUseTool(toolName, input) → Promise<{allow, denyReason?}>`
-  callback we register. Time the supervisor spends with that Promise
-  unresolved is the supervisor's `awaiting_input` state for permission
-  decisions. Default timeout 60 s (overridable via `timeouts.canUseTool`),
-  fail-safe deny on timeout.
+**One mechanism — `canUseTool` — gating multiple tool categories.**
+Earlier drafts of this RDR claimed a bifurcation between permission
+gating and `ask_user_question`. Empirical spike B
+(`/tmp/qwen-sdk-probe/probe.mjs`, 2026-05-04) ran a session that
+forced `ask_user_question` and observed:
 
-- **`ask_user_question` (model wants human input on a question):** the
-  inner Qwen emits an `SDKAssistantMessage` whose `message.content[]`
-  contains a `ToolUseBlock` with `name: "ask_user_question"` and `input`
-  holding the question. The stream produces no further messages until
-  we feed back a tool result. The supervisor must:
-  1. Scan each `SDKAssistantMessage` for `ToolUseBlock` matching that
-     name, capture `tool_use_id` and the question text.
-  2. Set session state to `awaiting_input`; surface via `qwen_poll`.
-  3. On `qwen_send(answer)`, call `query.streamInput()` with an
-     `SDKUserMessage` whose `parent_tool_use_id === captured_id` and
-     `message.content` is a `ToolResultBlock` containing the answer.
-  4. Stream resumes; state returns to `running`.
+- The inner Qwen emitted `ToolUseBlock` with `name: "ask_user_question"`
+  and structured `input.questions[]` (each entry with `question`,
+  `header`, `options[]`).
+- The SDK invoked `canUseTool` for the call (auto-denied since the
+  spike registered no callback).
+- The denial returned to the model as a tool result; the model then
+  treated the deny `message` as the user's answer.
 
-Other `ToolUseBlock` names (file reads, shell commands when authorised,
-etc.) are non-blocking — Qwen continues without supervisor input.
+So all tools requiring approval — writes, shell, AND
+`ask_user_question` — flow through a single `canUseTool` callback. The
+supervisor distinguishes by `toolName`:
 
-**Sources.** `@qwen-code/sdk@0.1.7/dist/index.d.ts`:
-`SDKAssistantMessage`, `ToolUseBlock`, `ToolResultBlock`,
-`Query.streamInput`, `CanUseTool`. Internal control plane uses
-`CLIControlRequest{subtype: "can_use_tool"}` but that's not exposed on
-the user-facing async iterable.
+| Tool category                          | Supervisor action |
+|----------------------------------------|-------------------|
+| `ask_user_question`                    | Extract `input.questions[]`, set session state to `awaiting_input`, hold the Promise pending. On `qwen_send(answer)`, resolve as `{behavior: "deny", message: <answer>}`. The deny-with-message semantic is how the SDK currently delivers content back to the model (counterintuitive but empirically verified). |
+| Write tools, `write_authority: true`   | Resolve immediately as `{behavior: "allow"}` |
+| Write tools, `write_authority: false`  | Resolve as `{behavior: "deny", message: "write_authority not granted"}` and emit synthetic `permission_denied` event into the session log |
+| Other tools needing approval           | Same write-authority gating as above |
+
+Reads (`read_file`, `grep_search`, `glob`, `web_fetch`, etc.) **do
+not invoke `canUseTool`** — they execute autonomously. Their
+`ToolUseBlock` events appear in the message stream but are
+non-blocking.
+
+Default `canUseTool` timeout is 60 s (override via
+`QueryOptions.timeouts.canUseTool`); fail-safe deny on timeout. For
+human-in-the-loop tasks where Claude may take minutes between turns,
+**raise this to ~10 minutes** so the SDK doesn't auto-deny while the
+outer agent is thinking.
+
+**Sources.** Empirical: `/tmp/qwen-sdk-probe/probe.mjs` spike B output
+(observed `ToolUseBlock` with `name: "ask_user_question"` and the
+denial-as-answer pattern). Type definitions:
+`@qwen-code/sdk@0.1.7/dist/index.d.ts`: `SDKAssistantMessage`,
+`ToolUseBlock`, `CanUseTool`, `QueryOptions.timeouts`.
+
+**Stability hedge — fallback if deny-with-message stops delivering
+answers.** The mechanism is explicitly experimental. An integration
+test in the supervisor's repo MUST pin this behavior and gate every
+`@qwen-code/sdk` version bump (CI fails if the test breaks; the SDK
+upgrade does not land until the test is fixed or a fallback is
+implemented). The fallback path, if needed: after `canUseTool` deny
+fails to deliver content, the supervisor calls `query.streamInput()`
+with a fresh `SDKUserMessage` whose `parent_tool_use_id` references
+the captured `ask_user_question` `tool_use_id` and whose content is
+a `ToolResultBlock` containing the answer. This is the path described
+in the discarded earlier draft of this RDR; it remains valid as a
+fallback even though spike B showed deny-with-message works today.
 
 ### Q2 (RESOLVED) — Tool restriction
 
@@ -348,9 +449,14 @@ documented in `index.d.ts`):
 | `yolo`      | All tools execute without confirmation.                                  |
 
 **Decision:** `opts.write_authority` flag on `qwen_spawn` maps to:
-- `false` (default) → `permissionMode: 'default'`, no `canUseTool`,
-  no `allowedTools`. Result: Qwen reads the world but writes are
-  silently denied.
+- `false` (default) → `permissionMode: 'default'` **with a registered
+  `canUseTool` callback** that always returns
+  `{behavior: 'deny', message: 'write_authority not granted'}` AND
+  emits a synthetic `permission_denied` event into the session log.
+  This preserves the read-only semantics while making denials visible
+  to the supervisor (and via `qwen_poll`, to the caller). Without the
+  callback, denials would be silent — the inner Qwen would believe its
+  write succeeded and proceed on stale assumptions.
 - `true` → `permissionMode: 'yolo'`. Full automation; caller is
   asserting it knows the cost.
 - Future: optional `write_authority: 'edit-only'` → `'auto-edit'`.
@@ -377,27 +483,112 @@ to the configured backend.
 
 | Setting                              | Default      | Override env                     |
 |--------------------------------------|--------------|----------------------------------|
-| Hard cap on concurrent live sessions | 8            | `QWEN_SUPERVISOR_MAX_SESSIONS`   |
+| Hard cap on concurrent live sessions | 3            | `QWEN_SUPERVISOR_MAX_SESSIONS`   |
 | Idle TTL                             | 30 minutes   | `QWEN_SUPERVISOR_IDLE_TTL_MS`    |
 | Reap sweep interval                  | 5 minutes    | (not exposed)                    |
 | Eviction policy at cap               | LRU on `last_polled_at` | (not configurable)     |
 
+The cap is set low because **VRAM is the binding constraint, not
+session count**. Each live session pins a backend, and llama-server's
+KV cache plus the model weights consume all the GPU memory available.
+3 concurrent sessions covers single-developer use with one local
+backend plus headroom for nested delegations; multi-developer or
+multi-backend deployments raise the cap via the env var. The proxy-
+class precedents (mehdic/claude-proxy at 4, meridian at 10) target
+multi-tenant HTTP load and don't translate cleanly to local hardware.
+
 LRU evictions surface as `task_id_not_found` errors; the caller
-re-spawns. No disk persistence at our scale. The 6-min cache-window
-floor doesn't apply to local Qwen backends (no equivalent server-side
-prompt cache).
+re-spawns (optionally with `prior_context` from the failure event,
+see S2 below). No disk persistence at our scale.
+
+### Operational design
+
+The supervisor's polling, recovery, and shutdown semantics — explicit
+to avoid leaving them implementation-defined.
+
+#### Polling cadence and event payload (addresses S1)
+
+`qwen_poll(task_id, opts?)` returns at most `opts.max_events` events
+since the cursor `opts.since` (default 16 events, no cursor → most
+recent). The response always includes:
+
+- `state` — current state machine value
+- `recent_events: Event[]` — bounded slice of events since cursor
+- `latest_event_id: string` — pass back as `since` next call
+- `more_events_available: boolean` — true if events were truncated
+
+Events are categorical, not raw SDK messages: `{ id, type, ts,
+summary, data? }` where `type` ∈ `{tool_call, tool_result,
+permission_denied, model_message_summary, awaiting_input, error}`.
+The `data` payload is sized small — full assistant prose is replaced
+with a one-sentence `summary`. This keeps `qwen_poll` returns from
+inflating Claude's context with verbose model output Claude doesn't
+need to see; if the caller wants the full prose it'll be in the
+final `result` on completion.
+
+Recommended polling cadence: **once per outer Claude turn**, not on
+a wall-clock timer. The MCP loop is turn-by-turn anyway; polling more
+often than that is wasted round-trips.
+
+#### Backend failure recovery (addresses S2)
+
+When a session's pinned backend becomes unreachable:
+
+1. The session's next SDK call surfaces the error (HTTP refused,
+   timeout, etc.).
+2. Supervisor catches it, transitions session to `state: "error"`.
+3. `qwen_poll` returns:
+   ```ts
+   {
+     state: "error",
+     error: { code: "backend_offline" | "backend_internal", message: string },
+     last_known: {
+       turns_completed: number,
+       last_user_message: string,
+       last_assistant_summary: string,
+     },
+   }
+   ```
+4. Caller decides: re-spawn elsewhere or surface to human. To
+   re-spawn with context preserved:
+   ```
+   qwen_spawn(task, { prior_context: { conversation_summary: <last_known.last_assistant_summary>,
+                                       last_user_message: <last_known.last_user_message>, ... } })
+   ```
+   The supervisor synthesizes a system-prompt prefix from
+   `prior_context` so the inner Qwen knows what came before. Lossy
+   for prior tool calls (which can't be replayed against a fresh
+   backend), faithful for text content.
+
+#### Graceful shutdown (addresses O3)
+
+The Node MCP server registers `SIGTERM` and `SIGINT` handlers that:
+
+1. Stop accepting new `qwen_spawn` requests immediately.
+2. For each live `QwenSession`, call `query.close()` (or equivalent)
+   and wait up to 5 s for in-flight model calls to complete cleanly.
+3. Sessions still running after the timeout get a synthetic
+   `state: "interrupted"` event in their log and are killed.
+4. Process exits with code 0 if all sessions closed cleanly, 1 if
+   any required forced kill.
+
+Claude Code restarting the MCP server (the common case) loses all
+in-process session state. Sessions that were `running` are orphaned;
+`qwen_poll` against them returns `task_id_not_found`. Callers handle
+this the same way they handle LRU eviction: re-spawn with
+`prior_context` if continuity is wanted.
 
 ### Implementation map (consolidated)
 
 | RDR field                  | Concrete API                                          |
 |----------------------------|-------------------------------------------------------|
-| Awaiting-input on tool perm | `canUseTool` callback Promise pending state           |
-| Awaiting-input on question  | `ToolUseBlock.name === "ask_user_question"` scan + `query.streamInput()` resume |
+| Awaiting-input (all tools)  | `canUseTool` Promise pending; question content extracted from `input.questions[]`; resumed via deny-with-message containing the caller's answer |
+| `canUseTool` timeout         | `QueryOptions.timeouts.canUseTool: 600_000` (10 min). Default 60 s is too tight for human-in-the-loop where Claude may take minutes between turns. |
 | `opts.allow_subagents`      | `excludeTools: ['agent']` unless flag set             |
-| `opts.write_authority`      | `permissionMode: 'default' | 'yolo'`                  |
+| `opts.write_authority`      | `permissionMode: 'default'` + denying `canUseTool` (visible) → `'yolo'` (full auto) |
 | Tool surface                | Full default minus `agent` (unless overridden)        |
 | Backend pool config         | One `query()` per task; SDK reads `OPENAI_BASE_URL` / `OPENAI_API_KEY` from `opts.env` per-call so we can pin a different backend per session |
-| Hard cap                    | 8 concurrent sessions (override `QWEN_SUPERVISOR_MAX_SESSIONS`) |
+| Hard cap                    | 3 concurrent sessions (override `QWEN_SUPERVISOR_MAX_SESSIONS`) |
 | Idle TTL                    | 30 min (override `QWEN_SUPERVISOR_IDLE_TTL_MS`)        |
 
 ## Related decisions and prior art
