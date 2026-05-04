@@ -75,6 +75,71 @@ QWEN_BACKENDS='[
 
 ---
 
+## Extensions
+
+Per-spawn Qwen Code extension loadout (RDR-002). The orchestrator chooses
+which extensions are active for each session via `qwen_spawn`'s
+`opts.extensions` field. The SDK doesn't expose `extensions` in
+`QueryOptions` directly — the supervisor bridges by setting
+`pathToQwenExecutable` to a wrapper script (`scripts/qwen-extensions-wrapper.sh`)
+that reads `QWEN_AGENT_EXTENSIONS` from env and prepends `--extensions <list>`
+to the CLI's argv.
+
+**Startup resolution.** The supervisor resolves the real `qwen` binary
+once at startup. `QWEN_REAL_BIN` (env override, verified to exist and be
+executable) takes precedence; otherwise `which qwen` is consulted. Either
+miss is a fail-fast non-zero exit — an operator who hasn't installed Qwen
+Code can't recover at first spawn, only by fixing the install.
+
+**Per-spawn semantics.** `opts.extensions` accepts three optional
+sub-fields:
+
+| Field | Effect |
+|---|---|
+| `only: ['a','b']` | Exact-set semantics. `enable` and `disable` are ignored in this branch. Empty `only: []` disables all extensions for the spawn (`--extensions none`). |
+| `enable: ['c']` | Additively unions onto the session-default base. |
+| `disable: ['a']` | Subtractively removes from the session-default base after `enable`. `disable` wins on overlap. |
+
+The session-default base is `QWEN_DEFAULT_EXTENSIONS` (a comma-list) when
+set, otherwise the CLI's defaults (all enabled per
+`extension-enablement.json`) — in which case the wrapper drops the
+`--extensions` flag and the CLI inherits its own behaviour. Because the
+supervisor cannot enumerate the implicit set, `enable`/`disable` without
+either `QWEN_DEFAULT_EXTENSIONS` or `only` is rejected with a
+`spawn_error` envelope rather than silently producing the wrong set.
+
+Example — pin a session to one extension:
+
+```jsonc
+// qwen_spawn input
+{
+  "task": "Refactor the auth module",
+  "opts": { "extensions": { "only": ["serena"] } }
+}
+```
+
+Names match `config.name` from each extension's `qwen-extension.json`,
+case-insensitive. Resolved unknown names produce a
+`{ error: { code: "spawn_error", message: "unknown extension(s): X" } }`
+envelope and no session is instantiated.
+
+**Cache + reload.** The supervisor caches the installed-extension name
+list at startup by parsing `qwen extensions list` output. Drain semantics
+apply: in-flight sessions retain whatever set was resolved at their spawn
+time; cache reloads only affect future spawns. Operators who install or
+uninstall extensions while the supervisor is running can pick up the
+change via the admin tool `qwen_reload_extensions` (registered only when
+`QWEN_ADMIN_TOOLS=1` in env). See RDR-002 §Resolution-algorithm and
+§Installed-extensions cache for the full design.
+
+| Variable | Default | Description |
+|---|---|---|
+| `QWEN_REAL_BIN` | (resolved via `which qwen`) | Override for the real Qwen Code binary path. Verified at startup. |
+| `QWEN_DEFAULT_EXTENSIONS` | unset (CLI defaults apply) | Comma-list of extension names that the supervisor uses as the session-default base when `opts.extensions.only` is unset. |
+| `QWEN_ADMIN_TOOLS` | unset | Set to `1` to register the admin-only `qwen_reload_extensions` MCP tool. |
+
+---
+
 ## SDK pin policy
 
 `@qwen-code/sdk` is pinned **exact** to `0.1.7` in `package.json`. This is
