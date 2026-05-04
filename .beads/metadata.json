@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "qwen_coprocessor_stack",
+  "project_id": "b3197a76-ba7a-47c8-ad18-da395c3bee96"
+}
