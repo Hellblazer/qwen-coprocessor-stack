@@ -1,9 +1,10 @@
 ---
 name: Qwen-as-coprocessor — stateful Node MCP server with multi-backend routing
 type: architecture
-status: proposed
+status: accepted
 priority: high
 created: 2026-05-03
+accepted: 2026-05-03
 authors:
   - hal.hildebrand
 related:
@@ -19,9 +20,13 @@ supersedes:
 
 ## Status
 
-**Proposed.** Implementation pending. Supersedes the original gateway
-architecture documented in commits `9c97f49..25e8054` and the README's
-"Subscription-billed escalation" section through commit `89c4652`.
+**Accepted** (2026-05-03). Implementation pending. Supersedes the original
+gateway architecture documented in commits `9c97f49..25e8054` and the
+README's "Subscription-billed escalation" section through commit `89c4652`.
+
+The formal `/nx:rdr-gate` review was not run; the project owner accepted
+directly after architectural review. Open implementation questions
+(captured below) are deferred to build time, not blockers for acceptance.
 
 ## Context
 
