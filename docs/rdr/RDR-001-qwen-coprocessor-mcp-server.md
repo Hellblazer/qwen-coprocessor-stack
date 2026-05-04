@@ -116,7 +116,7 @@ event stream.
 - ❌ Brittle to upstream protocol changes
 - ❌ Tool-call interception is string-parsing-flavored
 
-### Option C — Node MCP server using `@qwen-code/qwen-code-sdk` (in-process)
+### Option C — Node MCP server using `@qwen-code/sdk` (in-process)
 
 Implementation: Node + TypeScript MCP server that imports Qwen Code's
 official SDK as a library, holds `QwenSession` objects in a
@@ -155,7 +155,7 @@ talks to a single LiteLLM endpoint.
 
 ## Decision
 
-**Option C — Node MCP server using `@qwen-code/qwen-code-sdk`, with
+**Option C — Node MCP server using `@qwen-code/sdk`, with
 multi-backend routing built into the supervisor and session affinity per
 `task_id`.**
 
@@ -202,7 +202,7 @@ Implementation layout:
 
 ```
 mcp-bridges/qwen-agent-server/
-├── package.json                # @modelcontextprotocol/sdk + @qwen-code/qwen-code-sdk
+├── package.json                # @modelcontextprotocol/sdk + @qwen-code/sdk
 ├── tsconfig.json
 ├── src/
 │   ├── server.ts               # MCP server, 5 tools wired
@@ -258,33 +258,147 @@ claude mcp add --scope user qwen-agent-server \
   alongside (different abstraction layer — fine-grained delegation
   primitives for cheap tasks vs. whole-task supervision via this new
   server) or retire it.
-- **Inner Qwen Code's `ask_user_question` may not always surface
-  through SDK events in a form the supervisor can intercept cleanly.**
-  Will need to validate during implementation that the event stream
-  exposes pending-question state.
+- **`ask_user_question` requires a different interception path from
+  permission gating.** Resolved in research below — the supervisor
+  watches the SDK message stream for `ToolUseBlock` with name
+  `ask_user_question` and resumes via `query.streamInput()` with a
+  `parent_tool_use_id` reference. Different mechanism from `canUseTool`
+  for write-tool permission. Both must be implemented.
 
-## Open implementation questions
+## Research findings
 
-1. **What signal does the SDK emit when the inner agent is paused on
-   `ask_user_question`?** Need a probe: spawn a task that should ask
-   a clarifying question, observe the SDK event stream. Whatever event
-   type signals "paused awaiting input" becomes our `state:
-   awaiting_input` trigger. Without this, polling can't distinguish
-   "Qwen is still thinking" from "Qwen is stuck waiting."
-2. **Tool restriction posture for the inner Qwen.** Run with full Qwen
-   Code toolset (15 tools, including `agent` for nested sub-agents)?
-   Or restrict via `--exclude-tools` / `--core-tools` to avoid runaway
-   recursion? Default proposal: full toolset, with a max-depth guard
-   in our supervisor (`opts.max_depth`, default 3, decremented when
-   the inner Qwen calls `agent` and we observe it via SDK events).
-3. **What's the `--yolo` posture?** Suggestion: `--yolo` for `bash`
-   and `edit` only when `opts.write_authority = true` (default false).
-   Without write authority, the spawned Qwen reads the world but
-   doesn't mutate it — fine for most delegations and matches the
-   "coprocessor" framing.
-4. **Concurrent session limits.** Hard cap on `Map<task_id, QwenSession>`
-   size? Soft cap with idle reaper? Both? Default proposal: idle
-   reaper at 30 min, hard cap at 16 concurrent.
+Findings from probing the SDK source directly (`@qwen-code/sdk` v0.1.7,
+`dist/index.d.ts`, ~990 lines) and surveying analogous proxy
+implementations (`mehdic/claude-proxy`, `rynfar/meridian`,
+`CaddyGlow/ccproxy-api`).
+
+### Package name correction
+
+The SDK is published as **`@qwen-code/sdk`** (v0.1.7), not the
+hypothesised `@qwen-code/sdk`. Self-described as *"a minimum
+experimental TypeScript SDK"*. Bundles the CLI from v0.1.1 onward —
+`pathToQwenExecutable` is auto-detected; the SDK manages the underlying
+subprocess transparently. Our build can depend on this single package.
+
+### Q1 (RESOLVED) — Awaiting-input signal
+
+**Two distinct mechanisms, not one.**
+
+- **Tool-permission gating (write tools, shell, etc.):** the SDK
+  invokes a `canUseTool(toolName, input) → Promise<{allow, denyReason?}>`
+  callback we register. Time the supervisor spends with that Promise
+  unresolved is the supervisor's `awaiting_input` state for permission
+  decisions. Default timeout 60 s (overridable via `timeouts.canUseTool`),
+  fail-safe deny on timeout.
+
+- **`ask_user_question` (model wants human input on a question):** the
+  inner Qwen emits an `SDKAssistantMessage` whose `message.content[]`
+  contains a `ToolUseBlock` with `name: "ask_user_question"` and `input`
+  holding the question. The stream produces no further messages until
+  we feed back a tool result. The supervisor must:
+  1. Scan each `SDKAssistantMessage` for `ToolUseBlock` matching that
+     name, capture `tool_use_id` and the question text.
+  2. Set session state to `awaiting_input`; surface via `qwen_poll`.
+  3. On `qwen_send(answer)`, call `query.streamInput()` with an
+     `SDKUserMessage` whose `parent_tool_use_id === captured_id` and
+     `message.content` is a `ToolResultBlock` containing the answer.
+  4. Stream resumes; state returns to `running`.
+
+Other `ToolUseBlock` names (file reads, shell commands when authorised,
+etc.) are non-blocking — Qwen continues without supervisor input.
+
+**Sources.** `@qwen-code/sdk@0.1.7/dist/index.d.ts`:
+`SDKAssistantMessage`, `ToolUseBlock`, `ToolResultBlock`,
+`Query.streamInput`, `CanUseTool`. Internal control plane uses
+`CLIControlRequest{subtype: "can_use_tool"}` but that's not exposed on
+the user-facing async iterable.
+
+### Q2 (RESOLVED) — Tool restriction
+
+`QueryOptions` exposes three orthogonal levers:
+- `coreTools: string[]` — registry-level allowlist (only listed tools
+  exist to the model).
+- `excludeTools: string[]` — denylist, highest priority, supports shell
+  prefix globs (`'ShellTool(rm )'`).
+- `allowedTools: string[]` — auto-approve list, bypasses `canUseTool`.
+
+The `agent` tool (Qwen spawning its own sub-agents) is in the default
+15-tool surface and the SDK has **no built-in depth counter**. Unbounded
+recursion is possible.
+
+**Decision:** default `excludeTools: ['agent']` to prevent recursive
+nesting. The supervisor *is* the orchestration layer; nested Qwen
+sub-agents would be invisible to it. Expose opt-in
+`opts.allow_subagents: true` that removes `agent` from the exclude list
+for callers that genuinely need it. Do not use `coreTools` — it's
+allowlist-shaped and harder to maintain than the denylist for "drop one
+tool from an otherwise-full surface." Keep all other tools available.
+
+### Q3 (RESOLVED) — Write-authority gating
+
+`QueryOptions.permissionMode` is the programmatic equivalent of the
+CLI's `--yolo` / `--approval-mode` flags. Four modes (priority chain
+documented in `index.d.ts`):
+
+| Mode        | Semantics                                                                |
+|-------------|--------------------------------------------------------------------------|
+| `default`   | Writes denied unless in `allowedTools` or approved by `canUseTool`. Reads run free. **No `canUseTool` provided + no `allowedTools` = effectively read-only.** |
+| `plan`      | Blocks all write tools; model presents a plan first instead of executing. Different UX from "read-only." |
+| `auto-edit` | `edit`/`write_file` auto-approved; shell/others ask via `canUseTool`. Files-but-not-shell middle ground. |
+| `yolo`      | All tools execute without confirmation.                                  |
+
+**Decision:** `opts.write_authority` flag on `qwen_spawn` maps to:
+- `false` (default) → `permissionMode: 'default'`, no `canUseTool`,
+  no `allowedTools`. Result: Qwen reads the world but writes are
+  silently denied.
+- `true` → `permissionMode: 'yolo'`. Full automation; caller is
+  asserting it knows the cost.
+- Future: optional `write_authority: 'edit-only'` → `'auto-edit'`.
+
+Never default to `'yolo'`. Claude Code as the calling agent makes the
+write-authority decision per-task and signals it explicitly.
+
+### Q4 (RESOLVED) — Concurrent sessions and reaping
+
+The SDK has no built-in pooling — that's our supervisor's responsibility.
+Each `Query` owns one Node subprocess + one persistent HTTP connection
+to the configured backend.
+
+**Precedents** from analogous proxies:
+- `mehdic/claude-proxy`: `CLAUDE_PROXY_POOL_MAX=4` default; LRU
+  eviction at cap; idle TTL `CLAUDE_PROXY_POOL_TTL_MS=600000` (10 min);
+  hard 6-min floor to avoid evicting inside Anthropic's 5-min prompt
+  cache window.
+- `rynfar/meridian`: `MERIDIAN_MAX_CONCURRENT=10`,
+  `MERIDIAN_IDLE_TIMEOUT_SECONDS=120` (HTTP keepalive, distinct from
+  session reaping).
+
+**Decision:** revised down from the RDR's initial 16-concurrent.
+
+| Setting                              | Default      | Override env                     |
+|--------------------------------------|--------------|----------------------------------|
+| Hard cap on concurrent live sessions | 8            | `QWEN_SUPERVISOR_MAX_SESSIONS`   |
+| Idle TTL                             | 30 minutes   | `QWEN_SUPERVISOR_IDLE_TTL_MS`    |
+| Reap sweep interval                  | 5 minutes    | (not exposed)                    |
+| Eviction policy at cap               | LRU on `last_polled_at` | (not configurable)     |
+
+LRU evictions surface as `task_id_not_found` errors; the caller
+re-spawns. No disk persistence at our scale. The 6-min cache-window
+floor doesn't apply to local Qwen backends (no equivalent server-side
+prompt cache).
+
+### Implementation map (consolidated)
+
+| RDR field                  | Concrete API                                          |
+|----------------------------|-------------------------------------------------------|
+| Awaiting-input on tool perm | `canUseTool` callback Promise pending state           |
+| Awaiting-input on question  | `ToolUseBlock.name === "ask_user_question"` scan + `query.streamInput()` resume |
+| `opts.allow_subagents`      | `excludeTools: ['agent']` unless flag set             |
+| `opts.write_authority`      | `permissionMode: 'default' | 'yolo'`                  |
+| Tool surface                | Full default minus `agent` (unless overridden)        |
+| Backend pool config         | One `query()` per task; SDK reads `OPENAI_BASE_URL` / `OPENAI_API_KEY` from `opts.env` per-call so we can pin a different backend per session |
+| Hard cap                    | 8 concurrent sessions (override `QWEN_SUPERVISOR_MAX_SESSIONS`) |
+| Idle TTL                    | 30 min (override `QWEN_SUPERVISOR_IDLE_TTL_MS`)        |
 
 ## Related decisions and prior art
 
@@ -301,7 +415,7 @@ claude mcp add --scope user qwen-agent-server \
 - **`mehdic/claude-proxy`, `CaddyGlow/ccproxy-api`, `rynfar/meridian`** —
   community subprocess-pool / SDK-based proxies for Claude Code.
   Architecturally the closest analogues to what we're building.
-- **`@qwen-code/qwen-code-sdk`** — Qwen's official TypeScript SDK; the
+- **`@qwen-code/sdk`** — Qwen's official TypeScript SDK; the
   upstream-recommended path for programmatic Qwen Code use.
 - **Qwen Code Issue #874** — acknowledged that `qwen -p` headless mode
   uses fewer tools than interactive mode for the same prompt. SDK
