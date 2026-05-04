@@ -1,125 +1,119 @@
 # qwen-coprocessor-stack
 
-A local Qwen 3.6-27B running as a **coprocessor** for Claude Code. Claude is
-the top-level orchestrator (your normal subscription, your normal `/model`
-picker, no env-var redirection); Qwen lives behind an MCP server that
-exposes a handful of delegation tools so Claude can offload cheap or bulk
-work to a supervised, multi-turn Qwen session.
+A locally-hosted Qwen 3.6-27B model wired into Claude Code as an MCP
+coprocessor. Claude Code runs unmodified with normal subscription auth;
+Qwen is exposed as a small set of MCP tools that Claude can call to
+delegate cheap or bulk work to long-lived, supervised inference sessions.
 
-## Architecture
+The supervisor is a TypeScript MCP server
+([`mcp-bridges/qwen-agent-server`](mcp-bridges/qwen-agent-server)) that
+manages session lifecycle, backend routing, KV-cache affinity, and
+permission gating on top of [`@qwen-code/sdk`](https://www.npmjs.com/package/@qwen-code/sdk).
+Inference runs in a local `llama.cpp` build (Metal-accelerated on
+Apple Silicon) serving Qwen 3.6 27B Q6_K_XL.
 
-```
-Claude Code (TUI, normal subscription auth, default model picker)
-    │ MCP stdio
-    ▼
-qwen-agent-server      (mcp-bridges/qwen-agent-server, Node + TypeScript)
-    │   – session pool, LRU eviction, idle reaper
-    │   – multi-backend routing, KV-cache affinity per task_id
-    │   – multi-turn streamInput input queue
-    │ uses @qwen-code/sdk@0.1.7
-    ▼
-llama-server  (Qwen 3.6 27B Q6_K_XL, Metal-accelerated, port 8080)
-```
+Full design rationale: [`docs/rdr/RDR-001`](docs/rdr/RDR-001-qwen-coprocessor-mcp-server.md).
 
-The MCP supervisor in `mcp-bridges/qwen-agent-server/` is the only
-delegation surface — five tools (`qwen_spawn`, `qwen_poll`, `qwen_send`,
-`qwen_stop`, `qwen_backends`) running on long-lived supervised sessions.
-Design: [docs/rdr/RDR-001](docs/rdr/RDR-001-qwen-coprocessor-mcp-server.md).
+## Requirements
+
+- macOS on Apple Silicon (M1 or later) — the included setup scripts
+  build `llama.cpp` with Metal. The supervisor itself is portable; only
+  the bundled inference backend assumes macOS.
+- ~25 GB free disk for the GGUF model.
+- Node.js 24+, `npm`.
+- [Claude Code](https://docs.anthropic.com/claude/docs/claude-code)
+  installed and signed in.
 
 ## Quick start
 
 ```bash
-# 1. Build llama.cpp with Metal + download Qwen 3.6 27B (~25 GB)
+# 1. Build llama.cpp with Metal support and download Qwen 3.6 27B (~25 GB).
 ./scripts/setup-mac-host.sh
 
-# 2. Run llama-server (loads model into Metal, ~5 min cold start off USB-C SSD)
+# 2. Start llama-server (cold start: ~5 min off external SSD, ~5 s off NVMe).
 ./scripts/start-stack.sh
 
-# 3. Build + register the qwen-agent-server MCP supervisor
+# 3. Build the supervisor and register it with Claude Code (idempotent).
 ./scripts/setup-qwen-agent-server.sh
-# (alternatively, register manually with `claude mcp add --scope user`)
 
-# 4. Run Claude Code anywhere — qwen_spawn / qwen_poll / qwen_send /
-#    qwen_stop / qwen_backends are now available as tools
+# 4. Run Claude Code anywhere — the qwen_* tools are now available.
 claude
 ```
 
-## Tools Claude sees
+To shut down: `./scripts/stop-stack.sh`.
 
-When `qwen-agent-server` is registered, Claude gets a long-running
-delegation surface:
+## MCP tools
 
-| Tool             | Use for                                                                                            |
-|------------------|----------------------------------------------------------------------------------------------------|
-| `qwen_spawn`     | Start a supervised Qwen session for a task; returns `task_id` + `chosen_backend` immediately.      |
-| `qwen_poll`      | Pull events and current state for a `task_id`. Cursor-paginated; small payloads.                   |
-| `qwen_send`      | Push a follow-up user message into a session — answers a plain-text question or starts a new turn. |
-| `qwen_stop`      | Cancel and tear down a session. Idempotent.                                                        |
-| `qwen_backends`  | Discovery: list configured backends and cached health.                                             |
+| Tool             | Purpose |
+|------------------|---------|
+| `qwen_spawn`     | Start a supervised Qwen session for a task. Returns `task_id` and the chosen backend immediately; inference runs asynchronously. |
+| `qwen_poll`      | Read the current state and recent events for a session. Cursor-paginated. |
+| `qwen_send`      | Push the next user message into a session — answers a clarifying question or starts a follow-up turn. |
+| `qwen_stop`      | Cancel and remove a session. Idempotent. |
+| `qwen_backends`  | List configured backends and their cached health. |
 
-## Why this topology?
-
-We originally tried the inverse — Claude Code routed through a LiteLLM
-gateway, with Qwen as the workhorse and a `claude-escalation` route paying
-for hard problems via subscription auth (subprocess-spawning `claude -p`
-with isolated `HOME`). It's an Anthropic ToS violation as of February
-2026 — the revised Consumer ToS prohibits using Pro/Max OAuth tokens "in
-any other product, tool, or service — including the Agent SDK," and
-Anthropic has been actively breaking and banning third-party harnesses
-since April 4, 2026.
-
-The coprocessor topology avoids the entire ToS surface:
-
-- Claude Code runs **unmodified** with normal subscription auth.
-- Qwen is just **a tool that Claude calls**, identical in posture to Bash
-  or Read.
-- No OAuth interception, no subprocess-spawning of `claude`, no gateway
-  rerouting Anthropic-bound traffic.
-
-It also matches reality better. Claude is materially better than Qwen at
-hard reasoning; making Claude the orchestrator and giving it cheap
-delegation primitives is a more useful tool than trying to gate Claude
-behind heuristics.
-
-The full design and decision log lives in
-[docs/rdr/RDR-001](docs/rdr/RDR-001-qwen-coprocessor-mcp-server.md). The
-legacy gateway code (LiteLLM, claude-shim, consult-claude,
-docker-compose) was removed from disk in commit-ab6.7 once the
-coprocessor stabilized; git history preserves it for reference.
-
-## Operational notes
-
-- **Cold start**: Qwen 3.6-27B Q6 GGUF is ~25 GB. On USB-C SSD it loads in
-  ~3-5 min; on internal NVMe ~5 s.
-- **Throughput**: ~16 tok/s on M4 Max for the 27B Q6.
-- **KV-cache locality**: the supervisor pins each `task_id` to one
-  backend so llama-server's prefix cache stays warm — turn-2 typically
-  sees ~98% cache-read hit rate within a session.
-- **Multi-turn ergonomics**: the inner Qwen is told via system prompt to
-  ask plain-text questions and stop; the supervisor delivers answers via
-  `qwen_send` (NOT through `ask_user_question`, which is excluded from
-  Qwen's tool surface — see RDR-001 §Q1 for empirical rationale).
-- **Aspirational remote tier**: a second llama-server on a Linux/Vulkan
-  Strix Halo box running a heavier Qwen variant slots into the supervisor
-  via `QWEN_BACKENDS`. Not yet running in this setup.
-
-## File map
+## Architecture
 
 ```
-.
-├── docs/rdr/                                    # decision records
-│   └── RDR-001-qwen-coprocessor-mcp-server.md   # primary design doc
-├── mcp-bridges/
-│   └── qwen-agent-server/                       # MCP supervisor (TypeScript)
-│       ├── src/                                 #   5 MCP tools, pool, session
-│       ├── tests/                               #   unit + integration pins
-│       └── README.md
-├── scripts/
-│   ├── setup-mac-host.sh                        # llama.cpp Metal + Qwen 3.6 27B
-│   ├── setup-strix-halo.sh                      # Vulkan path (aspirational)
-│   ├── setup-qwen-agent-server.sh               # build + register the supervisor
-│   ├── start-stack.sh                           # bring llama-server up
-│   └── stop-stack.sh                            # bring it down
-├── plugins/                                     # Qwen Code extension surface
-└── models/                                      # GGUF model weights (gitignored)
+Claude Code (unmodified, subscription auth)
+    │  MCP stdio
+    ▼
+qwen-agent-server  (Node + TypeScript, mcp-bridges/qwen-agent-server)
+    │  - per-task session pool with LRU eviction and idle reaper
+    │  - multi-backend router with KV-cache affinity per task_id
+    │  - multi-turn input via streamInput async generator
+    │  - permission gating (write tools require explicit authority)
+    │
+    │  uses @qwen-code/sdk (pinned to exact 0.1.7)
+    ▼
+llama-server  (Qwen 3.6 27B Q6_K_XL, Metal, port 8080)
+```
+
+Each `task_id` is pinned to one backend at spawn time and kept there for
+the life of the session, keeping `llama-server`'s prefix cache warm
+across turns. Soak runs see ≈98% prefix-cache hit rate on the second turn
+within a session.
+
+The supervisor excludes `ask_user_question` from the inner Qwen's tool
+surface; clarifying questions surface as plain text in the model's
+response and are answered by the caller via `qwen_send`. Empirical
+rationale and SDK behaviors that pin this design are in RDR-001 §Q1.
+
+## Configuration
+
+All supervisor configuration is via environment variables. Defaults work
+for the standard local setup; see
+[`mcp-bridges/qwen-agent-server/README.md`](mcp-bridges/qwen-agent-server/README.md#configuration)
+for the full reference, including `QWEN_BACKENDS` syntax for adding
+remote backends.
+
+## Development
+
+```bash
+cd mcp-bridges/qwen-agent-server
+
+npm test                    # unit tests (no backend required)
+npm run test:integration    # integration tests (requires llama-server on :8080)
+npm run build               # tsc → dist/
+```
+
+Three integration tests pin SDK behaviors that the supervisor relies on
+(`tests/integration/sdk-behavior.test.ts`). They must pass before any
+`@qwen-code/sdk` version bump — see the SDK pin policy in the
+qwen-agent-server README.
+
+## Repository layout
+
+```
+docs/rdr/                    Decision records (RDR-001 = primary design doc)
+mcp-bridges/
+  qwen-agent-server/         MCP supervisor (TypeScript)
+plugins/                     Qwen Code extension surface
+scripts/
+  setup-mac-host.sh          Build llama.cpp + download Qwen 3.6 27B
+  setup-strix-halo.sh        Vulkan path for a remote tier (aspirational)
+  setup-qwen-agent-server.sh Build + register the supervisor
+  start-stack.sh             Start llama-server
+  stop-stack.sh              Stop llama-server
+models/                      GGUF model weights (gitignored)
 ```
