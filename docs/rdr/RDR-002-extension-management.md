@@ -1,9 +1,12 @@
 ---
 name: Extension management — exposing the inner Qwen's tool surface to the operator
 type: architecture
-status: draft
+status: accepted
 priority: medium
 created: 2026-05-04
+accepted_date: 2026-05-04
+gate_passed_date: 2026-05-04
+reviewed-by: self
 authors:
   - hal.hildebrand
 related:
