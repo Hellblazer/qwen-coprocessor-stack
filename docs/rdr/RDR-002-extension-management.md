@@ -447,9 +447,14 @@ RDR.
   **resolved 2026-05-04** by spike. Shell out to `qwen extensions
   enable/disable` (record `002-research-005`); same upstream call
   path that any hand-rolled JSON editor would invoke.
-- **Windows wrapper variant**: out of scope today. Add a `.cmd`
-  wrapper for `qwen-extensions-wrapper.sh` if/when a Windows
-  operator appears.
+- ~~**Windows wrapper variant**~~ — **closed 2026-05-04, no longer
+  needed.** The Strix Halo box (the only non-macOS host on the
+  near-term roadmap) is now planned as native Linux — see RDR-004
+  Status note and `/tmp/strix-halo-linux-production.md`. Both the
+  operator workstation (macOS) and the remote inference host
+  (Linux) run bash; one wrapper variant covers the fleet. If a
+  Windows host ever joins the fleet, this item reopens with full
+  context preserved in the git history.
 - **`qwenctl extensions install <source>` initial scope**: spike
   confirmed upstream handles git URL, local path, npm `@scope/name`,
   and marketplace `url:name`. Initial `qwenctl` release restricts

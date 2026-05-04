@@ -35,6 +35,19 @@ removed from the design. Option D below is the chosen approach;
 Option E (with-agent) is retained as a "considered, not now"
 alternative for future restricted-network scenarios.
 
+**Strix Halo deployment decision (2026-05-04):** the heavier remote
+host (Strix Halo / Ryzen AI MAX+ 395 / Radeon 8060S, gfx1151) will
+run native Linux (Fedora 43 or Ubuntu 24.04 HWE / 26.04). Research
+summary at `/tmp/strix-halo-linux-production.md`: Linux + Vulkan
+(RADV) is the highest-throughput path for Qwen 30B-class MoE
+(65–87 t/s vs. ~10–15% slower on native Windows; WSL2 is broken for
+this workload due to CPU-fallback Vulkan and `hipMallocManaged`
+constraints). With Linux confirmed on the Strix box, the fleet
+design needs no platform-specific carve-outs — tmux, mosh, SSH,
+bash, and the `qwen-extensions-wrapper.sh` (RDR-002) all work
+uniformly across Mac and Linux hosts. Setup script:
+`scripts/setup-strix-halo.sh` carries the concrete recipe.
+
 ## Context
 
 RDR-001 imagined a Mac M4 Max running one llama-server (Metal,
