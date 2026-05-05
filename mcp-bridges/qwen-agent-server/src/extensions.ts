@@ -366,14 +366,22 @@ const FRAMEWORK_REQUIRED_EXTENSIONS: readonly string[] = [];
 
 /**
  * Step 7 — union with framework-required. Adds any framework-required
- * names not already in the resolved set. Idempotent / no-op today
- * because the framework-required set is empty.
+ * names not already in the resolved set, lowercased and dedup-safe.
+ * Idempotent / no-op today because the framework-required set is empty.
+ *
+ * Exported for direct testability of the non-empty path: an inline
+ * call with a non-empty `frameworkRequired` argument exercises the
+ * union logic that would otherwise be unreachable from
+ * `resolveExtensions` while `FRAMEWORK_REQUIRED_EXTENSIONS` is empty.
  */
-function unionFrameworkRequired(base: string[]): string[] {
-  if (FRAMEWORK_REQUIRED_EXTENSIONS.length === 0) return base;
+export function unionFrameworkRequired(
+  base: string[],
+  frameworkRequired: readonly string[] = FRAMEWORK_REQUIRED_EXTENSIONS,
+): string[] {
+  if (frameworkRequired.length === 0) return base;
   const seen = new Set(base);
   const out = [...base];
-  for (const name of FRAMEWORK_REQUIRED_EXTENSIONS) {
+  for (const name of frameworkRequired) {
     const lower = name.toLowerCase();
     if (!seen.has(lower)) {
       out.push(lower);

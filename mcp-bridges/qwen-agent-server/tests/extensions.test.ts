@@ -14,6 +14,7 @@ import {
   resolveExtensions,
   resolveQwenRealBin,
   resolveWrapperPath,
+  unionFrameworkRequired,
 } from "../src/extensions.js";
 
 describe("resolveQwenRealBin", () => {
@@ -411,23 +412,50 @@ describe("resolveExtensions", () => {
   });
 
   // ── step-7 framework-required union (Phase-6 review #2) ──────
+  //
+  // Note: the load-bearing ordering pin (step 6 before step 7) is only
+  // observable from `resolveExtensions` once FRAMEWORK_REQUIRED_EXTENSIONS
+  // becomes non-empty. While it's empty today, these two tests serve as
+  // regression nets confirming the unknown-name path still throws. The
+  // direct unionFrameworkRequired(base, override) test below exercises
+  // the non-empty union behaviour that resolveExtensions inherits at
+  // step 7.
 
-  it("step 7 framework-required union runs after step 6 validation in the only branch", () => {
-    // The framework-required set is empty today, so step 7 is a no-op.
-    // This test pins the ordering: validation throws on unknown user
-    // names BEFORE step 7 union touches the result. If a future change
-    // makes framework-required non-empty without a corresponding
-    // startup-time validation, this ordering ensures the user-supplied
-    // unknown name still triggers the spawn_error envelope.
+  it("unknown user-supplied name in only branch throws (regression net for step-6 path)", () => {
     expect(() =>
       resolveExtensions({ only: ["nonexistent"] }, "leave-defaults", cache),
     ).toThrowError(ExtensionResolutionError);
   });
 
-  it("step 7 framework-required union runs after step 6 validation in the session-default branch", () => {
-    // Same ordering pin for the enable/disable code path.
+  it("unknown user-supplied name in session-default branch throws (regression net for step-6 path)", () => {
     expect(() =>
       resolveExtensions({ enable: ["nonexistent"] }, ["a"], cache),
     ).toThrowError(ExtensionResolutionError);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// unionFrameworkRequired — direct coverage of the non-empty path
+
+describe("unionFrameworkRequired", () => {
+  it("returns base unchanged when frameworkRequired is empty (default)", () => {
+    expect(unionFrameworkRequired(["a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("appends framework-required names not already present", () => {
+    expect(unionFrameworkRequired(["a"], ["b", "c"])).toEqual(["a", "b", "c"]);
+  });
+
+  it("dedupes against the existing base (lowercased) without reordering", () => {
+    expect(unionFrameworkRequired(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"]);
+  });
+
+  it("lowercases framework-required names before insertion / dedup", () => {
+    expect(unionFrameworkRequired(["a"], ["B", "C"])).toEqual(["a", "b", "c"]);
+    expect(unionFrameworkRequired(["b"], ["B"])).toEqual(["b"]);
+  });
+
+  it("dedupes within the framework-required list itself", () => {
+    expect(unionFrameworkRequired([], ["x", "X", "x"])).toEqual(["x"]);
   });
 });
