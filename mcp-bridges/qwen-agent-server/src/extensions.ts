@@ -139,14 +139,19 @@ const ANSI_RE = /\x1b\[[0-9;]*m/g;
  *     <glyph> <name> (<version>)
  *
  * where `<glyph>` is `✓` (U+2713) or `✗` (U+2717) and `<name>` is the
- * `config.name` field of the extension manifest. The leading glyph is
- * absent only in `inline2 = true` mode, which `handleList` does not use.
+ * `config.name` field of the extension manifest. The glyph is REQUIRED:
+ * `extensionToOutputString` only emits a leading-space-only line in
+ * `inline2 = true` mode, which `handleList` (cli.js:456770) does not
+ * pass. Requiring the glyph narrows the regex so unrelated lines that
+ * happen to end with `(something)` cannot accidentally register as
+ * extension names if a future block-separator change causes the
+ * `\n{2,}` split to miss boundaries.
  *
  * The version sub-pattern `[^()]+` deliberately rejects nested parens,
  * which keeps the second-line ` Source: ... (Type: ...)` from
  * accidentally matching when block boundaries don't separate cleanly.
  */
-const HEADER_RE = /^\s*(?:[✓✗]\s+)?(.+?)\s+\([^()]+\)\s*$/;
+const HEADER_RE = /^\s*[✓✗]\s+(.+?)\s+\([^()]+\)\s*$/;
 
 /**
  * Parse `qwen extensions list` stdout and return the lowercased
@@ -343,6 +348,42 @@ function dedupeLower(input: string[]): string[] {
 }
 
 /**
+ * Framework-required extension set — RDR-002 §Framework-required
+ * extensions. Empty today: the supervisor's contract with the inner
+ * Qwen (write-authority gating, ask_user_question exclusion,
+ * system-prompt preamble, multi-turn streamInput) is enforced via
+ * QueryOptions and does not require any extension to be loaded. Adding
+ * even one would change the supervisor's contract and must be
+ * RDR-tracked.
+ *
+ * If this set ever becomes non-empty: names here are supervisor-
+ * controlled and must be validated against the installed-extensions
+ * cache once at supervisor startup; the per-spawn `resolveExtensions`
+ * step-7 union does NOT re-validate framework-required names (step 7
+ * runs after step 6 in the RDR algorithm).
+ */
+const FRAMEWORK_REQUIRED_EXTENSIONS: readonly string[] = [];
+
+/**
+ * Step 7 — union with framework-required. Adds any framework-required
+ * names not already in the resolved set. Idempotent / no-op today
+ * because the framework-required set is empty.
+ */
+function unionFrameworkRequired(base: string[]): string[] {
+  if (FRAMEWORK_REQUIRED_EXTENSIONS.length === 0) return base;
+  const seen = new Set(base);
+  const out = [...base];
+  for (const name of FRAMEWORK_REQUIRED_EXTENSIONS) {
+    const lower = name.toLowerCase();
+    if (!seen.has(lower)) {
+      out.push(lower);
+      seen.add(lower);
+    }
+  }
+  return out;
+}
+
+/**
  * Resolve the active extension set for a single qwen_spawn call,
  * implementing steps 1–9 of RDR-002 §Resolution-algorithm.
  *
@@ -370,21 +411,12 @@ export function resolveExtensions(
 
   // Step 2: compute base.
   // 2a: only wins (enable/disable IGNORED).
-  // 2b: else base is session-default.
-  if (onlyProvided) {
-    const base = dedupeLower(opts!.only!);
-    // Step 6: validate.
-    validateInstalled(base, installedCache);
-    // Step 7: union with framework-required (empty today).
-    // Step 8: render.
-    if (base.length === 0) {
-      return { envValue: "none", resolved: "none" };
-    }
-    return { envValue: base.join(","), resolved: base };
-  }
+  // 2b: else base is session-default with enable/disable applied.
+  let base: string[];
 
-  // No `only`. Need a base to apply enable/disable against.
-  if (sessionDefault === "leave-defaults") {
+  if (onlyProvided) {
+    base = dedupeLower(opts!.only!);
+  } else if (sessionDefault === "leave-defaults") {
     if (enableProvided || disableProvided) {
       // Cannot compute a deterministic resolved set without enumerating
       // the implicit CLI-defaults set; reject so the caller gets a
@@ -394,36 +426,39 @@ export function resolveExtensions(
           "set a session default or use opts.extensions.only to specify the exact set",
       );
     }
-    // No mutations and no base — pass through to leave-defaults.
+    // Step 9: no mutations and no base — leave-defaults short-circuits
+    // before validation/union (no resolved set to validate or union into).
     return { envValue: null, resolved: "leave-defaults" };
-  }
-
-  // Session-default is a concrete list. Apply enable additively, then
-  // disable subtractively.
-  let base = dedupeLower(sessionDefault);
-  if (enableProvided) {
-    const additions = dedupeLower(opts!.enable!);
-    const seen = new Set(base);
-    for (const name of additions) {
-      if (!seen.has(name)) {
-        base.push(name);
-        seen.add(name);
+  } else {
+    // Session-default is a concrete list. Apply enable additively, then
+    // disable subtractively (steps 3–5).
+    base = dedupeLower(sessionDefault);
+    if (enableProvided) {
+      const additions = dedupeLower(opts!.enable!);
+      const seen = new Set(base);
+      for (const name of additions) {
+        if (!seen.has(name)) {
+          base.push(name);
+          seen.add(name);
+        }
       }
     }
-  }
-  if (disableProvided) {
-    const removals = new Set(dedupeLower(opts!.disable!));
-    base = base.filter((name) => !removals.has(name));
+    if (disableProvided) {
+      const removals = new Set(dedupeLower(opts!.disable!));
+      base = base.filter((name) => !removals.has(name));
+    }
   }
 
-  // Step 6: validate.
+  // Step 6: validate caller-supplied names against the installed cache.
   validateInstalled(base, installedCache);
 
-  // Step 7: union with framework-required (today: empty).
+  // Step 7: union with framework-required. Names here are supervisor-
+  // controlled and pre-validated at startup; not re-validated per spawn.
+  base = unionFrameworkRequired(base);
 
-  // Step 8: render. An empty base reached by subtraction renders as
-  // "none" — same as an explicit only=[]. The only path that produces
-  // null/leave-defaults is the no-op branch handled above.
+  // Step 8: render. An empty base reached by subtraction or an explicit
+  // only=[] renders as "none". The only path that produces leave-defaults
+  // is the no-op branch above.
   if (base.length === 0) {
     return { envValue: "none", resolved: "none" };
   }

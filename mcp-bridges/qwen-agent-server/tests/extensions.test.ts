@@ -154,6 +154,23 @@ describe("parseInstalledExtensions", () => {
     ].join("\n");
     expect(parseInstalledExtensions(stdout)).toEqual(["serena"]);
   });
+
+  it("rejects glyph-less first lines (HEADER_RE requires the status glyph)", () => {
+    // Phase-6 review finding #1: HEADER_RE requires the leading ✓/✗
+    // status glyph that handleList always emits (cli.js:456701 with
+    // inline2=false). A first line like 'something (1.0.0)' WITHOUT
+    // the glyph must NOT register — it's the kind of accidental match
+    // that would surface if a future SDK output change orphans a
+    // (version)-shaped string from its block boundary.
+    const stdout = [
+      "something-without-glyph (1.0.0)",
+      " Path: /tmp/x",
+      "",
+      "another-without-glyph (2.0.0)",
+      " Path: /tmp/y",
+    ].join("\n");
+    expect(parseInstalledExtensions(stdout)).toEqual([]);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -390,6 +407,27 @@ describe("resolveExtensions", () => {
   it("session leave-defaults + disable without only → ExtensionResolutionError", () => {
     expect(() =>
       resolveExtensions({ disable: ["a"] }, "leave-defaults", cache),
+    ).toThrowError(ExtensionResolutionError);
+  });
+
+  // ── step-7 framework-required union (Phase-6 review #2) ──────
+
+  it("step 7 framework-required union runs after step 6 validation in the only branch", () => {
+    // The framework-required set is empty today, so step 7 is a no-op.
+    // This test pins the ordering: validation throws on unknown user
+    // names BEFORE step 7 union touches the result. If a future change
+    // makes framework-required non-empty without a corresponding
+    // startup-time validation, this ordering ensures the user-supplied
+    // unknown name still triggers the spawn_error envelope.
+    expect(() =>
+      resolveExtensions({ only: ["nonexistent"] }, "leave-defaults", cache),
+    ).toThrowError(ExtensionResolutionError);
+  });
+
+  it("step 7 framework-required union runs after step 6 validation in the session-default branch", () => {
+    // Same ordering pin for the enable/disable code path.
+    expect(() =>
+      resolveExtensions({ enable: ["nonexistent"] }, ["a"], cache),
     ).toThrowError(ExtensionResolutionError);
   });
 });
