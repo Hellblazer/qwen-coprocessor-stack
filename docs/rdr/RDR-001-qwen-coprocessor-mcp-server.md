@@ -14,7 +14,6 @@ authors:
 reviewed-by: self
 related:
   - RDR-002 (future — per-plugin catalogue: which plugins/agents/skills/commands/hooks live under plugins/, install order, scope decisions)
-  - RDR-003 (future — observability hooks: pino + optional Langfuse)
 supersedes:
   - The original LiteLLM-gateway architecture (commits 9c97f49..25e8054). Retained
     on disk under `config/`, `mcp-bridges/claude-shim/`, `mcp-bridges/consult-claude/`,

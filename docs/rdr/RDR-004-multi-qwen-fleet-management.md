@@ -10,7 +10,6 @@ related:
   - RDR-001 §D3 (multi-backend routing with session affinity — runtime)
   - RDR-001 §Q4 (pool cap and reaper — interaction with hot-reload)
   - RDR-001 §S2 (backend failure recovery — interaction with declared fleet)
-  - RDR-003 (per-backend metrics from the agent flow into the same Prometheus surface)
 ---
 
 # RDR-004 — Multi-Qwen fleet management: declarative config, tmux-as-lifecycle, mosh-attached operator UX
@@ -825,9 +824,6 @@ agent, if added, would shell out to the same tmux commands
 - **RDR-001 §S2** — backend failure recovery. Drain semantics here
   are a planned variant: same `last_known` payload, different
   triggering reason (`backend_drained`).
-- **RDR-003** — per-backend metrics. The agent emits its own
-  `/metrics` (host stats: GPU%, mem); the supervisor emits its own
-  (routing). Operators join by `backend_id` in Grafana.
 
 ### External
 

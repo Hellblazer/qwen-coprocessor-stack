@@ -12,7 +12,6 @@ authors:
 related:
   - RDR-001 §D6 (in-repo authoring decision — superseded by this RDR's pass-through framing)
   - RDR-001 §S4 (write-authority gating, applied uniformly across whatever extension set is loaded)
-  - RDR-003 (extensions emit through the same pino logger / OTel context)
   - RDR-004 (qwenctl extensions subcommand surface lives there)
 ---
 
@@ -552,8 +551,6 @@ RDR.
 - RDR-001 §Q1 — `ask_user_question` exclusion. Applies uniformly.
   An extension cannot re-add `ask_user_question` to the inner
   Qwen's surface; the SDK's `excludeTools` wins.
-- RDR-003 — pino logger surface; extensions emit through the
-  unified context.
 - RDR-004 — `qwenctl extensions` subcommand. The TypeScript CLI
   in RDR-004 is the operator's surface; the supervisor's MCP
   tools are Claude's surface. Same data, two views.
