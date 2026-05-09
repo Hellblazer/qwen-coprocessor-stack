@@ -1,11 +1,11 @@
 ---
-name: qwen-status
-description: One-glance overview of the qwen-coprocessor-stack — plugin version, supervisor process state, dist build freshness, configured backends with live health, config-file path, and any obvious red flags (stale binary, env override masking config, dead default backend). Use when the user types `/qwen-status` or asks "is the qwen stack healthy" / "what's running" / "is everything wired up".
+name: status
+description: One-glance overview of qwen-stack — plugin version, supervisor process state, dist build freshness, configured backends with live health, config-file path, and any obvious red flags (stale binary, env override masking config, dead default backend). Use when the user types `/qwen-stack:status` or asks "is the qwen stack healthy" / "what's running" / "is everything wired up".
 argument-hint: (no args)
-allowed-tools: Bash, Read, mcp__plugin_qwen-coprocessor-stack_qwen-agent-server__qwen_backends
+allowed-tools: Bash, Read, mcp__plugin_qwen-stack_supervisor__qwen_backends, mcp__plugin_qwen-stack_supervisor__qwen_extensions
 ---
 
-# /qwen-status
+# /qwen-stack:status
 
 Single-screen sanity check for the whole stack. Read-only — never writes anything. Designed so the operator can paste the output in a bug report or share with another collaborator.
 

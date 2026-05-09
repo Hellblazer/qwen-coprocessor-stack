@@ -34,6 +34,8 @@ import { fileURLToPath } from "node:url";
 
 import pino from "pino";
 
+import { readConfigDefaultExtensions } from "./backends.js";
+
 const log = pino({ name: "qwen-extensions" });
 
 /**
@@ -164,26 +166,141 @@ const HEADER_RE = /^\s*[✓✗]\s+(.+?)\s+\([^()]+\)\s*$/;
  * unknown names) instead of bricking the supervisor.
  */
 export function parseInstalledExtensions(stdout: string): string[] {
+  return parseInstalledExtensionsRich(stdout).map((e) => e.name);
+}
+
+/**
+ * Per-extension structured info parsed from `qwen extensions list`. All
+ * fields are best-effort — fields not present in the output are omitted
+ * from the object (rather than emitted as empty / null) so JSON
+ * downstream stays compact.
+ */
+export interface ExtensionInfo {
+  /** Lowercased `config.name`. */
+  name: string;
+  version?: string;
+  /** True when prefixed with `✓`, false with `✗`, undefined if neither. */
+  enabled_workspace?: boolean;
+  path?: string;
+  source?: string;
+  enabled_user?: boolean;
+  context_files?: string[];
+  commands?: string[];
+  skills?: string[];
+  agents?: string[];
+  mcp_servers?: string[];
+}
+
+/**
+ * Parse `qwen extensions list` stdout into structured per-extension
+ * records. Mirrors `extensionToOutputString` in cli.js:456690 — each
+ * block is joined by `\n\n` and starts with `<glyph> <name> (<version>)`.
+ *
+ * Fail-soft: on empty / sentinel / unparseable input, returns `[]`.
+ * Individual fields that don't match expected line patterns are simply
+ * omitted from the record; we never throw.
+ */
+export function parseInstalledExtensionsRich(stdout: string): ExtensionInfo[] {
   if (typeof stdout !== "string") return [];
   const cleaned = stdout.replace(ANSI_RE, "");
   if (cleaned.trim() === "") return [];
   if (/no extensions installed/i.test(cleaned)) return [];
 
-  // Blocks are joined by `\n\n` (handleList in cli.js:456770). Take
-  // the first line of each block as the candidate header so the
-  // ` Path: ... (Type: ...)` second line never gets matched.
   const blocks = cleaned.split(/\n{2,}/);
-  const names: string[] = [];
+  const out: ExtensionInfo[] = [];
   for (const block of blocks) {
-    const firstLine = block.split("\n")[0]?.trim() ?? "";
+    const lines = block.split("\n");
+    const firstLine = lines[0]?.trim() ?? "";
     if (firstLine === "") continue;
-    const match = HEADER_RE.exec(firstLine);
-    if (match && match[1]) {
-      const name = match[1].trim();
-      if (name !== "") names.push(name.toLowerCase());
+
+    // Header match: glyph + name + (version)
+    const headerMatch = /^\s*([✓✗])\s+(.+?)\s+\(([^()]+)\)\s*$/.exec(firstLine);
+    if (!headerMatch) continue;
+    const glyph = headerMatch[1];
+    const name = headerMatch[2]?.trim();
+    const version = headerMatch[3]?.trim();
+    if (!name) continue;
+
+    const info: ExtensionInfo = { name: name.toLowerCase() };
+    if (version) info.version = version;
+    info.enabled_workspace = glyph === "✓";
+
+    // Field lines and list-section accumulation. Format reference:
+    //   ` Path: <path>`
+    //   ` Source: <source> (Type: <type>)` [optional]
+    //   ` Enabled (User): <bool>`
+    //   ` Enabled (Workspace): <bool>`
+    //   ` Context files:` then `  <file>` lines
+    //   ` Commands:` then `  /<cmd>` lines
+    //   ` Skills:` then `  <skill>` lines
+    //   ` Agents:` then `  <agent>` lines
+    //   ` MCP servers:` then `  <name>` lines
+    let currentList: string[] | null = null;
+    let currentTarget: keyof ExtensionInfo | null = null;
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line === undefined) continue;
+      const trimmed = line.trim();
+      if (trimmed === "") continue;
+
+      // List-item lines start with two spaces of indent; field lines start with one.
+      const isListItem = /^ {2,}\S/.test(line) && !/^\s*\w[\w\s]*?:/.test(trimmed);
+      if (isListItem && currentList !== null) {
+        // Strip the leading slash for commands ("/foo" → "foo") to match
+        // how the supervisor's resolveExtensions expects them.
+        const item = trimmed.replace(/^\//, "");
+        if (item) currentList.push(item);
+        continue;
+      }
+
+      currentList = null;
+      currentTarget = null;
+
+      const fieldMatch = /^\s*([\w\s()]+?):\s*(.*)$/.exec(line);
+      if (!fieldMatch) continue;
+      const key = (fieldMatch[1] ?? "").trim().toLowerCase();
+      const val = (fieldMatch[2] ?? "").trim();
+
+      if (key === "path") {
+        if (val) info.path = val;
+      } else if (key === "source") {
+        if (val) info.source = val;
+      } else if (key === "enabled (user)") {
+        info.enabled_user = /^true$/i.test(val);
+      } else if (key === "enabled (workspace)") {
+        info.enabled_workspace = /^true$/i.test(val);
+      } else if (key === "context files") {
+        info.context_files = [];
+        currentList = info.context_files;
+        currentTarget = "context_files";
+      } else if (key === "commands") {
+        info.commands = [];
+        currentList = info.commands;
+        currentTarget = "commands";
+      } else if (key === "skills") {
+        info.skills = [];
+        currentList = info.skills;
+        currentTarget = "skills";
+      } else if (key === "agents") {
+        info.agents = [];
+        currentList = info.agents;
+        currentTarget = "agents";
+      } else if (key === "mcp servers") {
+        info.mcp_servers = [];
+        currentList = info.mcp_servers;
+        currentTarget = "mcp_servers";
+      }
+      void currentTarget;
     }
+
+    // Drop empty list arrays so JSON stays compact.
+    for (const k of ["context_files", "commands", "skills", "agents", "mcp_servers"] as const) {
+      if (info[k] && info[k]?.length === 0) delete info[k];
+    }
+
+    out.push(info);
   }
-  return names;
+  return out;
 }
 
 /**
@@ -193,7 +310,7 @@ export function parseInstalledExtensions(stdout: string): string[] {
  */
 export type ExecExtensionsListFn = (qwenRealBin: string) => Promise<string>;
 
-const defaultExecExtensionsList: ExecExtensionsListFn = (qwenRealBin) =>
+export const defaultExecExtensionsList: ExecExtensionsListFn = (qwenRealBin) =>
   new Promise((res, rej) => {
     execFile(
       qwenRealBin,
@@ -208,6 +325,25 @@ const defaultExecExtensionsList: ExecExtensionsListFn = (qwenRealBin) =>
       },
     );
   });
+
+/**
+ * Shell out to `<qwenRealBin> extensions list`, parse the rich form, and
+ * return the structured per-extension records. Throws on exec failure
+ * (qwen binary missing, etc.). Returns `[]` if output is empty or
+ * unparseable — same fail-soft contract as the bare-name parser.
+ *
+ * Used by the `qwen_extensions` MCP tool to give callers the full
+ * installed-extensions inventory (versions, paths, source, declared
+ * commands/skills/agents/MCP servers) without going through the
+ * cache (which only retains names).
+ */
+export async function listInstalledExtensions(
+  qwenRealBin: string,
+  execFn: ExecExtensionsListFn = defaultExecExtensionsList,
+): Promise<ExtensionInfo[]> {
+  const stdout = await execFn(qwenRealBin);
+  return parseInstalledExtensionsRich(stdout);
+}
 
 /**
  * Process-lifetime cache of currently-installed extension names. Used
@@ -320,19 +456,36 @@ export class ExtensionResolutionError extends Error {
 }
 
 /**
- * Read the supervisor's session-default extension set from the
- * environment. Empty / unset returns the "leave-defaults" sentinel,
- * meaning the wrapper drops the --extensions flag and the CLI defaults
- * (all enabled per extension-enablement.json) apply.
+ * Read the supervisor's session-default extension set.
+ *
+ * Resolution priority (highest first):
+ *   1. `QWEN_DEFAULT_EXTENSIONS` env var (back-compat / one-shot override)
+ *   2. `default_extensions` field in `~/.qwen-coprocessor-stack/config.json`
+ *   3. "leave-defaults" sentinel — wrapper drops --extensions; CLI defaults
+ *      (all enabled per extension-enablement.json) apply
+ *
+ * The config-file source is mtime-cached at the `readConfig()` layer in
+ * backends.ts, so re-invocation on every spawn is cheap.
  */
 export function getSessionDefaultExtensions(
   env: NodeJS.ProcessEnv,
 ): string[] | "leave-defaults" {
+  // 1. env override
   const raw = env["QWEN_DEFAULT_EXTENSIONS"];
-  if (raw === undefined || raw === "") return "leave-defaults";
-  return dedupeLower(
-    raw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
-  );
+  if (raw !== undefined && raw !== "") {
+    return dedupeLower(
+      raw.split(",").map((s) => s.trim()).filter((s) => s !== ""),
+    );
+  }
+
+  // 2. config file
+  const fromFile = readConfigDefaultExtensions();
+  if (fromFile && fromFile.length > 0) {
+    return dedupeLower(fromFile);
+  }
+
+  // 3. unset → CLI defaults apply
+  return "leave-defaults";
 }
 
 function dedupeLower(input: string[]): string[] {

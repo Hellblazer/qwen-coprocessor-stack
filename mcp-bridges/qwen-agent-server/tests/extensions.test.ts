@@ -3,19 +3,24 @@
 // Unit tests for resolveQwenRealBin / resolveWrapperPath in src/extensions.ts.
 // RDR-002 §Decision → 'The wrapper-script bridge'.
 
-import { describe, expect, it } from "vitest";
-import { existsSync, statSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   createInstalledExtensionsCache,
   ExtensionResolutionError,
   getSessionDefaultExtensions,
+  listInstalledExtensions,
   parseInstalledExtensions,
+  parseInstalledExtensionsRich,
   resolveExtensions,
   resolveQwenRealBin,
   resolveWrapperPath,
   unionFrameworkRequired,
 } from "../src/extensions.js";
+import { _resetConfigCache } from "../src/backends.js";
 
 describe("resolveQwenRealBin", () => {
   // ── Case 1: env override set and pointing at a real executable ─
@@ -235,12 +240,17 @@ describe("createInstalledExtensionsCache", () => {
 // ─────────────────────────────────────────────────────────────────
 // getSessionDefaultExtensions
 
-describe("getSessionDefaultExtensions", () => {
-  it("returns 'leave-defaults' when QWEN_DEFAULT_EXTENSIONS is unset", () => {
+describe("getSessionDefaultExtensions — env source", () => {
+  beforeEach(() => {
+    delete process.env["QWEN_CONFIG_DIR"];
+    _resetConfigCache();
+  });
+
+  it("returns 'leave-defaults' when QWEN_DEFAULT_EXTENSIONS is unset and no config", () => {
     expect(getSessionDefaultExtensions({})).toBe("leave-defaults");
   });
 
-  it("returns 'leave-defaults' when QWEN_DEFAULT_EXTENSIONS is empty", () => {
+  it("returns 'leave-defaults' when QWEN_DEFAULT_EXTENSIONS is empty and no config", () => {
     expect(getSessionDefaultExtensions({ QWEN_DEFAULT_EXTENSIONS: "" })).toBe("leave-defaults");
   });
 
@@ -254,6 +264,150 @@ describe("getSessionDefaultExtensions", () => {
     expect(
       getSessionDefaultExtensions({ QWEN_DEFAULT_EXTENSIONS: "a,b,a,b,c" }),
     ).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("getSessionDefaultExtensions — config file source", () => {
+  let tmpConfigDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    tmpConfigDir = mkdtempSync(join(tmpdir(), "qwen-defaults-"));
+    configPath = join(tmpConfigDir, "config.json");
+    process.env["QWEN_CONFIG_DIR"] = tmpConfigDir;
+    _resetConfigCache();
+  });
+
+  afterEach(() => {
+    rmSync(tmpConfigDir, { recursive: true, force: true });
+    delete process.env["QWEN_CONFIG_DIR"];
+    _resetConfigCache();
+  });
+
+  it("reads default_extensions from config.json when env unset", () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({ default_extensions: ["alpha", "beta"] }),
+      "utf8",
+    );
+    expect(getSessionDefaultExtensions({})).toEqual(["alpha", "beta"]);
+  });
+
+  it("env priority: env wins over config file", () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({ default_extensions: ["from-file"] }),
+      "utf8",
+    );
+    expect(
+      getSessionDefaultExtensions({ QWEN_DEFAULT_EXTENSIONS: "from-env" }),
+    ).toEqual(["from-env"]);
+  });
+
+  it("falls through to leave-defaults when both unset", () => {
+    // Don't write the file and don't set env.
+    expect(getSessionDefaultExtensions({})).toBe("leave-defaults");
+  });
+
+  it("falls through to leave-defaults when config has empty default_extensions", () => {
+    writeFileSync(configPath, JSON.stringify({ default_extensions: [] }), "utf8");
+    expect(getSessionDefaultExtensions({})).toBe("leave-defaults");
+  });
+
+  it("file values are dedupe-lowercased same as env values", () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({ default_extensions: ["Serena", "WEB-FETCH", "serena"] }),
+      "utf8",
+    );
+    expect(getSessionDefaultExtensions({})).toEqual(["serena", "web-fetch"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// parseInstalledExtensionsRich + listInstalledExtensions
+
+describe("parseInstalledExtensionsRich", () => {
+  it("retains version, source, path, enabled-state, and declared lists", () => {
+    const stdout = [
+      "✓ serena (1.2.3)",
+      " Path: /home/u/.qwen/extensions/serena",
+      " Source: github.com/example/serena (Type: git)",
+      " Enabled (User): true",
+      " Enabled (Workspace): true",
+      " Commands:",
+      "  /find",
+      "  /rename",
+      " Skills:",
+      "  symbol-nav",
+      "",
+      "✗ legacy-tool (0.0.5)",
+      " Path: /home/u/.qwen/extensions/legacy",
+      " Enabled (User): false",
+      " Enabled (Workspace): false",
+    ].join("\n");
+
+    const result = parseInstalledExtensionsRich(stdout);
+    expect(result).toHaveLength(2);
+
+    const serena = result[0]!;
+    expect(serena.name).toBe("serena");
+    expect(serena.version).toBe("1.2.3");
+    expect(serena.path).toBe("/home/u/.qwen/extensions/serena");
+    expect(serena.source).toContain("github.com/example/serena");
+    expect(serena.enabled_user).toBe(true);
+    expect(serena.enabled_workspace).toBe(true);
+    expect(serena.commands).toEqual(["find", "rename"]);
+    expect(serena.skills).toEqual(["symbol-nav"]);
+    expect(serena.agents).toBeUndefined();
+    expect(serena.mcp_servers).toBeUndefined();
+
+    const legacy = result[1]!;
+    expect(legacy.name).toBe("legacy-tool");
+    expect(legacy.enabled_user).toBe(false);
+    expect(legacy.enabled_workspace).toBe(false);
+  });
+
+  it("returns [] for the No-extensions sentinel", () => {
+    expect(parseInstalledExtensionsRich("No extensions installed.\n")).toEqual([]);
+  });
+
+  it("returns [] for empty / whitespace input", () => {
+    expect(parseInstalledExtensionsRich("")).toEqual([]);
+    expect(parseInstalledExtensionsRich("\n\n")).toEqual([]);
+  });
+
+  it("returns [] on garbage (no header matches)", () => {
+    expect(parseInstalledExtensionsRich("not the qwen output")).toEqual([]);
+  });
+
+  it("strips ANSI color codes around the status glyph", () => {
+    const stdout = "\x1b[32m✓\x1b[39m alpha (1.0.0)\n Path: /tmp/alpha\n";
+    const result = parseInstalledExtensionsRich(stdout);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.name).toBe("alpha");
+    expect(result[0]!.path).toBe("/tmp/alpha");
+  });
+});
+
+describe("listInstalledExtensions", () => {
+  it("delegates to execFn and parses the output", async () => {
+    const stdout = [
+      "✓ alpha (1.0.0)",
+      " Path: /tmp/alpha",
+      " Enabled (User): true",
+    ].join("\n");
+    const result = await listInstalledExtensions("/usr/bin/qwen", async () => stdout);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.name).toBe("alpha");
+    expect(result[0]!.version).toBe("1.0.0");
+  });
+
+  it("propagates exec errors (caller decides whether to swallow)", async () => {
+    const exec = async () => {
+      throw new Error("ENOENT: qwen not found");
+    };
+    await expect(listInstalledExtensions("/usr/bin/qwen", exec)).rejects.toThrow(/ENOENT/);
   });
 });
 

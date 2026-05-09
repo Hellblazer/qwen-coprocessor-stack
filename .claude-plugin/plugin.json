@@ -1,6 +1,6 @@
 {
-  "name": "qwen-coprocessor-stack",
-  "version": "0.2.1",
+  "name": "qwen-stack",
+  "version": "0.3.0",
   "description": "Locally-hosted Qwen 3.6 as a Claude Code coprocessor — delegate bulk or cheap work to long-lived supervised inference sessions over MCP. Backends include llama.cpp Metal on Apple Silicon and llama.cpp Vulkan on AMD Strix Halo.",
   "author": {
     "name": "Hal Hildebrand"
@@ -19,7 +19,7 @@
     "metal"
   ],
   "mcpServers": {
-    "qwen-agent-server": {
+    "supervisor": {
       "command": "node",
       "args": [
         "${CLAUDE_PLUGIN_ROOT}/mcp-bridges/qwen-agent-server/dist/server.js"

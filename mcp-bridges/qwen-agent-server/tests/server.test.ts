@@ -81,6 +81,11 @@ vi.mock("../src/backends.js", () => ({
   getCachedHealth: (...args: unknown[]) => mockGetCachedHealth(...args),
   refreshPoolBackends: vi.fn(),
   resetHealthCache: vi.fn(),
+  // Imported by extensions.ts now that getSessionDefaultExtensions reads
+  // the config file as a fall-through. The default mock returns null so
+  // env / leave-defaults is the active path in tests.
+  readConfigDefaultExtensions: vi.fn(() => null),
+  _resetConfigCache: vi.fn(),
 }));
 
 // ─────────────────────────────────────────────────────────────────
@@ -390,9 +395,9 @@ describe("MCP tool handlers", () => {
     });
   });
 
-  // ── qwen_reload_extensions (admin gate) ────────────────────
+  // ── qwen_reload_extensions (RDR-002 amendment 2026-05-09: ungated) ─
 
-  describe("qwen_reload_extensions admin gate", () => {
+  describe("qwen_reload_extensions", () => {
     function makeMockCache() {
       let names = new Set(["alpha", "beta"]);
       return {
@@ -405,29 +410,18 @@ describe("MCP tool handlers", () => {
       };
     }
 
-    it("registers qwen_reload_extensions when QWEN_ADMIN_TOOLS=1 and a cache is provided", () => {
-      vi.stubEnv("QWEN_ADMIN_TOOLS", "1");
+    it("registers whenever a cache is provided (no env gate)", () => {
       const cache = makeMockCache();
       const handlers = createToolHandlers(undefined, cache);
       expect(typeof handlers.qwen_reload_extensions).toBe("function");
     });
 
-    it("does NOT register qwen_reload_extensions when QWEN_ADMIN_TOOLS is unset", () => {
-      // beforeEach already stubs QWEN_SUPERVISOR_MAX_SESSIONS but not
-      // QWEN_ADMIN_TOOLS, so it's effectively unset here.
-      const cache = makeMockCache();
-      const handlers = createToolHandlers(undefined, cache);
-      expect(handlers.qwen_reload_extensions).toBeUndefined();
-    });
-
-    it("does NOT register qwen_reload_extensions when admin env is set but no cache is provided", () => {
-      vi.stubEnv("QWEN_ADMIN_TOOLS", "1");
+    it("does NOT register when no cache is provided (test-shaped pool)", () => {
       const handlers = createToolHandlers(undefined);
       expect(handlers.qwen_reload_extensions).toBeUndefined();
     });
 
     it("calls cache.reload() and returns size + names when invoked", async () => {
-      vi.stubEnv("QWEN_ADMIN_TOOLS", "1");
       const cache = makeMockCache();
       const handlers = createToolHandlers(undefined, cache);
       const result = await handlers.qwen_reload_extensions!({});
@@ -436,6 +430,23 @@ describe("MCP tool handlers", () => {
         size: 3,
         names: expect.arrayContaining(["alpha", "beta", "gamma"]),
       });
+    });
+
+    it("ignores QWEN_ADMIN_TOOLS even when explicitly set (no-op for back-compat)", () => {
+      vi.stubEnv("QWEN_ADMIN_TOOLS", "1");
+      const cache = makeMockCache();
+      const handlers = createToolHandlers(undefined, cache);
+      expect(typeof handlers.qwen_reload_extensions).toBe("function");
+    });
+  });
+
+  // ── qwen_extensions (read-only listing) ────────────────────
+
+  describe("qwen_extensions", () => {
+    it("returns [] when pool.qwenRealBin is unset", async () => {
+      const handlers = createToolHandlers();
+      const result = await handlers.qwen_extensions({});
+      expect(result).toEqual([]);
     });
   });
 

@@ -53,52 +53,54 @@ To shut down the local llama-server: `./scripts/stop-stack.sh`.
 
 ## Install as a plugin
 
-This repo doubles as a Claude Code plugin. After `npm install` in step 3:
+This repo doubles as a Claude Code plugin (`qwen-stack`). After `npm install`
+in step 3:
 
 ```bash
 # From any shell with the claude CLI on PATH:
 claude plugin marketplace add /path/to/this/repo
-claude plugin install qwen-coprocessor-stack@qwen-coprocessor-stack
+claude plugin install qwen-stack@qwen-stack
 # Then reload from any CC session: /reload-plugins
 ```
 
 The plugin manifest at `.claude-plugin/plugin.json` registers the supervisor's
-MCP server (`qwen-agent-server`) with `${CLAUDE_PLUGIN_ROOT}` resolved to the
-plugin install location, so paths stay portable. The five `qwen_*` MCP tools
-become available immediately after install.
+MCP server with `${CLAUDE_PLUGIN_ROOT}` resolved to the plugin install
+location, so paths stay portable.
+
+> **Migrating from the old `qwen-coprocessor-stack` plugin name** (pre-0.3.0):
+> ```
+> claude plugin uninstall qwen-coprocessor-stack
+> claude plugin marketplace remove qwen-coprocessor-stack
+> claude plugin marketplace add /path/to/this/repo
+> claude plugin install qwen-stack@qwen-stack
+> ```
 
 ## Slash commands
 
-The plugin ships two slash commands. State lives at
-`~/.qwen-coprocessor-stack/config.json` (object form, forward-extensible).
+State lives at `~/.qwen-coprocessor-stack/config.json` (object form,
+forward-extensible — `backends`, `default_extensions` today).
 
-### `/qwen-status` — single-glance overview
+| Command | Purpose |
+|---|---|
+| `/qwen-stack:status` | One-glance overview — plugin version, supervisor process, build freshness, backends + health, env overrides, red flags |
+| `/qwen-stack:backends list \| add \| remove \| test` | Backend lifecycle — edits config file in place; supervisor hot-applies on next spawn |
+| `/qwen-stack:extensions list \| info <name>` | Read-only listing of installed Qwen Code extensions with version, source, enabled state, declared commands/skills/agents/MCP servers |
+| `/qwen-stack:defaults list \| set <a,b,c> \| set --none \| clear` | Manage the session-default extension list applied when a spawn doesn't specify `opts.extensions.only` |
 
-Read-only. Prints plugin version, supervisor process state, build
-freshness (catches stale-binary-after-rebuild), backends with live
-health, config-file path, env overrides, and any red flags.
+Resolution priorities (env > file > default):
 
-### `/qwen-backends` — backend lifecycle
+- **Backends:** `QWEN_BACKENDS` env → `config.backends` → built-in single-local default.
+- **Default extensions:** `QWEN_DEFAULT_EXTENSIONS` env → `config.default_extensions` → CLI defaults from `extension-enablement.json`.
 
-Edits the config file in place; supervisor hot-applies on the next
-spawn (existing sessions stay pinned to their backend per RDR-001 §Q3).
-
-```
-/qwen-backends list                                   # default; show + health
-/qwen-backends add qwentescence http://qwentescence:1234/v1
-/qwen-backends remove qwentescence
-/qwen-backends test [id]                              # probe live /health
-```
-
-Resolution priority for the backend list: `QWEN_BACKENDS` env var (kept
-for back-compat / one-shot overrides) → config file → built-in
-single-local default.
+Existing in-flight sessions stay pinned to their backend and resolved
+extension set (RDR-001 §Q3, RDR-002 §drain semantics) — config edits
+affect new spawns only.
 
 > **Note:** The repo also contains a project-scoped `.mcp.json` at the repo
 > root with absolute paths, used when running Claude Code directly from
 > within the repo for development. If you install the plugin AND launch CC
-> from the repo directory, both scopes will register `qwen-agent-server` —
-> pick one path. For most users, the plugin is the right choice.
+> from the repo directory, both scopes will register the supervisor MCP
+> server — pick one path. For most users, the plugin is the right choice.
 
 ## MCP tools
 

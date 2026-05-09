@@ -47,15 +47,30 @@ const remote72: Backend = {
 const allHealthy = async (_b: Backend): Promise<boolean> => true;
 const allDown = async (_b: Backend): Promise<boolean> => false;
 
+// Isolate every test from the operator's actual ~/.qwen-coprocessor-stack/
+// config file by pointing QWEN_CONFIG_DIR at a per-suite empty tmpdir for
+// the tests that don't explicitly populate one. Tests that DO want a config
+// file override this in their own beforeEach.
+let _suiteTmpDir: string | null = null;
+
 beforeEach(() => {
   resetHealthCache();
   delete process.env["ROUTER_HEAVY_THRESHOLD_TOKENS"];
   delete process.env["ROUTER_HEAVY_KEYWORDS"];
   delete process.env["QWEN_BACKENDS"];
+  _suiteTmpDir = mkdtempSync(join(tmpdir(), "qwen-test-noconfig-"));
+  process.env["QWEN_CONFIG_DIR"] = _suiteTmpDir;
+  _resetConfigCache();
 });
 
 afterEach(() => {
   resetHealthCache();
+  if (_suiteTmpDir) {
+    rmSync(_suiteTmpDir, { recursive: true, force: true });
+    _suiteTmpDir = null;
+  }
+  delete process.env["QWEN_CONFIG_DIR"];
+  _resetConfigCache();
 });
 
 describe("loadBackends", () => {
@@ -170,7 +185,8 @@ describe("refreshPoolBackends", () => {
   it("clears pool.backends down to default when env unset and no file", () => {
     const pool = { backends: [local27, remote35, remote72] };
     delete process.env["QWEN_BACKENDS"];
-    delete process.env["QWEN_CONFIG_DIR"];
+    // Outer beforeEach already pointed QWEN_CONFIG_DIR at an empty tmpdir,
+    // so config file resolution returns null and the default applies.
     refreshPoolBackends(pool);
     expect(pool.backends).toHaveLength(1);
     expect(pool.backends[0]?.id).toBe("local-27b");

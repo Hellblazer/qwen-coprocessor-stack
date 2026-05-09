@@ -39,9 +39,11 @@ import {
   createInstalledExtensionsCache,
   ExtensionResolutionError,
   getSessionDefaultExtensions,
+  listInstalledExtensions,
   resolveExtensions,
   resolveQwenRealBin,
   resolveWrapperPath,
+  type ExtensionInfo,
   type InstalledExtensionsCache,
 } from "./extensions.js";
 
@@ -133,13 +135,23 @@ export type ToolHandlers = {
   qwen_stop: (args: { task_id: string }) => Promise<{ ack: boolean }>;
   qwen_backends: (args: Record<string, never>) => Promise<BackendInfo[]>;
   /**
-   * Admin-only — present only when both:
-   *   (a) the supervisor was started with QWEN_ADMIN_TOOLS=1 in env, and
-   *   (b) an installed-extensions cache was provided to createToolHandlers.
+   * Read-only listing of installed extensions, with version / path /
+   * source / enabled-state and declared commands/skills/agents/MCP
+   * servers. Shells out to `qwen extensions list` per call (no cache);
+   * cost is one process spawn — fine for an interactive listing and
+   * keeps results fresh.
+   */
+  qwen_extensions: (args: Record<string, never>) => Promise<ExtensionInfo[]>;
+  /**
+   * Triggers a fresh shell-out to `qwen extensions list` and replaces
+   * the in-process cache contents. Affects future spawns only —
+   * running sessions see no change (RDR-002 §drain semantics).
    *
-   * Triggers a fresh shell-out to `qwen extensions list` and replaces the
-   * cache contents. Affects future spawns only — running sessions see no
-   * change (RDR-002 §drain semantics).
+   * Available iff a cache was wired into createToolHandlers (production
+   * main() always wires one). The `QWEN_ADMIN_TOOLS` env var no longer
+   * gates this — RDR-002 amendment 2026-05-09: in a single-operator
+   * stdio supervisor talking to a local Claude Code there is no
+   * untrusted-client surface to protect against.
    */
   qwen_reload_extensions?: (args: Record<string, never>) => Promise<{ size: number; names: string[] }>;
   /** Test-only: flip the shutting_down flag. */
@@ -292,15 +304,37 @@ export function createToolHandlers(
     return results;
   };
 
-  // ── qwen_reload_extensions (admin-gated) ───────────────────
-  //
-  // Tool is only emitted when both QWEN_ADMIN_TOOLS=1 and a cache is
-  // present. main() registers the corresponding MCP tool only when
-  // this handler is non-undefined; tests assert on the gating directly.
+  // ── qwen_extensions (read-only listing) ────────────────────
 
-  const adminTools = process.env["QWEN_ADMIN_TOOLS"] === "1";
+  const qwen_extensions: ToolHandlers["qwen_extensions"] = async () => {
+    if (!pool.qwenRealBin) {
+      log.warn(
+        { event_type: "qwen_extensions_no_bin" },
+        "qwen_extensions called but pool.qwenRealBin is unset; returning empty list",
+      );
+      return [];
+    }
+    try {
+      return await listInstalledExtensions(pool.qwenRealBin);
+    } catch (err) {
+      log.warn(
+        { event_type: "qwen_extensions_exec_failed", err: err instanceof Error ? err.message : String(err) },
+        "qwen extensions list shell-out failed",
+      );
+      return [];
+    }
+  };
+
+  // ── qwen_reload_extensions ─────────────────────────────────
+  //
+  // RDR-002 amendment 2026-05-09: ungated. Single-operator stdio
+  // supervisor; the prior QWEN_ADMIN_TOOLS gate solved a
+  // multi-tenant-untrusted-client problem we don't have. Available
+  // whenever a cache was wired into createToolHandlers (production
+  // main() always wires one).
+
   let qwen_reload_extensions: ToolHandlers["qwen_reload_extensions"] | undefined;
-  if (adminTools && installedExtensionsCache !== undefined) {
+  if (installedExtensionsCache !== undefined) {
     qwen_reload_extensions = async () => {
       const newSet = await installedExtensionsCache.reload();
       const names = Array.from(newSet);
@@ -318,6 +352,7 @@ export function createToolHandlers(
     qwen_send,
     qwen_stop,
     qwen_backends,
+    qwen_extensions,
     ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
   };
@@ -440,14 +475,27 @@ async function main(): Promise<void> {
     },
   );
 
-  // Admin tool — registered only when createToolHandlers exposed it
-  // (QWEN_ADMIN_TOOLS=1 in env, cache available). Unrelated MCP clients
-  // never see this tool unless the operator opts in.
+  mcpServer.tool(
+    "qwen_extensions",
+    "List installed Qwen Code extensions with version, path, source, enabled state, and declared commands/skills/agents/MCP servers. Read-only.",
+    {},
+    async (_args) => {
+      const result = await handlers.qwen_extensions({});
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  // RDR-002 amendment 2026-05-09: ungated. Available whenever a cache
+  // was wired into createToolHandlers (production main() always wires
+  // one). Single-operator stdio supervisor; no untrusted-client surface
+  // to protect against.
   if (handlers.qwen_reload_extensions !== undefined) {
     const reloadHandler = handlers.qwen_reload_extensions;
     mcpServer.tool(
       "qwen_reload_extensions",
-      "Admin only — reload the supervisor's installed-extensions cache from `qwen extensions list`. Affects future spawns; running sessions are unaffected.",
+      "Reload the supervisor's installed-extensions cache from `qwen extensions list`. Affects future spawns; running sessions are unaffected.",
       {},
       async (_args) => {
         const result = await reloadHandler({});
@@ -456,7 +504,7 @@ async function main(): Promise<void> {
         };
       },
     );
-    log.info("qwen_reload_extensions admin tool registered (QWEN_ADMIN_TOOLS=1)");
+    log.info("qwen_reload_extensions tool registered");
   }
 
   // ── Reaper interval ─────────────────────────────────────────

@@ -19,6 +19,8 @@ related:
 
 ## Status
 
+**Accepted** with amendment 2026-05-09: see "Amendments" section at the end of this file.
+
 **Draft** (2026-05-04). Reframed earlier the same day from a rejected
 "canonical plugin catalogue" framing — operator preference, not repo
 mandate. The four research questions (Q1–Q4) that gated the original
@@ -569,3 +571,65 @@ RDR.
   signature, where `opts.extensions` is added.
 - `mcp-bridges/qwen-agent-server/src/types.ts` — `SpawnOpts` type
   gains an optional `extensions` field.
+
+## Amendments
+
+### 2026-05-09 — `qwen_reload_extensions` admin gate removed; `default_extensions` config-file source added
+
+Two small changes the original RDR didn't anticipate, both driven by
+plugin-UX work after the original acceptance:
+
+**(1) Drop the `QWEN_ADMIN_TOOLS=1` gate on `qwen_reload_extensions`.**
+The original Phase-3 design (§Decision → "Installed-extensions cache
+and `qwen_reload_extensions`") gated the tool to "avoid exposing
+admin-flavoured tools to misbehaving MCP clients in a hypothetical
+multi-tenant world." That world doesn't exist for this stack: the
+supervisor is a single-operator stdio server talking to a local Claude
+Code instance over a parent-child pipe. There is no untrusted-client
+surface to protect against. Keeping the gate forced the operator to
+remember an env var to make the slash-command-driven cache refresh
+work.
+
+The implementation now registers `qwen_reload_extensions` whenever a
+cache was wired into `createToolHandlers` (production `main()` always
+wires one). `QWEN_ADMIN_TOOLS=1` is silently honoured but is no longer
+load-bearing. If a future deployment exposes the supervisor across a
+trust boundary (proxied for someone else's CC instance, etc.), reinstate
+the gate via a new RDR.
+
+**(2) Add `default_extensions` to the on-disk config schema.**
+`getSessionDefaultExtensions(env)` previously read only
+`QWEN_DEFAULT_EXTENSIONS` from the environment. To match the
+file-based pattern just established for `QWEN_BACKENDS`, the
+`~/.qwen-coprocessor-stack/config.json` schema gains a sibling field:
+
+```json
+{
+  "backends": [...],
+  "default_extensions": ["serena", "context7"]
+}
+```
+
+Resolution priority (highest first): `QWEN_DEFAULT_EXTENSIONS` env →
+`config.default_extensions` → `"leave-defaults"` sentinel (CLI defaults
+apply, identical to today's pre-amendment behaviour). The mtime cache
+in `backends.ts` is the same one used by the backends list — one parse
+for both reads when the file hasn't changed.
+
+The `/qwen-stack:defaults` slash command (added v0.3) is the operator's
+surface for this field. It validates new values against the live
+installed-extensions cache before writing — same rejection shape as
+`ResolveExtensionsResult`'s step-6 `unknown extension(s): X` error.
+
+Neither amendment changes any in-flight invariant. Drain semantics
+hold (RDR-002 §The wrapper-script bridge): running sessions keep their
+resolved set; only future spawns see config edits.
+
+A new MCP tool, **`qwen_extensions`**, was also added — a read-only
+listing of installed extensions with version / source / path /
+enabled-state / declared commands-skills-agents-MCP-servers. Shells
+out to `qwen extensions list` per call (no cache); the existing
+`createInstalledExtensionsCache` continues to power `qwen_spawn`'s
+step-6 validation. The two coexist: the cache holds names for fast
+membership checks at spawn time; `qwen_extensions` is for interactive
+discovery from a slash command.

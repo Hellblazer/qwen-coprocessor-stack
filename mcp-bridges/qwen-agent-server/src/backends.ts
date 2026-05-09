@@ -21,12 +21,12 @@ const log = pino({ name: "qwen-backends" });
 /**
  * On-disk config file resolved at `~/.qwen-coprocessor-stack/config.json`.
  *
- * Supports a hot-reload pattern: callers re-invoke `loadBackends()` on
- * each spawn / health probe; we cache by mtime and re-parse only when
- * the file changes. Existing sessions stay pinned to their backend
- * (RDR-001 §Q3) — only future spawns see the updated list.
+ * Supports a hot-reload pattern: callers re-invoke their reader on each
+ * spawn / health probe; we cache the parsed object by mtime and re-parse
+ * only when the file changes. Existing sessions stay pinned to their
+ * backend (RDR-001 §Q3) — only future spawns see the updated list.
  *
- * Schema (object form, forward-extensible — only `backends` is read today):
+ * Schema (object form, forward-extensible):
  *
  *   {
  *     "backends": [
@@ -34,13 +34,13 @@ const log = pino({ name: "qwen-backends" });
  *         "tier": "local" | "remote",
  *         "capacity": "fast" | "heavy",
  *         "weight": 1 }
- *     ]
+ *     ],
+ *     "default_extensions": ["serena", "context7"]
  *   }
  *
- * Resolution priority (highest first):
- *   1. `QWEN_BACKENDS` env var (kept for back-compat / one-shot override)
- *   2. config file `backends` array
- *   3. `DEFAULT_BACKEND` fallback
+ * Resolution priorities (highest first):
+ *   - backends:           QWEN_BACKENDS env → config.backends → DEFAULT_BACKEND
+ *   - default extensions: QWEN_DEFAULT_EXTENSIONS env → config.default_extensions → "leave-defaults"
  */
 /** Default config dir; tests and operators can override via QWEN_CONFIG_DIR env var. */
 const DEFAULT_CONFIG_DIR = join(homedir(), ".qwen-coprocessor-stack");
@@ -54,13 +54,14 @@ export function getConfigPath(): string {
   return join(getConfigDir(), "config.json");
 }
 
-interface ConfigFileShape {
+export interface ConfigFileShape {
   backends?: Backend[];
+  default_extensions?: string[];
 }
 
 interface ConfigCache {
   mtimeMs: number;
-  parsed: Backend[] | null;
+  parsed: ConfigFileShape | null;
 }
 
 let _configCache: ConfigCache | null = null;
@@ -70,7 +71,13 @@ export function _resetConfigCache(): void {
   _configCache = null;
 }
 
-function readConfigBackends(): Backend[] | null {
+/**
+ * Read the full config file, mtime-cached. Returns the parsed object on
+ * success, or null when the file doesn't exist / is unreadable / fails
+ * to parse. A non-null return doesn't imply any field is populated;
+ * consumers check the field they need.
+ */
+export function readConfig(): ConfigFileShape | null {
   const path = getConfigPath();
   if (!existsSync(path)) return null;
   let mtimeMs: number;
@@ -85,12 +92,8 @@ function readConfigBackends(): Backend[] | null {
   try {
     const raw = readFileSync(path, "utf8");
     const parsed = JSON.parse(raw) as ConfigFileShape;
-    if (!parsed || !Array.isArray(parsed.backends) || parsed.backends.length === 0) {
-      _configCache = { mtimeMs, parsed: null };
-      return null;
-    }
-    _configCache = { mtimeMs, parsed: parsed.backends };
-    return parsed.backends;
+    _configCache = { mtimeMs, parsed };
+    return parsed;
   } catch (err) {
     log.warn(
       { event_type: "config_invalid", path, err: err instanceof Error ? err.message : String(err) },
@@ -99,6 +102,25 @@ function readConfigBackends(): Backend[] | null {
     _configCache = { mtimeMs, parsed: null };
     return null;
   }
+}
+
+function readConfigBackends(): Backend[] | null {
+  const cfg = readConfig();
+  if (!cfg || !Array.isArray(cfg.backends) || cfg.backends.length === 0) return null;
+  return cfg.backends;
+}
+
+/**
+ * Read `default_extensions` from the config file. Returns null when the
+ * field is unset or empty so callers can fall through to the next
+ * resolution tier.
+ */
+export function readConfigDefaultExtensions(): string[] | null {
+  const cfg = readConfig();
+  if (!cfg || !Array.isArray(cfg.default_extensions) || cfg.default_extensions.length === 0) {
+    return null;
+  }
+  return cfg.default_extensions;
 }
 
 // ─────────────────────────────────────────────────────────────────

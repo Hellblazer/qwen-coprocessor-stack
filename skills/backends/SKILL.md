@@ -1,11 +1,11 @@
 ---
-name: qwen-backends
-description: Manage the qwen-coprocessor-stack supervisor's backend list — list configured backends with live health, add a new backend, remove one, or test connectivity. Operates on `~/.qwen-coprocessor-stack/config.json` and hot-reloads in the running supervisor without restart. Use when the user types `/qwen-backends ...`.
+name: backends
+description: Manage the qwen-stack supervisor's backend list — list configured backends with live health, add a new backend, remove one, or test connectivity. Operates on `~/.qwen-coprocessor-stack/config.json` and hot-reloads in the running supervisor without restart. Use when the user types `/qwen-stack:backends ...`.
 argument-hint: list | add <id> <url> [model] [tier] [capacity] [weight] | remove <id> | test [id]
-allowed-tools: Bash, Read, Write, mcp__plugin_qwen-coprocessor-stack_qwen-agent-server__qwen_backends
+allowed-tools: Bash, Read, Write, mcp__plugin_qwen-stack_supervisor__qwen_backends
 ---
 
-# /qwen-backends
+# /qwen-stack:backends
 
 Lifecycle and discovery for the supervisor's backend list. Edits to `~/.qwen-coprocessor-stack/config.json` hot-apply on the next `qwen_spawn` or `qwen_backends` call — no supervisor restart required. Existing sessions stay pinned to their backend (RDR-001 §Q3).
 
