@@ -448,8 +448,13 @@ export function createToolHandlers(
           ...(last_budget !== undefined ? { budget: last_budget } : {}),
         };
       }
+      // Defensive: Qwen3.6 frequently wraps schema-conforming JSON in
+      // markdown code fences (```json ... ```) despite the system-prompt
+      // directive. Strip them before JSON.parse — the content is right;
+      // it's just wearing a jacket. Observed in v0.8.0 bench (5/5 cases).
+      const stripped = stripCodeFences(last_result);
       try {
-        const parsed = JSON.parse(last_result);
+        const parsed = JSON.parse(stripped);
         return {
           ok: true,
           task_id: last_task_id,
@@ -747,6 +752,33 @@ async function main(): Promise<void> {
   await mcpServer.connect(transport);
 
   log.info("qwen-agent-server ready on stdio");
+}
+
+/**
+ * Strip surrounding markdown code fences from a candidate JSON string.
+ * Qwen3.6 frequently wraps schema-conforming output in ```json ... ```
+ * (or plain ```) despite system-prompt directives forbidding it. The
+ * content is right; defending against the jacket is cheaper than
+ * fighting the model. Returns the input unchanged if no fences are
+ * detected — `JSON.parse` then runs on the original.
+ *
+ * Recognises:
+ *   - ```json\n{...}\n```
+ *   - ```\n{...}\n```
+ *   - leading/trailing whitespace around the fence
+ *   - a single trailing newline before the closing fence
+ *
+ * Does NOT attempt heroics: if the input has prose before/after the
+ * fences, or multiple fenced blocks, or unbalanced fences, returns
+ * the original. The retry loop in qwen_oneshot is the safety net.
+ */
+export function stripCodeFences(raw: string): string {
+  const trimmed = raw.trim();
+  // Match: optional language tag, body, closing fence. Anchored at
+  // both ends to refuse mid-prose stripping.
+  const m = /^```(?:json|JSON)?\s*\n([\s\S]*?)\n?```$/.exec(trimmed);
+  if (m && m[1] !== undefined) return m[1].trim();
+  return raw;
 }
 
 // Only run main when executed directly (not when imported for testing).

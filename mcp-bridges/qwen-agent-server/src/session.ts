@@ -733,9 +733,12 @@ function buildSystemPrompt(
   if (jsonSchema !== undefined) {
     parts.push(
       "[Output contract — JSON only]\n" +
-        "Your final assistant message MUST be a single JSON value (no\n" +
-        "prose, no markdown fences, no preamble) conforming to this\n" +
-        "JSON Schema:\n\n" +
+        "Your final assistant message must START with `{` or `[` and END\n" +
+        "with `}` or `]`. No preamble, no closing remarks, no explanatory\n" +
+        "text. ABSOLUTELY no markdown code fences (no triple backticks,\n" +
+        "no ```json wrappers). The very first character of your response\n" +
+        "must be `{` or `[`.\n\n" +
+        "The JSON must conform to this JSON Schema:\n\n" +
         JSON.stringify(jsonSchema, null, 2) +
         "\n\nIf the task cannot be completed, return a JSON object with\n" +
         '`{"error": "<one-line explanation>"}` rather than free text.',

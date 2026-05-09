@@ -118,6 +118,7 @@ import {
   createToolHandlers,
   qwenSpawnOptsSchema,
   buildSpawnOptsFromRaw,
+  stripCodeFences,
 } from "../src/server.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -567,6 +568,35 @@ describe("MCP tool handlers", () => {
     });
   });
 
+  // ── stripCodeFences (RDR-002 v0.8.1) ─────────────────────────
+
+  describe("stripCodeFences", () => {
+    it("strips ```json ... ``` wrapping", () => {
+      const out = stripCodeFences('```json\n{"a":1}\n```');
+      expect(out).toBe('{"a":1}');
+    });
+
+    it("strips plain ``` ... ``` wrapping", () => {
+      const out = stripCodeFences('```\n{"a":1}\n```');
+      expect(out).toBe('{"a":1}');
+    });
+
+    it("tolerates surrounding whitespace and trailing newline", () => {
+      const out = stripCodeFences('  ```json\n{"a":1}\n```  ');
+      expect(out).toBe('{"a":1}');
+    });
+
+    it("returns input unchanged when no fences present", () => {
+      const out = stripCodeFences('{"a":1}');
+      expect(out).toBe('{"a":1}');
+    });
+
+    it("does NOT strip mid-prose fenced blocks", () => {
+      const input = 'here is JSON:\n```json\n{"a":1}\n```\nnice';
+      expect(stripCodeFences(input)).toBe(input);
+    });
+  });
+
   // ── qwen_oneshot (RDR-002 v0.8 amendment) ───────────────────
   //
   // Mock semantics: the MS class above doesn't drive a real SDK loop,
@@ -702,6 +732,37 @@ describe("MCP tool handlers", () => {
       const result = await oneshotPromise as { ok: boolean; error?: { code: string } };
       expect(result.ok).toBe(false);
       expect(result.error?.code).toBe("timeout");
+    });
+
+    // RDR-002 v0.8.1 — Qwen3.6 wraps schema-conforming JSON in
+    // markdown fences despite the system-prompt directive. The bench
+    // observed this on 5/5 cases. Verify the defensive strip + parse
+    // path in qwen_oneshot recovers cleanly.
+    it("recovers from ```json ... ``` wrapping when json_schema is set", async () => {
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "produce json",
+        opts: {
+          timeout_ms: 5000,
+          json_schema: { type: "object" },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      const inst = mockInstances[0]!;
+      inst.setState("idle");
+      inst.poll.mockReturnValue({
+        state: "idle",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        last_message: '```json\n{"name":"qwen","wrapped":true}\n```',
+        budget: { est_tokens: 0, max_tokens: 0, tool_calls: 0, max_tool_calls: 0 },
+      });
+      const result = await oneshotPromise as { ok: boolean; parsed?: unknown; result?: string };
+      expect(result.ok).toBe(true);
+      expect(result.parsed).toEqual({ name: "qwen", wrapped: true });
+      // The raw `result` field still carries the original wrapped text
+      // so callers can see what the model emitted.
+      expect(result.result).toContain("```json");
     });
 
     it("forwards spawn opts including thinking_mode and json_schema to the underlying spawn", async () => {

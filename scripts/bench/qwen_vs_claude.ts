@@ -142,6 +142,52 @@ async function runQwen(
   }
 }
 
+/**
+ * Pull the schema-conforming bit out of `claude -p --output-format json`'s
+ * stdout. The OUTER envelope is always JSON (Claude Code metadata); the
+ * inner schema-constrained answer lives in either `.result` (when the
+ * model produced text) or in `.iterations[].message.content[].text` (the
+ * structured-output path). We try them in order and return the first
+ * value that itself parses as schema-shaped JSON.
+ *
+ * v0.8.0 of this bench parsed the outer envelope only and reported
+ * `json_valid: true` for every Claude row regardless of whether the
+ * actual answer conformed — false positives. This helper fixes that.
+ */
+function extractClaudeAnswer(stdout: string): { text: string; parsed: unknown | undefined } {
+  let envelope: { result?: unknown; iterations?: Array<{ message?: { content?: Array<{ type?: string; text?: string }> } }> } | undefined;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    return { text: stdout, parsed: undefined };
+  }
+  // Candidate 1: top-level `result` is a non-empty string and parses.
+  if (typeof envelope?.result === "string" && envelope.result.trim().length > 0) {
+    try {
+      return { text: envelope.result, parsed: JSON.parse(envelope.result) };
+    } catch {
+      // fall through — `.result` may be a textual summary, not the JSON
+    }
+  }
+  // Candidate 2: walk iterations[*].message.content[*] looking for a
+  // text block that parses as JSON. Take the first hit.
+  for (const it of envelope?.iterations ?? []) {
+    for (const block of it.message?.content ?? []) {
+      if (block?.type === "text" && typeof block.text === "string") {
+        try {
+          return { text: block.text, parsed: JSON.parse(block.text) };
+        } catch {
+          // not this one
+        }
+      }
+    }
+  }
+  // No schema-conforming JSON found anywhere we know to look. Return
+  // the envelope's `.result` (textual summary) if present, else stdout.
+  const fallback = (typeof envelope?.result === "string" ? envelope.result : "") || stdout;
+  return { text: fallback, parsed: undefined };
+}
+
 async function runClaude(c: Case, timeoutMs: number): Promise<RunRow> {
   const t0 = Date.now();
   return new Promise((resolve) => {
@@ -178,21 +224,16 @@ async function runClaude(c: Case, timeoutMs: number): Promise<RunRow> {
       clearTimeout(timer);
       const elapsed = Date.now() - t0;
       const ok = code === 0;
-      let jsonValid = false;
-      try {
-        JSON.parse(stdout);
-        jsonValid = true;
-      } catch {
-        // not valid JSON
-      }
+      const { text, parsed } = extractClaudeAnswer(stdout);
+      const jsonValid = parsed !== undefined;
       resolve({
         case: c.name,
         engine: "claude",
         elapsed_ms: elapsed,
         ok,
         json_valid: jsonValid,
-        output_len: stdout.length,
-        ...(stdout ? { output_truncated: truncate(stdout) } : {}),
+        output_len: text.length,
+        ...(text ? { output_truncated: truncate(text) } : {}),
         ...(ok ? {} : { error: stderr.slice(0, 500) || `exit ${code}` }),
       });
     });
