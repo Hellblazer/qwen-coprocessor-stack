@@ -86,6 +86,23 @@ export interface SpawnOpts {
     disable?: string[];
     only?: string[];
   };
+  /**
+   * Hard cap on accumulated tool_result token estimate (chars / 4). When
+   * exceeded the session terminates with state="error" and
+   * error.code="context_exceeded" instead of crashing at the HTTP layer.
+   *
+   * Wiring layer default (server.ts/config): 0.85 * ctx_size; with the
+   * operator's qwentescence ctx_size=131072 that is 111000. Pass 0 here
+   * to disable; QwenSession itself treats undefined or 0 as "no cap".
+   *
+   * RDR-002 §Session budget (2026-05-09 amendment).
+   */
+  max_context_tokens?: number;
+  /**
+   * Hard cap on tool_call count per session. Pass 0 (the default) for
+   * unlimited. Same abort contract as max_context_tokens.
+   */
+  max_tool_calls?: number;
 }
 
 /**
@@ -110,7 +127,14 @@ export type EventType =
   | "model_message_summary"
   | "turn_complete"
   | "error"
-  | "extensions_loaded";
+  | "extensions_loaded"
+  /**
+   * Budget-pressure warning emitted at 50% / 75% / 90% of
+   * max_context_tokens. Fires at most once per threshold per session.
+   * data shape: { level: "warn"|"high"|"critical", est_tokens, max_tokens,
+   * tool_calls, max_tool_calls }. RDR-002 §Session budget.
+   */
+  | "context_pressure";
 
 /**
  * One event in a session's event log. `summary` is a one-sentence
@@ -179,7 +203,10 @@ export interface PollResult {
   last_message?: string;
   /** Final result text when state is `complete`. */
   result?: string;
-  error?: { code: "backend_offline" | "backend_internal" | "timeout"; message: string };
+  error?: {
+    code: "backend_offline" | "backend_internal" | "timeout" | "context_exceeded";
+    message: string;
+  };
   last_known?: LastKnown;
 }
 

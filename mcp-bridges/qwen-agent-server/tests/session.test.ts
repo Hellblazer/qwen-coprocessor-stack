@@ -764,4 +764,185 @@ describe("QwenSession", () => {
       ctrl.end();
     });
   });
+
+  // ── Session budget (RDR-002 §Session budget, 2026-05-09) ─────
+  //
+  // The supervisor pre-2026-05-09 had no internal cap on accumulated
+  // tool_result content, so a runaway "find a hazard in this repo"
+  // session that read 80+ files crashed at the HTTP layer with
+  // ECONNRESET. v0.4 adds:
+  //   - context_pressure events at 50/75/90% of max_context_tokens
+  //   - clean abort with code=context_exceeded once a cap is exceeded
+
+  describe("session budget", () => {
+    /** Build an SDK assistant message with one tool_use block. */
+    function toolUseMsg(name: string, id: string, input: Record<string, unknown> = {}): SDKMessage {
+      return {
+        type: "assistant",
+        uuid: id,
+        session_id: "s1",
+        message: {
+          id: id,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "tool_use", id, name, input }],
+          model: "qwen3.6-35b-a3b",
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      } as unknown as SDKMessage;
+    }
+
+    /** Build an SDK user message with one tool_result of the given char-length string. */
+    function toolResultMsg(toolUseId: string, contentLen: number): SDKMessage {
+      return {
+        type: "user",
+        session_id: "s1",
+        parent_tool_use_id: null,
+        uuid: `r-${toolUseId}`,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: toolUseId,
+              content: "x".repeat(contentLen),
+            },
+          ],
+        },
+      } as unknown as SDKMessage;
+    }
+
+    it("emits context_pressure at 50/75/90% with the right level field", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      // Cap = 1000 est tokens → 4000 chars total. Thresholds at 500/750/900
+      // est tokens → 2000/3000/3600 chars. Push three results that cross
+      // each boundary.
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ max_context_tokens: 1000 }),
+      );
+      ctrl.push(toolResultMsg("t1", 2100)); // est=525 → warn
+      await flush();
+      ctrl.push(toolResultMsg("t2", 1000)); // est=775 → high
+      await flush();
+      ctrl.push(toolResultMsg("t3", 600));  // est=925 → critical
+      await flush();
+
+      const events = session.poll({ max_events: 1000 }).recent_events;
+      const pressure = events.filter((e) => e.type === "context_pressure");
+      const levels = pressure.map((e) => (e.data as { level: string }).level);
+      expect(levels).toEqual(["warn", "high", "critical"]);
+      // Each event's est_tokens / max_tokens shape is correct.
+      for (const ev of pressure) {
+        const d = ev.data as {
+          level: string; est_tokens: number; max_tokens: number;
+          tool_calls: number; max_tool_calls: number;
+        };
+        expect(d.max_tokens).toBe(1000);
+        expect(d.est_tokens).toBeGreaterThan(0);
+        expect(d.max_tool_calls).toBe(0);
+      }
+
+      ctrl.end();
+    });
+
+    it("each context_pressure threshold fires only once per session", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ max_context_tokens: 1000 }),
+      );
+      // Five tool_results, all crossing the 50% line. Should still fire
+      // exactly one warn event (and no high/critical because we never
+      // cross those — chars stay around 50–60%).
+      for (let i = 0; i < 5; i++) {
+        ctrl.push(toolResultMsg(`t${i}`, 450));
+        await flush();
+      }
+
+      const pressure = session
+        .poll({ max_events: 1000 })
+        .recent_events.filter((e) => e.type === "context_pressure");
+      expect(pressure.length).toBe(1);
+      expect((pressure[0]!.data as { level: string }).level).toBe("warn");
+
+      ctrl.end();
+    });
+
+    it("aborts cleanly with state=error code=context_exceeded when max_tool_calls is exceeded", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ max_tool_calls: 2 }),
+      );
+      // Three tool_use blocks: 1, 2 fine; 3 exceeds the cap.
+      ctrl.push(toolUseMsg("read", "tu_1"));
+      await flush();
+      ctrl.push(toolUseMsg("read", "tu_2"));
+      await flush();
+      ctrl.push(toolUseMsg("read", "tu_3"));
+      await flush();
+
+      expect(session.state).toBe("error");
+      const polled = session.poll({});
+      expect(polled.error?.code).toBe("context_exceeded");
+      expect(polled.error?.message).toContain("tool_calls=3/2");
+    });
+
+    it("aborts cleanly with state=error code=context_exceeded when max_context_tokens is exceeded", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ max_context_tokens: 100 }),
+      );
+      // 100 tokens cap → 400 chars. Push a 600-char result; est=150,
+      // exceeds the cap. Expect: pressure events fire, then abort.
+      ctrl.push(toolResultMsg("t1", 600));
+      await flush();
+
+      expect(session.state).toBe("error");
+      const polled = session.poll({});
+      expect(polled.error?.code).toBe("context_exceeded");
+      expect(polled.error?.message).toContain("est_tokens=150/100");
+    });
+
+    it("with both opts unset, behaviour is unchanged (no pressure events, no abort)", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      // Push large tool results — would trip a 100-token cap many times
+      // over. With caps disabled the session must stay running.
+      for (let i = 0; i < 5; i++) {
+        ctrl.push(toolResultMsg(`t${i}`, 5000));
+        await flush();
+      }
+      // Many tool_use too.
+      for (let i = 0; i < 50; i++) {
+        ctrl.push(toolUseMsg("read", `tu_${i}`));
+        await flush();
+      }
+
+      expect(session.state).toBe("running");
+      const events = session.poll({ max_events: 1000 }).recent_events;
+      expect(events.find((e) => e.type === "context_pressure")).toBeUndefined();
+      expect(events.find((e) => e.type === "error")).toBeUndefined();
+
+      ctrl.end();
+    });
+  });
 });

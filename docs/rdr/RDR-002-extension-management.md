@@ -19,7 +19,7 @@ related:
 
 ## Status
 
-**Accepted** with amendment 2026-05-09: see "Amendments" section at the end of this file.
+**Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event): see "Amendments" section at the end of this file.
 
 **Draft** (2026-05-04). Reframed earlier the same day from a rejected
 "canonical plugin catalogue" framing — operator preference, not repo
@@ -633,3 +633,79 @@ out to `qwen extensions list` per call (no cache); the existing
 step-6 validation. The two coexist: the cache holds names for fast
 membership checks at spawn time; `qwen_extensions` is for interactive
 discovery from a slash command.
+
+### 2026-05-09 — Session budget (`max_context_tokens`, `max_tool_calls`, `context_pressure` event)
+
+Real-world driver: the cross-repo shakeout on 2026-05-09 ("find a
+hazard in this repo" against five external repos) crashed the
+Prime-Mover sweep at the HTTP layer with `terminated (cause: read
+ECONNRESET)` after 161 events. The inner Qwen had read 80+ files of
+tool_result content. Neither `@qwen-code/sdk@0.1.7` nor the underlying
+llama.cpp backend (Qwen 3.6 hybrid Gated-DeltaNet — `--cache-reuse` does
+not apply to its KV layout) provides automatic mid-flight compaction;
+the supervisor was free-running until the upstream socket folded.
+
+This amendment ships the second of four mitigation options the operator
+approved (1 = pre-flight task scoping in slash-command authoring; 2 =
+this guardrail; 3 = observability of approach; 4 = true mid-flight
+compaction, deferred — would require SDK rework).
+
+**(1) Two new optional fields on `SpawnOpts`:**
+
+- `max_context_tokens?: number` — hard cap on the `chars / 4` token
+  estimate over accumulated tool_result content. Zero or undefined
+  disables the cap inside `QwenSession`. The supervisor's wiring layer
+  applies a default of `111000` (≈85 % of qwentescence's 131072
+  ctx_size) when the spawn caller omits it.
+- `max_tool_calls?: number` — hard cap on tool_call count per session.
+  Default `0` (unlimited).
+
+Both caps abort with `state="error"` and `error.code="context_exceeded"`
+when exceeded. The error message includes both counters
+(`est_tokens=N/M, tool_calls=N/M`) so post-mortem polls can attribute
+the abort to the right knob.
+
+**(2) New event type — `context_pressure`.** Emitted at most once each
+at 50 / 75 / 90 % of `max_context_tokens`. Data carries
+`{level, est_tokens, max_tokens, tool_calls, max_tool_calls}`. Long-
+running pollers can wind a session down gracefully when they see
+`level: "high"` rather than waiting for the abort.
+
+**(3) Resolution priority for the wired-in defaults**, mirroring the
+backends and default-extensions patterns established in v0.3:
+
+1. Per-spawn `opts.max_context_tokens` / `opts.max_tool_calls`.
+2. `QWEN_MAX_CONTEXT_TOKENS` / `QWEN_MAX_TOOL_CALLS` env vars
+   (non-negative integers; invalid values warn-and-skip).
+3. `config.session_budget.{max_context_tokens, max_tool_calls}` in
+   `~/.qwen-coprocessor-stack/config.json`.
+4. Hardcoded 111000 / 0.
+
+A value of `0` at any tier means "no cap" and is preserved as-is — i.e.
+`config.session_budget.max_context_tokens: 0` honours the operator's
+choice to disable the guardrail rather than silently substituting the
+default.
+
+**(4) Token estimate is intentionally crude.** `chars / 4` runs ~25–30 %
+hot on English prose against tiktoken; the 0.85 fraction in the default
+is precisely the headroom that crudeness costs. The point is to fire
+visibly before the HTTP layer panics, not to be precise. A real
+tokenizer is not worth pulling into the supervisor for this purpose
+(adds a dependency that has to track Qwen's vocab; loses portability
+to other backends).
+
+**(5) Out of scope for v0.4** — deferred to later RDRs / RDR
+amendments:
+
+- A `/qwen-stack:budget` slash command for inspecting / setting caps
+  (deferred to v0.5).
+- Mid-flight summarisation (option 4 from the menu — would require SDK
+  changes; no workable in-supervisor path).
+- Per-tool-result token budgets (e.g., "no single tool_result over
+  50K") — defer until evidence of a need.
+- A `qwen_session_stats` MCP tool exposing live counter values to the
+  caller — defer; pollers can already infer from emitted events.
+
+Drain semantics from the original RDR continue to hold: caps are
+captured at session construction; running sessions are unaffected by
+config edits made after their spawn.

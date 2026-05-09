@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Single-plugin marketplace exposing the qwen-stack plugin from the same repository.",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {
       "name": "qwen-stack",
       "source": "./",
       "description": "Locally-hosted Qwen 3.6 as a Claude Code coprocessor — delegate bulk or cheap work to long-lived supervised inference sessions over MCP. Backends include llama.cpp Metal on Apple Silicon and llama.cpp Vulkan on AMD Strix Halo.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "category": "ai-infra",
       "tags": ["mcp", "qwen", "qwen3.6", "coprocessor", "llama.cpp", "inference", "delegation", "vulkan", "metal"]
     }

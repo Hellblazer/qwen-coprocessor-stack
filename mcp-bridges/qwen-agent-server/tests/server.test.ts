@@ -86,6 +86,11 @@ vi.mock("../src/backends.js", () => ({
   // env / leave-defaults is the active path in tests.
   readConfigDefaultExtensions: vi.fn(() => null),
   _resetConfigCache: vi.fn(),
+  // RDR-002 §Session budget — server.ts calls this on every spawn to
+  // resolve env/config/hardcoded defaults. Tests don't exercise the
+  // budget surface yet (session.test.ts owns that); return zero-disabled
+  // for both knobs so existing assertions are unaffected.
+  getSessionBudgetDefaults: vi.fn(() => ({ max_context_tokens: 0, max_tool_calls: 0 })),
 }));
 
 // ─────────────────────────────────────────────────────────────────

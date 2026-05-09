@@ -25,7 +25,7 @@ import type {
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
-import { getCachedHealth, refreshPoolBackends } from "./backends.js";
+import { getCachedHealth, getSessionBudgetDefaults, refreshPoolBackends } from "./backends.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -85,6 +85,8 @@ export const qwenSpawnOptsSchema = z.object({
     disable: z.array(z.string()).optional(),
     only: z.array(z.string()).optional(),
   }).optional(),
+  max_context_tokens: z.number().int().nonnegative().optional(),
+  max_tool_calls: z.number().int().nonnegative().optional(),
 }).optional();
 
 type RawSpawnOpts = z.infer<typeof qwenSpawnOptsSchema>;
@@ -119,6 +121,8 @@ export function buildSpawnOptsFromRaw(rawOpts: RawSpawnOpts): Partial<SpawnOpts>
     if (rawOpts.extensions.only !== undefined) ext.only = rawOpts.extensions.only;
     spawnOpts.extensions = ext;
   }
+  if (rawOpts.max_context_tokens !== undefined) spawnOpts.max_context_tokens = rawOpts.max_context_tokens;
+  if (rawOpts.max_tool_calls !== undefined) spawnOpts.max_tool_calls = rawOpts.max_tool_calls;
   return spawnOpts;
 }
 
@@ -211,9 +215,21 @@ export function createToolHandlers(
     // new list.
     refreshPoolBackends(pool);
 
+    // Apply session-budget defaults from env / config / hardcoded
+    // (RDR-002 §Session budget). Caller-supplied opts take precedence;
+    // 0 from any tier means "no cap" and is preserved as-is.
+    const budgetDefaults = getSessionBudgetDefaults();
+    const optsWithBudget: Partial<SpawnOpts> = { ...opts };
+    if (optsWithBudget.max_context_tokens === undefined) {
+      optsWithBudget.max_context_tokens = budgetDefaults.max_context_tokens;
+    }
+    if (optsWithBudget.max_tool_calls === undefined) {
+      optsWithBudget.max_tool_calls = budgetDefaults.max_tool_calls;
+    }
+
     let session;
     try {
-      session = await spawnSession(pool, task, opts, resolvedExtensions);
+      session = await spawnSession(pool, task, optsWithBudget, resolvedExtensions);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn({ event_type: "spawn_no_backend", err: message }, "spawnSession failed");

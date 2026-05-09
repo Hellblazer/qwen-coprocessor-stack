@@ -57,6 +57,15 @@ export function getConfigPath(): string {
 export interface ConfigFileShape {
   backends?: Backend[];
   default_extensions?: string[];
+  /**
+   * Per-spawn budget caps (RDR-002 §Session budget, 2026-05-09
+   * amendment). Both fields are optional; unset/missing falls through
+   * to the wired-in defaults in `getSessionBudgetDefaults()`.
+   */
+  session_budget?: {
+    max_context_tokens?: number;
+    max_tool_calls?: number;
+  };
 }
 
 interface ConfigCache {
@@ -108,6 +117,66 @@ function readConfigBackends(): Backend[] | null {
   const cfg = readConfig();
   if (!cfg || !Array.isArray(cfg.backends) || cfg.backends.length === 0) return null;
   return cfg.backends;
+}
+
+/**
+ * Resolved session-budget defaults. Both fields are zero-disabled; a
+ * value of 0 means "no cap" (matches QwenSession's internal contract).
+ *
+ * Resolution priority:
+ *   1. QWEN_MAX_CONTEXT_TOKENS / QWEN_MAX_TOOL_CALLS env (numeric)
+ *   2. config.session_budget.{max_context_tokens, max_tool_calls}
+ *   3. Hardcoded default 111000 / 0 (≈85 % of qwentescence's 131072
+ *      ctx_size; tool-call cap unlimited).
+ *
+ * The supervisor doesn't directly inspect the running ctx_size — it
+ * could change per backend or be overridden in launch-llama-vulkan.cmd.
+ * 111000 errs on the safe side for the operator's current 131072
+ * deployment without coupling to backend internals (RDR-002 §Session
+ * budget, 2026-05-09 amendment).
+ */
+export interface ResolvedSessionBudget {
+  max_context_tokens: number;
+  max_tool_calls: number;
+}
+
+const DEFAULT_MAX_CONTEXT_TOKENS = 111_000;
+const DEFAULT_MAX_TOOL_CALLS = 0;
+
+function parseNumericEnv(name: string, env: NodeJS.ProcessEnv): number | null {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) {
+    log.warn(
+      { event_type: "config_invalid", source: "env", var: name, raw },
+      "env var ignored: not a non-negative integer",
+    );
+    return null;
+  }
+  return n;
+}
+
+export function getSessionBudgetDefaults(env: NodeJS.ProcessEnv = process.env): ResolvedSessionBudget {
+  const cfg = readConfig();
+  const cfgBudget = cfg?.session_budget;
+
+  const envMaxCtx = parseNumericEnv("QWEN_MAX_CONTEXT_TOKENS", env);
+  const cfgMaxCtx =
+    typeof cfgBudget?.max_context_tokens === "number" && cfgBudget.max_context_tokens >= 0
+      ? cfgBudget.max_context_tokens
+      : null;
+
+  const envMaxCalls = parseNumericEnv("QWEN_MAX_TOOL_CALLS", env);
+  const cfgMaxCalls =
+    typeof cfgBudget?.max_tool_calls === "number" && cfgBudget.max_tool_calls >= 0
+      ? cfgBudget.max_tool_calls
+      : null;
+
+  return {
+    max_context_tokens: envMaxCtx ?? cfgMaxCtx ?? DEFAULT_MAX_CONTEXT_TOKENS,
+    max_tool_calls: envMaxCalls ?? cfgMaxCalls ?? DEFAULT_MAX_TOOL_CALLS,
+  };
 }
 
 /**

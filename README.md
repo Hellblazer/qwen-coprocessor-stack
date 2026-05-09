@@ -97,6 +97,51 @@ extension set (RDR-001 §Q3, RDR-002 §drain semantics) — config edits
 affect new spawns only.
 
 
+## Session budget
+
+The inner Qwen has no automatic mid-flight compaction; an open-ended task
+that reads dozens of files can accumulate tool_result payload past the
+backend's context window and crash the HTTP layer with `ECONNRESET`. v0.4
+adds a guardrail that aborts the session cleanly before that happens.
+
+Two caps, both per session:
+
+- `max_context_tokens` — a `chars / 4` estimate over accumulated
+  tool_result content. Default `111000` (≈85 % of the operator's
+  qwentescence `--ctx-size 131072`). Set to `0` to disable.
+- `max_tool_calls` — count of tool_use messages. Default `0` (no cap).
+
+Hitting either fires `state="error"` with `error.code="context_exceeded"`
+and a one-line message that includes both counters.
+
+Pre-abort, a `context_pressure` event fires once each at 50 / 75 / 90 %
+of `max_context_tokens` so a long-running poller can wind a session down
+gracefully instead of being surprised. Event data:
+
+```json
+{ "level": "warn|high|critical",
+  "est_tokens": 525, "max_tokens": 1000,
+  "tool_calls": 3,   "max_tool_calls": 0 }
+```
+
+Resolution priority for the defaults: per-spawn opts → `QWEN_MAX_CONTEXT_TOKENS`
+/ `QWEN_MAX_TOOL_CALLS` env → `config.session_budget` → hardcoded 111000 / 0.
+
+```json
+{
+  "backends": [...],
+  "default_extensions": [...],
+  "session_budget": {
+    "max_context_tokens": 111000,
+    "max_tool_calls": 0
+  }
+}
+```
+
+A `/qwen-stack:budget` slash command for inspecting / overriding caps is
+deferred to v0.5; for v0.4 the config file and env vars are the surface.
+
+
 ## MCP tools
 
 | Tool             | Purpose |

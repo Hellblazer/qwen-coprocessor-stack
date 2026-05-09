@@ -143,6 +143,18 @@ export class QwenSession {
   private _sdkIter: Query | null = null;
   private _abortController: AbortController;
 
+  // ── Session budget (RDR-002 §Session budget, 2026-05-09 amendment) ─
+  // Caps are zero-disabled; defaults are applied in the wiring layer
+  // (server.ts / config), not here. The budget tracks accumulated
+  // tool_result content and tool_call count — the two knobs that
+  // actually correlate with the Prime-Mover-style ECONNRESET crash we
+  // saw in the 2026-05-09 shakeout.
+  private readonly _maxContextTokens: number;
+  private readonly _maxToolCalls: number;
+  private _accumulatedToolResultChars = 0;
+  private _toolCallCount = 0;
+  private _emittedPressure = new Set<"warn" | "high" | "critical">();
+
   // Multi-turn input queue + waker for the async-generator prompt.
   private _inputQueue: SDKUserMessage[] = [];
   private _inputResolver: (() => void) | null = null;
@@ -160,6 +172,9 @@ export class QwenSession {
     this.write_authority = opts.write_authority === true;
     this._abortController = new AbortController();
     this._last_user_message = prompt;
+    // Zero/undefined disables the cap; defaults flow in from server.ts.
+    this._maxContextTokens = opts.max_context_tokens ?? 0;
+    this._maxToolCalls = opts.max_tool_calls ?? 0;
 
     // RDR-002 step 11: extensions_loaded is the first event in the
     // session's log when a resolution is provided. Populating before
@@ -404,6 +419,80 @@ export class QwenSession {
     }
   }
 
+  // ── Session budget ────────────────────────────────────────────
+  //
+  // The chars/4 token estimate is intentionally crude — the SDK doesn't
+  // expose a tokenizer and we don't want to ship one. It runs ~25–30%
+  // hot for English prose against tiktoken, so 0.85 * ctx_size as the
+  // default cap leaves comfortable headroom even when the estimate is
+  // optimistic. The point is to fire visibly before the HTTP layer
+  // panics, not to be precise.
+
+  /** Returns the current chars/4 token estimate. */
+  private _estTokens(): number {
+    return Math.floor(this._accumulatedToolResultChars / 4);
+  }
+
+  /** Emit a `context_pressure` event when the estimate first crosses
+   *  50%, 75%, or 90% of max_context_tokens. Each level fires once. */
+  private _maybeEmitPressure(): void {
+    if (this._maxContextTokens <= 0) return;
+    const est = this._estTokens();
+    const thresholds: ReadonlyArray<readonly [number, "warn" | "high" | "critical"]> = [
+      [0.5, "warn"],
+      [0.75, "high"],
+      [0.9, "critical"],
+    ];
+    for (const [pct, level] of thresholds) {
+      if (this._emittedPressure.has(level)) continue;
+      if (est >= this._maxContextTokens * pct) {
+        this._emittedPressure.add(level);
+        this.pushEvent(
+          "context_pressure",
+          `context_pressure ${level}: ${est}/${this._maxContextTokens} est tokens, ${this._toolCallCount} tool calls`,
+          {
+            level,
+            est_tokens: est,
+            max_tokens: this._maxContextTokens,
+            tool_calls: this._toolCallCount,
+            max_tool_calls: this._maxToolCalls,
+          },
+        );
+      }
+    }
+  }
+
+  /** If either cap is exceeded, transition to error and stop the SDK
+   *  iterator. Returns true when an abort was triggered so callers in
+   *  `_run` can break out of their loop. Idempotent. */
+  private _enforceBudget(): boolean {
+    if (this._state === "error") return true; // already aborted
+    const est = this._estTokens();
+    const overTokens = this._maxContextTokens > 0 && est > this._maxContextTokens;
+    const overCalls = this._maxToolCalls > 0 && this._toolCallCount > this._maxToolCalls;
+    if (!overTokens && !overCalls) return false;
+
+    const message = `session exceeded budget: est_tokens=${est}/${this._maxContextTokens || "off"}, tool_calls=${this._toolCallCount}/${this._maxToolCalls || "off"}`;
+    this._state = "error";
+    this._error = { code: "context_exceeded", message };
+    this.pushEvent("error", `context budget exceeded: ${message}`);
+    log.warn(
+      {
+        task_id: this.task_id,
+        event_type: "context_exceeded",
+        est_tokens: est,
+        max_tokens: this._maxContextTokens,
+        tool_calls: this._toolCallCount,
+        max_tool_calls: this._maxToolCalls,
+      },
+      "session aborted: budget exceeded",
+    );
+    // stop() preserves _state when it is already "error" — by design,
+    // see the existing guard in stop().
+    this.stop();
+    return true;
+  }
+
   // ── SDK event loop ────────────────────────────────────────────
 
   private async _run(): Promise<void> {
@@ -431,6 +520,8 @@ export class QwenSession {
                 `tool_call: ${block.name}`,
                 { name: block.name, id: block.id, input: block.input },
               );
+              this._toolCallCount++;
+              if (this._enforceBudget()) return;
             }
           }
         } else if (msg.type === "user") {
@@ -444,6 +535,9 @@ export class QwenSession {
                   `tool_result: ${block.tool_use_id}`,
                   block,
                 );
+                this._accumulatedToolResultChars += measureToolResultChars(block);
+                this._maybeEmitPressure();
+                if (this._enforceBudget()) return;
               }
             }
           }
@@ -506,6 +600,42 @@ export class QwenSession {
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
+
+/**
+ * Best-effort char count of a tool_result block's content. The SDK
+ * permits either a plain string or an array of typed sub-blocks
+ * (`{type:"text",text}` or other content blocks); we sum text length
+ * across both shapes and fall back to the JSON string for anything
+ * unexpected. Slight over-counting is fine — the budget is a guardrail,
+ * not an accountant.
+ */
+function measureToolResultChars(block: unknown): number {
+  const obj = block as { content?: unknown };
+  const c = obj?.content;
+  if (typeof c === "string") return c.length;
+  if (Array.isArray(c)) {
+    let total = 0;
+    for (const part of c as unknown[]) {
+      if (typeof part === "string") {
+        total += part.length;
+        continue;
+      }
+      const p = part as { type?: string; text?: string };
+      if (p && typeof p.text === "string") {
+        total += p.text.length;
+      } else {
+        total += JSON.stringify(part).length;
+      }
+    }
+    return total;
+  }
+  if (c === undefined || c === null) return 0;
+  try {
+    return JSON.stringify(c).length;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Render the resolved extension set into a one-line summary suitable
