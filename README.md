@@ -96,11 +96,6 @@ Existing in-flight sessions stay pinned to their backend and resolved
 extension set (RDR-001 §Q3, RDR-002 §drain semantics) — config edits
 affect new spawns only.
 
-> **Note:** The repo also contains a project-scoped `.mcp.json` at the repo
-> root with absolute paths, used when running Claude Code directly from
-> within the repo for development. If you install the plugin AND launch CC
-> from the repo directory, both scopes will register the supervisor MCP
-> server — pick one path. For most users, the plugin is the right choice.
 
 ## MCP tools
 

@@ -21,3 +21,8 @@ __pycache__/
 .dolt/
 *.db
 .beads-credential-key
+
+# v0.3.0 — plugin install owns the MCP wiring; project-scoped .mcp.json
+# at repo root would create a duplicate 'qwen-agent-server' registration
+# alongside the plugin's 'supervisor' entry. Don't bring it back.
+.mcp.json
