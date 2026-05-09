@@ -38,14 +38,38 @@ Full design rationale: [`docs/rdr/RDR-001`](docs/rdr/RDR-001-qwen-coprocessor-mc
 # 2. Start llama-server (cold start: ~5 min off external SSD, ~5 s off NVMe).
 ./scripts/start-stack.sh
 
-# 3. Build the supervisor and register it with Claude Code (idempotent).
-./scripts/setup-qwen-agent-server.sh
+# 3. Build the supervisor (compiles dist/server.js — postinstall runs tsc).
+( cd mcp-bridges/qwen-agent-server && npm install )
 
-# 4. Run Claude Code anywhere — the qwen_* tools are now available.
+# 4. Register the supervisor with Claude Code. Either:
+#    a) install as a plugin (recommended — see "Install as a plugin" below), or
+#    b) run ./scripts/setup-qwen-agent-server.sh (legacy `claude mcp add` path).
+
+# 5. Run Claude Code anywhere — the qwen_* tools are now available.
 claude
 ```
 
-To shut down: `./scripts/stop-stack.sh`.
+To shut down the local llama-server: `./scripts/stop-stack.sh`.
+
+## Install as a plugin
+
+This repo doubles as a Claude Code plugin. After `npm run build` in step 3:
+
+```bash
+# From any Claude Code session:
+/plugin install <path-to-this-repo>
+```
+
+The plugin manifest at `.claude-plugin/plugin.json` registers the supervisor's
+MCP server (`qwen-agent-server`) with `${CLAUDE_PLUGIN_ROOT}` resolved to the
+plugin install location, so paths stay portable. The five `qwen_*` MCP tools
+become available immediately after install.
+
+> **Note:** The repo also contains a project-scoped `.mcp.json` at the repo
+> root with absolute paths, used when running Claude Code directly from
+> within the repo for development. If you install the plugin AND launch CC
+> from the repo directory, both scopes will register `qwen-agent-server` —
+> pick one path. For most users, the plugin is the right choice.
 
 ## MCP tools
 
