@@ -354,7 +354,7 @@ describe("parseInstalledExtensionsRich", () => {
     expect(serena.name).toBe("serena");
     expect(serena.version).toBe("1.2.3");
     expect(serena.path).toBe("/home/u/.qwen/extensions/serena");
-    expect(serena.source).toContain("github.com/example/serena");
+    expect(serena.source).toBe("github.com/example/serena");
     expect(serena.enabled_user).toBe(true);
     expect(serena.enabled_workspace).toBe(true);
     expect(serena.commands).toEqual(["find", "rename"]);

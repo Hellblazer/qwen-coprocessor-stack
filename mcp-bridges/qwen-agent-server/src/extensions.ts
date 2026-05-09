@@ -236,7 +236,6 @@ export function parseInstalledExtensionsRich(stdout: string): ExtensionInfo[] {
     //   ` Agents:` then `  <agent>` lines
     //   ` MCP servers:` then `  <name>` lines
     let currentList: string[] | null = null;
-    let currentTarget: keyof ExtensionInfo | null = null;
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
       if (line === undefined) continue;
@@ -254,7 +253,6 @@ export function parseInstalledExtensionsRich(stdout: string): ExtensionInfo[] {
       }
 
       currentList = null;
-      currentTarget = null;
 
       const fieldMatch = /^\s*([\w\s()]+?):\s*(.*)$/.exec(line);
       if (!fieldMatch) continue;
@@ -264,7 +262,8 @@ export function parseInstalledExtensionsRich(stdout: string): ExtensionInfo[] {
       if (key === "path") {
         if (val) info.path = val;
       } else if (key === "source") {
-        if (val) info.source = val;
+        // Strip trailing "(Type: ...)" suffix — source is just the identifier.
+        if (val) info.source = val.replace(/\s*\(Type:\s*[^)]*\)\s*$/, "");
       } else if (key === "enabled (user)") {
         info.enabled_user = /^true$/i.test(val);
       } else if (key === "enabled (workspace)") {
@@ -272,25 +271,19 @@ export function parseInstalledExtensionsRich(stdout: string): ExtensionInfo[] {
       } else if (key === "context files") {
         info.context_files = [];
         currentList = info.context_files;
-        currentTarget = "context_files";
       } else if (key === "commands") {
         info.commands = [];
         currentList = info.commands;
-        currentTarget = "commands";
       } else if (key === "skills") {
         info.skills = [];
         currentList = info.skills;
-        currentTarget = "skills";
       } else if (key === "agents") {
         info.agents = [];
         currentList = info.agents;
-        currentTarget = "agents";
       } else if (key === "mcp servers") {
         info.mcp_servers = [];
         currentList = info.mcp_servers;
-        currentTarget = "mcp_servers";
       }
-      void currentTarget;
     }
 
     // Drop empty list arrays so JSON stays compact.
