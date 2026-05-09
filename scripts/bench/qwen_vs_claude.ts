@@ -143,49 +143,46 @@ async function runQwen(
 }
 
 /**
- * Pull the schema-conforming bit out of `claude -p --output-format json`'s
- * stdout. The OUTER envelope is always JSON (Claude Code metadata); the
- * inner schema-constrained answer lives in either `.result` (when the
- * model produced text) or in `.iterations[].message.content[].text` (the
- * structured-output path). We try them in order and return the first
- * value that itself parses as schema-shaped JSON.
+ * Pull the schema-conforming bit out of `claude -p --output-format json
+ * --json-schema X`'s stdout. The OUTER envelope is always JSON (Claude
+ * Code metadata); the schema-constrained answer is at the top-level
+ * `structured_output` key when --json-schema is in play. Empirically
+ * verified against `claude` v6.x: `result` is empty, `iterations[]`
+ * contains only token-usage metadata, and `structured_output` is the
+ * one with the actual schema-shaped object.
  *
- * v0.8.0 of this bench parsed the outer envelope only and reported
- * `json_valid: true` for every Claude row regardless of whether the
- * actual answer conformed — false positives. This helper fixes that.
+ * Fallback chain in case the structure shifts in a future Claude
+ * release: structured_output → result (when populated) → undefined.
+ *
+ * v0.8.0 of this bench checked only the outer envelope's parseability,
+ * which is meaningless (the envelope is always JSON). v0.8.1 walked
+ * `iterations[].message.content[]` (also wrong). v0.8.1 final just
+ * pulls `.structured_output`.
  */
 function extractClaudeAnswer(stdout: string): { text: string; parsed: unknown | undefined } {
-  let envelope: { result?: unknown; iterations?: Array<{ message?: { content?: Array<{ type?: string; text?: string }> } }> } | undefined;
+  let envelope: { result?: unknown; structured_output?: unknown } | undefined;
   try {
     envelope = JSON.parse(stdout);
   } catch {
     return { text: stdout, parsed: undefined };
   }
-  // Candidate 1: top-level `result` is a non-empty string and parses.
+  // Canonical: --json-schema places the conforming answer here.
+  if (envelope?.structured_output !== undefined) {
+    return {
+      text: JSON.stringify(envelope.structured_output),
+      parsed: envelope.structured_output,
+    };
+  }
+  // Fallback: some Claude paths put a JSON-string in `.result`.
   if (typeof envelope?.result === "string" && envelope.result.trim().length > 0) {
     try {
       return { text: envelope.result, parsed: JSON.parse(envelope.result) };
     } catch {
-      // fall through — `.result` may be a textual summary, not the JSON
+      // .result is a textual summary, not JSON.
+      return { text: envelope.result, parsed: undefined };
     }
   }
-  // Candidate 2: walk iterations[*].message.content[*] looking for a
-  // text block that parses as JSON. Take the first hit.
-  for (const it of envelope?.iterations ?? []) {
-    for (const block of it.message?.content ?? []) {
-      if (block?.type === "text" && typeof block.text === "string") {
-        try {
-          return { text: block.text, parsed: JSON.parse(block.text) };
-        } catch {
-          // not this one
-        }
-      }
-    }
-  }
-  // No schema-conforming JSON found anywhere we know to look. Return
-  // the envelope's `.result` (textual summary) if present, else stdout.
-  const fallback = (typeof envelope?.result === "string" ? envelope.result : "") || stdout;
-  return { text: fallback, parsed: undefined };
+  return { text: stdout, parsed: undefined };
 }
 
 async function runClaude(c: Case, timeoutMs: number): Promise<RunRow> {
