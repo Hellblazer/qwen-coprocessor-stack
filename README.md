@@ -1,28 +1,33 @@
 # qwen-coprocessor-stack
 
-A locally-hosted Qwen 3.6-27B model wired into Claude Code as an MCP
-coprocessor. Claude Code runs unmodified with normal subscription auth;
-Qwen is exposed as a small set of MCP tools that Claude can call to
-delegate cheap or bulk work to long-lived, supervised inference sessions.
+Locally-hosted Qwen 3.6 wired into Claude Code as an MCP coprocessor.
+Claude Code runs unmodified with normal subscription auth; Qwen is
+exposed as a small set of MCP tools that Claude can call to delegate
+cheap or bulk work to long-lived, supervised inference sessions.
 
 The supervisor is a TypeScript MCP server
 ([`mcp-bridges/qwen-agent-server`](mcp-bridges/qwen-agent-server)) that
 manages session lifecycle, backend routing, KV-cache affinity, and
 permission gating on top of [`@qwen-code/sdk`](https://www.npmjs.com/package/@qwen-code/sdk).
-Inference runs in a local `llama.cpp` build (Metal-accelerated on
-Apple Silicon) serving Qwen 3.6 27B Q6_K_XL.
+Any OpenAI-compatible endpoint serving a Qwen 3.6 GGUF works as a
+backend; the standard deployments are llama.cpp Metal on Apple Silicon
+(Qwen 3.6 27B) and llama.cpp Vulkan on AMD Strix Halo (Qwen 3.6 35B-A3B).
 
 Full design rationale: [`docs/rdr/RDR-001`](docs/rdr/RDR-001-qwen-coprocessor-mcp-server.md).
 
 ## Requirements
 
-- macOS on Apple Silicon (M1 or later) — the included setup scripts
-  build `llama.cpp` with Metal. The supervisor itself is portable; only
-  the bundled inference backend assumes macOS.
-- ~25 GB free disk for the GGUF model.
-- Node.js 24+, `npm`.
-- [Claude Code](https://docs.anthropic.com/claude/docs/claude-code)
-  installed and signed in.
+- **For the supervisor (the Mac running Claude Code):** Node.js 24+,
+  `npm`, and [Claude Code](https://docs.anthropic.com/claude/docs/claude-code)
+  installed and signed in. Portable; not Apple-specific.
+- **For at least one inference backend** (any OpenAI-compatible endpoint
+  serving a Qwen 3.6 GGUF):
+    - The bundled local-Mac path (`scripts/setup-mac-host.sh`,
+      `scripts/start-stack.sh`) builds `llama.cpp` with Metal and runs
+      Qwen 3.6 27B at `localhost:8080`. Apple Silicon, ~25 GB free disk.
+    - Or a remote backend you provision separately — e.g. llama.cpp
+      Vulkan on a Strix Halo box exposing the model at `host:port/v1`,
+      reached over Tailscale or any other network you trust.
 
 ## Quick start
 
@@ -66,7 +71,8 @@ qwen-agent-server  (Node + TypeScript, mcp-bridges/qwen-agent-server)
     │
     │  uses @qwen-code/sdk (pinned to exact 0.1.7)
     ▼
-llama-server  (Qwen 3.6 27B Q6_K_XL, Metal, port 8080)
+llama-server  (Qwen 3.6, OpenAI-compatible /v1, e.g. localhost:8080
+                or a remote Strix Halo at host:1234)
 ```
 
 Each `task_id` is pinned to one backend at spawn time and kept there for
@@ -111,9 +117,8 @@ mcp-bridges/
 extensions/                  Qwen Code extensions surface (see RDR-002)
 scripts/
   setup-mac-host.sh          Build llama.cpp + download Qwen 3.6 27B
-  setup-strix-halo.sh        Vulkan path for a remote tier (aspirational)
   setup-qwen-agent-server.sh Build + register the supervisor
-  start-stack.sh             Start llama-server
-  stop-stack.sh              Stop llama-server
+  start-stack.sh             Start the local llama-server
+  stop-stack.sh              Stop the local llama-server
 models/                      GGUF model weights (gitignored)
 ```

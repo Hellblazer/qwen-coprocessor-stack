@@ -62,16 +62,24 @@ The setup script and registration command can be prefixed with these.
 | `ROUTER_HEAVY_THRESHOLD_TOKENS` | `2000` | Estimated token count above which the router prefers a `capacity:heavy` backend. |
 | `ROUTER_HEAVY_KEYWORDS` | `prove,derive,architect,design` | Comma-separated prompt keywords that trigger routing to a `capacity:heavy` backend regardless of token count. |
 
-Example with a remote backend added:
+Example with a remote Strix Halo box (Tailscale-reachable) joined to the
+local Mac backend:
 
 ```bash
 QWEN_BACKENDS='[
-  {"id":"local","url":"http://localhost:8080/v1","model":"qwen3.6-27b-instruct","tier":"local","capacity":"heavy"},
-  {"id":"remote","url":"https://api.example.com/v1","model":"qwen-max","tier":"remote","capacity":"fast","weight":2}
+  {"id":"local-mac","url":"http://localhost:8080/v1","model":"qwen3.6-27b-instruct","tier":"local","capacity":"fast"},
+  {"id":"strix","url":"http://your-strix-host:1234/v1","model":"qwen3.6-35b-a3b","tier":"remote","capacity":"heavy"}
 ]' \
   claude mcp add --scope user qwen-agent-server \
   "node /path/to/repo/mcp-bridges/qwen-agent-server/dist/server.js"
 ```
+
+The router prefers `capacity:heavy` for prompts over
+`ROUTER_HEAVY_THRESHOLD_TOKENS` or containing
+`ROUTER_HEAVY_KEYWORDS`, falling back to `capacity:fast`. The `model`
+field must match what `/v1/models` returns from each backend (for
+llama-server it's the `--alias` value; for LM Studio it's the loaded
+GGUF's identifier).
 
 ---
 
