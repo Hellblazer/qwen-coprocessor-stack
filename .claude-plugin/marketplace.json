@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.anthropic.com/en/docs/claude-code/plugin-marketplaces",
+  "name": "qwen-coprocessor-stack",
+  "owner": {
+    "name": "Hal Hildebrand"
+  },
+  "metadata": {
+    "description": "Single-plugin marketplace exposing the qwen-coprocessor-stack plugin from the same repository.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "qwen-coprocessor-stack",
+      "source": "./",
+      "description": "Locally-hosted Qwen 3.6 as a Claude Code coprocessor — delegate bulk or cheap work to long-lived supervised inference sessions over MCP. Backends include llama.cpp Metal on Apple Silicon and llama.cpp Vulkan on AMD Strix Halo.",
+      "version": "0.1.0",
+      "category": "ai-infra",
+      "tags": ["mcp", "qwen", "qwen3.6", "coprocessor", "llama.cpp", "inference", "delegation", "vulkan", "metal"]
+    }
+  ]
+}
