@@ -195,11 +195,18 @@ rationale and SDK behaviors that pin this design are in RDR-001 §Q1.
 
 ## Configuration
 
-All supervisor configuration is via environment variables. Defaults work
-for the standard local setup; see
+Primary surface is `~/.qwen-coprocessor-stack/config.json`. A starting
+template is committed at [`config.example.json`](config.example.json) —
+copy it, edit the backends to match your llama-server deployment(s),
+and the slash commands (`/qwen-stack:backends`, `/qwen-stack:defaults`,
+`/qwen-stack:budget`) will manage the file from there. Edits hot-apply
+on the next `qwen_spawn` (mtime-cached); no supervisor restart needed.
+
+Environment variables (`QWEN_BACKENDS`, `QWEN_DEFAULT_EXTENSIONS`,
+`QWEN_MAX_CONTEXT_TOKENS`, `QWEN_MAX_TOOL_CALLS`) are honoured and
+take precedence over the file when set. See
 [`mcp-bridges/qwen-agent-server/README.md`](mcp-bridges/qwen-agent-server/README.md#configuration)
-for the full reference, including `QWEN_BACKENDS` syntax for adding
-remote backends.
+for the full reference.
 
 ## Development
 

@@ -1,0 +1,29 @@
+{
+  "_comment": "Example config for qwen-coprocessor-stack. Copy to ~/.qwen-coprocessor-stack/config.json and edit. Unknown top-level fields (this _comment included) are silently ignored by the supervisor.",
+
+  "_optional_fields": [
+    "default_extensions: array of extension names applied to every spawn (e.g. [\"serena\", \"context7\"]); omit to use CLI defaults. /qwen-stack:defaults manages this.",
+    "session_budget: { max_context_tokens, max_tool_calls } overriding the per-backend default. Omit to let the supervisor derive max_context_tokens from each chosen backend's ctx_size (floor(0.85 * ctx_size); RDR-002 v0.7). 0 at any tier means 'no cap' and is preserved as-is. /qwen-stack:budget manages this."
+  ],
+
+  "backends": [
+    {
+      "id": "local-27b",
+      "url": "http://localhost:8080/v1",
+      "model": "qwen3.6-27b-instruct",
+      "tier": "local",
+      "capacity": "fast",
+      "weight": 1,
+      "ctx_size": 32768
+    },
+    {
+      "id": "qwentescence",
+      "url": "http://qwentescence:1234/v1",
+      "model": "qwen3.6-35b-a3b",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 131072
+    }
+  ]
+}
