@@ -12,7 +12,7 @@
 import pino from "pino";
 import type { Backend, SpawnOpts } from "./types.js";
 import { QwenSession } from "./session.js";
-import { chooseBackend, loadBackends } from "./backends.js";
+import { chooseBackend, getSessionBudgetDefaults, loadBackends } from "./backends.js";
 import type { ResolveExtensionsResult } from "./extensions.js";
 
 const log = pino({ name: "qwen-pool" });
@@ -188,6 +188,21 @@ export async function spawnSession(
   const backend = await chooseBackend(pool.backends, spawnOpts, task);
   if (!backend) {
     throw new Error("no backend available");
+  }
+
+  // Fill in budget defaults now that the backend is known. Caller-set
+  // opts win; otherwise env / config / floor(0.85 * backend.ctx_size) /
+  // hardcoded fall through (RDR-002 v0.7 amendment). Done here rather
+  // than in qwen_spawn so the resolution can reflect the chosen
+  // backend's declared context window.
+  if (spawnOpts.max_context_tokens === undefined || spawnOpts.max_tool_calls === undefined) {
+    const defaults = getSessionBudgetDefaults(process.env, backend);
+    if (spawnOpts.max_context_tokens === undefined) {
+      spawnOpts.max_context_tokens = defaults.max_context_tokens;
+    }
+    if (spawnOpts.max_tool_calls === undefined) {
+      spawnOpts.max_tool_calls = defaults.max_tool_calls;
+    }
   }
 
   const session = new QwenSession(

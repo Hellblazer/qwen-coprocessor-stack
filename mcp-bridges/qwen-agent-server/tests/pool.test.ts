@@ -74,6 +74,10 @@ vi.mock("../src/backends.js", () => {
     chooseBackend: async () => backend,
     getCachedHealth: async () => true,
     resetHealthCache: () => { /* noop */ },
+    // pool.spawnSession calls this to fill in budget defaults after
+    // backend choice (v0.7). Returns zero-disabled to match prior
+    // behaviour for tests that don't exercise the budget surface.
+    getSessionBudgetDefaults: () => ({ max_context_tokens: 0, max_tool_calls: 0 }),
   };
 });
 

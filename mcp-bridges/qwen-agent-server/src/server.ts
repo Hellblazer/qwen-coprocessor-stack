@@ -22,10 +22,11 @@ import type {
   BackendInfo,
   PollOpts,
   PollResult,
+  SessionInfo,
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
-import { getCachedHealth, getSessionBudgetDefaults, refreshPoolBackends } from "./backends.js";
+import { getCachedHealth, refreshPoolBackends } from "./backends.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -139,6 +140,13 @@ export type ToolHandlers = {
   qwen_stop: (args: { task_id: string }) => Promise<{ ack: boolean }>;
   qwen_backends: (args: Record<string, never>) => Promise<BackendInfo[]>;
   /**
+   * Read-only listing of live sessions in the pool with their state,
+   * last-polled timestamp, turns completed, and live budget counters.
+   * Operator overview surface (also consumed by `/qwen-stack:status`).
+   * RDR-002 v0.7 amendment.
+   */
+  qwen_sessions: (args: Record<string, never>) => Promise<SessionInfo[]>;
+  /**
    * Read-only listing of installed extensions, with version / path /
    * source / enabled-state and declared commands/skills/agents/MCP
    * servers. Shells out to `qwen extensions list` per call (no cache);
@@ -215,21 +223,14 @@ export function createToolHandlers(
     // new list.
     refreshPoolBackends(pool);
 
-    // Apply session-budget defaults from env / config / hardcoded
-    // (RDR-002 §Session budget). Caller-supplied opts take precedence;
-    // 0 from any tier means "no cap" and is preserved as-is.
-    const budgetDefaults = getSessionBudgetDefaults();
-    const optsWithBudget: Partial<SpawnOpts> = { ...opts };
-    if (optsWithBudget.max_context_tokens === undefined) {
-      optsWithBudget.max_context_tokens = budgetDefaults.max_context_tokens;
-    }
-    if (optsWithBudget.max_tool_calls === undefined) {
-      optsWithBudget.max_tool_calls = budgetDefaults.max_tool_calls;
-    }
+    // Note: budget defaults (env / config / backend.ctx_size /
+    // hardcoded) are filled inside pool.spawnSession after the backend
+    // is chosen, so the per-backend ctx_size tier can apply
+    // (RDR-002 v0.7 amendment).
 
     let session;
     try {
-      session = await spawnSession(pool, task, optsWithBudget, resolvedExtensions);
+      session = await spawnSession(pool, task, opts, resolvedExtensions);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn({ event_type: "spawn_no_backend", err: message }, "spawnSession failed");
@@ -320,6 +321,24 @@ export function createToolHandlers(
     return results;
   };
 
+  // ── qwen_sessions (live overview) ──────────────────────────
+
+  const qwen_sessions: ToolHandlers["qwen_sessions"] = async () => {
+    const out: SessionInfo[] = [];
+    for (const [task_id, pooled] of pool.sessions) {
+      const real = pooled as unknown as QwenSession;
+      out.push({
+        task_id,
+        backend_id: pooled.backend.id,
+        state: real.state,
+        last_polled_at: pooled.last_polled_at,
+        turns_completed: real.turns_completed,
+        budget: real.budgetStats(),
+      });
+    }
+    return out;
+  };
+
   // ── qwen_extensions (read-only listing) ────────────────────
 
   const qwen_extensions: ToolHandlers["qwen_extensions"] = async () => {
@@ -368,6 +387,7 @@ export function createToolHandlers(
     qwen_send,
     qwen_stop,
     qwen_backends,
+    qwen_sessions,
     qwen_extensions,
     ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
@@ -497,6 +517,18 @@ async function main(): Promise<void> {
     {},
     async (_args) => {
       const result = await handlers.qwen_extensions({});
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  mcpServer.tool(
+    "qwen_sessions",
+    "List live sessions in the pool with state, last-polled timestamp, turns completed, and live budget counters. Read-only operator overview.",
+    {},
+    async (_args) => {
+      const result = await handlers.qwen_sessions({});
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };

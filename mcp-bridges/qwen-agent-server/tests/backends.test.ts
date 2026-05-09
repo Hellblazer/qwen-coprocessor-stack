@@ -13,6 +13,7 @@ import {
   approxTokens,
   chooseBackend,
   classifyCapacity,
+  getSessionBudgetDefaults,
   loadBackends,
   refreshPoolBackends,
   resetHealthCache,
@@ -340,5 +341,86 @@ describe("chooseBackend — routing algorithm", () => {
       b.tier === "local";
     const result = await chooseBackend(pool, { tier: "remote" }, "x", lookup);
     expect(result?.tier).toBe("local");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// getSessionBudgetDefaults — RDR-002 Session-budget resolution chain
+//
+// Priority for max_context_tokens:
+//   1. QWEN_MAX_CONTEXT_TOKENS env (numeric)
+//   2. config.session_budget.max_context_tokens
+//   3. floor(0.85 * backend.ctx_size) when a backend with positive
+//      ctx_size is supplied (v0.7 amendment — closes the gap where a
+//      small-ctx local backend got the qwentescence-shaped default)
+//   4. Hardcoded 111000.
+
+describe("getSessionBudgetDefaults", () => {
+  beforeEach(() => {
+    delete process.env["QWEN_MAX_CONTEXT_TOKENS"];
+    delete process.env["QWEN_MAX_TOOL_CALLS"];
+  });
+
+  it("returns hardcoded defaults (111000 / 0) when nothing else resolves", () => {
+    const r = getSessionBudgetDefaults({});
+    expect(r).toEqual({ max_context_tokens: 111_000, max_tool_calls: 0 });
+  });
+
+  it("env QWEN_MAX_CONTEXT_TOKENS overrides everything", () => {
+    const r = getSessionBudgetDefaults(
+      { QWEN_MAX_CONTEXT_TOKENS: "12345" },
+      { ...local27, ctx_size: 8192 },
+    );
+    expect(r.max_context_tokens).toBe(12_345);
+  });
+
+  it("config.session_budget.max_context_tokens wins over backend.ctx_size", () => {
+    const cfgPath = join(_suiteTmpDir!, "config.json");
+    writeFileSync(cfgPath, JSON.stringify({
+      session_budget: { max_context_tokens: 7777 },
+    }));
+    _resetConfigCache();
+    const r = getSessionBudgetDefaults({}, { ...local27, ctx_size: 8192 });
+    expect(r.max_context_tokens).toBe(7_777);
+  });
+
+  it("falls through to floor(0.85 * backend.ctx_size) when no env or config", () => {
+    const r = getSessionBudgetDefaults({}, { ...local27, ctx_size: 8192 });
+    // floor(0.85 * 8192) = 6963
+    expect(r.max_context_tokens).toBe(6_963);
+  });
+
+  it("ignores backend.ctx_size when zero or absent", () => {
+    const r1 = getSessionBudgetDefaults({}, { ...local27, ctx_size: 0 });
+    expect(r1.max_context_tokens).toBe(111_000);
+    const r2 = getSessionBudgetDefaults({}, local27);
+    expect(r2.max_context_tokens).toBe(111_000);
+  });
+
+  it("preserves zero from any tier (operator-chooses)", () => {
+    const cfgPath = join(_suiteTmpDir!, "config.json");
+    writeFileSync(cfgPath, JSON.stringify({
+      session_budget: { max_context_tokens: 0, max_tool_calls: 0 },
+    }));
+    _resetConfigCache();
+    // Even with a backend that would otherwise contribute, 0 wins.
+    const r = getSessionBudgetDefaults({}, { ...local27, ctx_size: 8192 });
+    expect(r.max_context_tokens).toBe(0);
+    expect(r.max_tool_calls).toBe(0);
+  });
+
+  it("env QWEN_MAX_TOOL_CALLS wins over config and default", () => {
+    const cfgPath = join(_suiteTmpDir!, "config.json");
+    writeFileSync(cfgPath, JSON.stringify({
+      session_budget: { max_tool_calls: 50 },
+    }));
+    _resetConfigCache();
+    const r = getSessionBudgetDefaults({ QWEN_MAX_TOOL_CALLS: "5" });
+    expect(r.max_tool_calls).toBe(5);
+  });
+
+  it("rejects non-numeric env values and falls through", () => {
+    const r = getSessionBudgetDefaults({ QWEN_MAX_CONTEXT_TOKENS: "lol" });
+    expect(r.max_context_tokens).toBe(111_000);
   });
 });

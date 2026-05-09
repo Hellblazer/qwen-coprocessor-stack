@@ -19,15 +19,33 @@ const { MockSession, mockInstances, resetMockInstances } = vi.hoisted(() => {
     last_polled_at: number = Date.now();
     private _state: "running" | "idle" | "complete" | "error" = "running";
     stopCalled = false;
+    // qwen_sessions surface (v0.7) — production QwenSession exposes
+    // turns_completed as a getter and budgetStats() as a method.
+    private _turns_completed = 0;
+    private _maxContextTokens = 0;
+    private _maxToolCalls = 0;
 
-    constructor(backend: { id: string }, _prompt: string, _opts: SpawnOpts) {
+    constructor(backend: { id: string }, _prompt: string, opts: SpawnOpts) {
       this.task_id = `q-mock-${++_idCounter}`;
       this.backend = backend;
+      this._maxContextTokens = opts?.max_context_tokens ?? 0;
+      this._maxToolCalls = opts?.max_tool_calls ?? 0;
       _instances.push(this);
     }
 
     get state() { return this._state; }
+    get turns_completed() { return this._turns_completed; }
     setState(s: MS["_state"]) { this._state = s; }
+    setTurns(n: number) { this._turns_completed = n; }
+
+    budgetStats() {
+      return {
+        est_tokens: 0,
+        max_tokens: this._maxContextTokens,
+        tool_calls: 0,
+        max_tool_calls: this._maxToolCalls,
+      };
+    }
 
     stop = vi.fn().mockImplementation(() => {
       this.stopCalled = true;
@@ -492,6 +510,60 @@ describe("MCP tool handlers", () => {
       mockGetCachedHealth.mockResolvedValue(null);
       const result = await callTool(handlers, "qwen_backends", {}) as BackendInfo[];
       expect(result[0]!.healthy).toBeNull();
+    });
+  });
+
+  // ── qwen_sessions (RDR-002 v0.7 amendment) ──────────────────
+
+  describe("qwen_sessions", () => {
+    it("returns [] when the pool is empty", async () => {
+      const result = await callTool(handlers, "qwen_sessions", {}) as unknown[];
+      expect(result).toEqual([]);
+    });
+
+    it("returns one entry per pooled session with the SessionInfo shape", async () => {
+      await callTool(handlers, "qwen_spawn", { task: "alpha" });
+      await callTool(handlers, "qwen_spawn", { task: "beta" });
+      const result = await callTool(handlers, "qwen_sessions", {}) as Array<{
+        task_id: string;
+        backend_id: string;
+        state: string;
+        last_polled_at: number;
+        turns_completed: number;
+        budget: { est_tokens: number; max_tokens: number; tool_calls: number; max_tool_calls: number };
+      }>;
+      expect(result).toHaveLength(2);
+      for (const info of result) {
+        expect(info.task_id).toMatch(/^q-mock-/);
+        expect(info.backend_id).toBe("local-27b");
+        expect(info.state).toBe("running");
+        expect(typeof info.last_polled_at).toBe("number");
+        expect(info.budget).toEqual({
+          est_tokens: 0,
+          max_tokens: 0,
+          tool_calls: 0,
+          max_tool_calls: 0,
+        });
+      }
+    });
+
+    it("budget surfaces per-session caps from spawn opts", async () => {
+      await callTool(handlers, "qwen_spawn", {
+        task: "with budget",
+        opts: { max_context_tokens: 4_000, max_tool_calls: 7 },
+      });
+      const result = await callTool(handlers, "qwen_sessions", {}) as Array<{
+        budget: { max_tokens: number; max_tool_calls: number };
+      }>;
+      expect(result[0]!.budget.max_tokens).toBe(4_000);
+      expect(result[0]!.budget.max_tool_calls).toBe(7);
+    });
+
+    it("reflects mocked state changes (e.g. error after abort)", async () => {
+      await callTool(handlers, "qwen_spawn", { task: "x" });
+      mockInstances[0]!.setState("error");
+      const result = await callTool(handlers, "qwen_sessions", {}) as Array<{ state: string }>;
+      expect(result[0]!.state).toBe("error");
     });
   });
 });

@@ -130,8 +130,13 @@ Event data:
   "tool_calls": 3,   "max_tool_calls": 0 }
 ```
 
-Resolution priority for the defaults: per-spawn opts → `QWEN_MAX_CONTEXT_TOKENS`
-/ `QWEN_MAX_TOOL_CALLS` env → `config.session_budget` → hardcoded 111000 / 0.
+Resolution priority for `max_context_tokens`: per-spawn opts → `QWEN_MAX_CONTEXT_TOKENS`
+env → `config.session_budget.max_context_tokens` → `floor(0.85 * backend.ctx_size)`
+when the chosen backend declares one → hardcoded 111000.
+
+Resolution priority for `max_tool_calls`: per-spawn opts → `QWEN_MAX_TOOL_CALLS` env →
+`config.session_budget.max_tool_calls` → hardcoded 0 (unlimited; tool-call count
+is not a function of ctx_size).
 
 ```json
 {
@@ -158,6 +163,7 @@ Config-file edits hot-apply on the next spawn — no supervisor restart.
 | `qwen_send`      | Push the next user message into a session — answers a clarifying question or starts a follow-up turn. |
 | `qwen_stop`      | Cancel and remove a session. Idempotent. |
 | `qwen_backends`  | List configured backends and their cached health. |
+| `qwen_sessions`  | Live overview of pooled sessions — task_id, backend, state, last-poll timestamp, turns completed, live budget counters. Read-only. |
 
 ## Architecture
 

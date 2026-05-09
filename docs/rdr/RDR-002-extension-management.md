@@ -19,7 +19,7 @@ related:
 
 ## Status
 
-**Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event; live budget counters on `qwen_poll`): see "Amendments" section at the end of this file.
+**Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event; live budget counters on `qwen_poll`; backend-declared `ctx_size` for budget-default derivation + `qwen_sessions` overview tool): see "Amendments" section at the end of this file.
 
 **Draft** (2026-05-04). Reframed earlier the same day from a rejected
 "canonical plugin catalogue" framing — operator preference, not repo
@@ -764,3 +764,77 @@ post-mortem caller can attribute the abort to the right knob.
 
 Out of scope (carried forward from prior amendments): per-tool-result
 caps, mid-flight summarization, prior_context tool-call ledger.
+
+### 2026-05-09 — backend-declared `ctx_size` + `qwen_sessions` overview (v0.7)
+
+Two paired changes that make the budget guardrail correct for
+heterogeneous backends and visible to the operator at a glance.
+
+**(1) `Backend.ctx_size?: number` — operator-declared per-backend
+context window.** The v0.4 default of `111000` (≈85 % of qwentescence's
+`131072`) is correct for the operator's primary backend but silently
+no-guardrail for any backend whose `--ctx-size` is meaningfully
+smaller (e.g. an 8 K-ctx local). Adding an optional `ctx_size` field
+to the backend object and inserting a derivation tier between
+`config.session_budget` and the hardcoded 111000:
+
+  Resolution priority for `max_context_tokens` becomes:
+    1. Per-spawn `opts.max_context_tokens`.
+    2. `QWEN_MAX_CONTEXT_TOKENS` env.
+    3. `config.session_budget.max_context_tokens`.
+    4. `floor(0.85 * backend.ctx_size)` when the chosen backend has
+       a positive `ctx_size`.
+    5. Hardcoded `111000`.
+
+The resolution moves into `pool.spawnSession` so the chosen backend
+is in scope when defaults are applied; previously the resolution
+happened in `qwen_spawn` before backend choice.
+
+The supervisor does not probe llama-server for ctx_size. Several
+reasons: there is no portable endpoint that returns it (`/v1/models`
+exposes id but not context length; `/props` is unstable); even if
+there were, we'd have to handle probe failures gracefully and the
+operator already knows the value (it's on the launch command).
+Operator declares; supervisor uses. Same operator-chooses pattern as
+the rest of the budget surface.
+
+`max_tool_calls` does not get a backend-derived tier — tool-call
+count is not a function of context window.
+
+**(2) `qwen_sessions` MCP tool — read-only overview of the live pool.**
+Returns one `SessionInfo` per pooled session:
+
+```ts
+interface SessionInfo {
+  task_id: string;
+  backend_id: string;
+  state: SessionState;
+  last_polled_at: number;     // ms epoch
+  turns_completed: number;
+  budget: SessionBudgetStats; // same shape as PollResult.budget
+}
+```
+
+Why a separate tool from the v0.6 `qwen_poll.budget` field: `poll` is
+single-session and cursor-paginated; iterating it across the pool to
+build an overview means one round-trip per session plus carrying a
+cursor per session purely for UI. `qwen_sessions` is the multi-session
+read; small `N` (default cap 3) means no pagination needed.
+
+The `/qwen-stack:status` skill consumes this and renders a Sessions
+table when the pool is non-empty. Status now flags two new categories
+of red flag: a `running` session at ≥ 75 % of `max_tokens` (caller
+hasn't reacted to the warn pressure event), and an `error` session
+still in the pool (orchestrator forgot to call `qwen_stop` — minor,
+but pool slots).
+
+Drain semantics: `qwen_sessions` reads live state at call time —
+counters reflect the moment of the read, not a snapshot. A session
+that aborted with `code=context_exceeded` continues to appear in the
+list until its caller calls `qwen_stop` or it ages out via the idle
+reaper.
+
+Out of scope: filtering / pagination on `qwen_sessions` (cap is 3 by
+default, no pressure to add), per-tool-result caps (still deferred —
+the supervisor sees results post-hoc), mid-flight summarization,
+prior_context tool-call ledger.

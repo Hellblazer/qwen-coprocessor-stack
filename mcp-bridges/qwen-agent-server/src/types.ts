@@ -20,6 +20,18 @@ export interface Backend {
   tier: "local" | "remote";
   capacity: "fast" | "heavy";
   weight?: number;
+  /**
+   * Operator-declared context window of the underlying llama-server, in
+   * tokens (matches `--ctx-size` on the launch command). When set and
+   * no per-spawn / env / config tier resolves `max_context_tokens`,
+   * the supervisor uses `floor(0.85 * ctx_size)` as the default cap
+   * for spawns that route to this backend (RDR-002 v0.7 amendment).
+   *
+   * Optional. When unset, the resolution chain falls through to the
+   * hardcoded 111000 default. The supervisor does not probe — operator
+   * declares.
+   */
+  ctx_size?: number;
 }
 
 /**
@@ -271,4 +283,21 @@ export interface BackendInfo {
   tier: Backend["tier"];
   capacity: Backend["capacity"];
   healthy: boolean | null;
+}
+
+/**
+ * Live overview of one session in the pool. Returned by `qwen_sessions`
+ * (RDR-002 v0.7 amendment). Read-only — the operator (or
+ * `/qwen-stack:status`) uses this to spot runaway tool_call counts or
+ * tokens accumulating before a session aborts.
+ */
+export interface SessionInfo {
+  task_id: string;
+  backend_id: string;
+  state: SessionState;
+  /** Last `qwen_poll` timestamp (ms epoch). Useful for spotting stalled
+   *  sessions a caller has stopped polling. */
+  last_polled_at: number;
+  turns_completed: number;
+  budget: SessionBudgetStats;
 }

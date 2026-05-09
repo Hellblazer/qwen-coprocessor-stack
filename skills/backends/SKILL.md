@@ -1,7 +1,7 @@
 ---
 name: backends
 description: Manage the qwen-stack supervisor's backend list — list configured backends with live health, add a new backend, remove one, or test connectivity. Operates on `~/.qwen-coprocessor-stack/config.json` and hot-reloads in the running supervisor without restart. Use when the user types `/qwen-stack:backends ...`.
-argument-hint: list | add <id> <url> [model] [tier] [capacity] [weight] | remove <id> | test [id]
+argument-hint: list | add <id> <url> [model] [tier] [capacity] [weight] [ctx_size] | remove <id> | test [id]
 allowed-tools: Bash, Read, Write, mcp__plugin_qwen-stack_supervisor__qwen_backends
 ---
 
@@ -24,9 +24,12 @@ Lifecycle and discovery for the supervisor's backend list. Edits to `~/.qwen-cop
   "model":    "qwen3.6-35b-a3b",               // identifier returned by /v1/models
   "tier":     "remote",                        // "local" | "remote"
   "capacity": "heavy",                         // "fast" | "heavy"
-  "weight":   1                                // optional, default 1
+  "weight":   1,                               // optional, default 1
+  "ctx_size": 131072                           // optional; matches llama-server --ctx-size
 }
 ```
+
+`ctx_size` is operator-declared (the supervisor doesn't probe). When set and no per-spawn / env / config tier resolves `max_context_tokens`, the supervisor uses `floor(0.85 * ctx_size)` as the default cap for spawns that route to this backend (RDR-002 v0.7 amendment). Without it, spawns fall through to the hardcoded 111000 default — fine for a 131072-ctx backend, silently no-guardrail for an 8K-ctx local. Set it.
 
 ## Subcommand routing
 
@@ -50,6 +53,7 @@ Args:
 - `[tier]` — `local` or `remote`. Default: `remote` if URL host is not `localhost`/`127.0.0.1`, else `local`.
 - `[capacity]` — `fast` or `heavy`. Default: `heavy` for remote, `fast` for local.
 - `[weight]` — integer ≥ 1. Default: `1`.
+- `[ctx_size]` — positive integer matching the backend's `--ctx-size`. Optional; when supplied, the supervisor derives the default `max_context_tokens` cap as `floor(0.85 * ctx_size)` for spawns routed to this backend. Skip only if you intend to fall through to the hardcoded 111000 default (fine for a 131072-ctx backend, dangerous for an 8K local).
 
 Steps:
 1. **Refuse if `QWEN_BACKENDS` env is set** — it would silently override the file edit. Tell the user to either `unset QWEN_BACKENDS` in their shell or edit the env directly.

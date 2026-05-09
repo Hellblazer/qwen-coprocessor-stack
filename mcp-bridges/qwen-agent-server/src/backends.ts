@@ -123,17 +123,25 @@ function readConfigBackends(): Backend[] | null {
  * Resolved session-budget defaults. Both fields are zero-disabled; a
  * value of 0 means "no cap" (matches QwenSession's internal contract).
  *
- * Resolution priority:
- *   1. QWEN_MAX_CONTEXT_TOKENS / QWEN_MAX_TOOL_CALLS env (numeric)
- *   2. config.session_budget.{max_context_tokens, max_tool_calls}
- *   3. Hardcoded default 111000 / 0 (≈85 % of qwentescence's 131072
- *      ctx_size; tool-call cap unlimited).
+ * Resolution priority for `max_context_tokens`:
+ *   1. QWEN_MAX_CONTEXT_TOKENS env (numeric)
+ *   2. config.session_budget.max_context_tokens
+ *   3. floor(0.85 * backend.ctx_size) when a backend is supplied and
+ *      its operator-declared ctx_size is positive (RDR-002 v0.7
+ *      amendment — closes the gap where a small-ctx local backend got
+ *      the same 111000 default as qwentescence)
+ *   4. Hardcoded default 111000.
  *
- * The supervisor doesn't directly inspect the running ctx_size — it
- * could change per backend or be overridden in launch-llama-vulkan.cmd.
- * 111000 errs on the safe side for the operator's current 131072
- * deployment without coupling to backend internals (RDR-002 §Session
- * budget, 2026-05-09 amendment).
+ * Resolution priority for `max_tool_calls`:
+ *   1. QWEN_MAX_TOOL_CALLS env
+ *   2. config.session_budget.max_tool_calls
+ *   3. Hardcoded default 0 (unlimited; not a function of ctx_size).
+ *
+ * The 0.85 fraction matches the original v0.4 default rationale: the
+ * chars/4 token estimate runs ~25–30 % hot vs tiktoken on prose, so the
+ * 15 % headroom is precisely the slack that crudeness costs. Caller
+ * should supply the chosen backend so spawns that route to a small
+ * local backend get a cap that fits, not the qwentescence-shaped one.
  */
 export interface ResolvedSessionBudget {
   max_context_tokens: number;
@@ -142,6 +150,7 @@ export interface ResolvedSessionBudget {
 
 const DEFAULT_MAX_CONTEXT_TOKENS = 111_000;
 const DEFAULT_MAX_TOOL_CALLS = 0;
+const CTX_SIZE_HEADROOM = 0.85;
 
 function parseNumericEnv(name: string, env: NodeJS.ProcessEnv): number | null {
   const raw = env[name];
@@ -157,7 +166,10 @@ function parseNumericEnv(name: string, env: NodeJS.ProcessEnv): number | null {
   return n;
 }
 
-export function getSessionBudgetDefaults(env: NodeJS.ProcessEnv = process.env): ResolvedSessionBudget {
+export function getSessionBudgetDefaults(
+  env: NodeJS.ProcessEnv = process.env,
+  backend?: Backend,
+): ResolvedSessionBudget {
   const cfg = readConfig();
   const cfgBudget = cfg?.session_budget;
 
@@ -165,6 +177,10 @@ export function getSessionBudgetDefaults(env: NodeJS.ProcessEnv = process.env): 
   const cfgMaxCtx =
     typeof cfgBudget?.max_context_tokens === "number" && cfgBudget.max_context_tokens >= 0
       ? cfgBudget.max_context_tokens
+      : null;
+  const backendDerivedCtx =
+    backend !== undefined && typeof backend.ctx_size === "number" && backend.ctx_size > 0
+      ? Math.floor(backend.ctx_size * CTX_SIZE_HEADROOM)
       : null;
 
   const envMaxCalls = parseNumericEnv("QWEN_MAX_TOOL_CALLS", env);
@@ -174,7 +190,8 @@ export function getSessionBudgetDefaults(env: NodeJS.ProcessEnv = process.env): 
       : null;
 
   return {
-    max_context_tokens: envMaxCtx ?? cfgMaxCtx ?? DEFAULT_MAX_CONTEXT_TOKENS,
+    max_context_tokens:
+      envMaxCtx ?? cfgMaxCtx ?? backendDerivedCtx ?? DEFAULT_MAX_CONTEXT_TOKENS,
     max_tool_calls: envMaxCalls ?? cfgMaxCalls ?? DEFAULT_MAX_TOOL_CALLS,
   };
 }

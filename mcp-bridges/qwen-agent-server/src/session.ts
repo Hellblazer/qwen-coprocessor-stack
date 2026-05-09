@@ -261,6 +261,26 @@ export class QwenSession {
   /** Bound at construction; mirrors the permissionMode decision. */
   readonly write_authority: boolean;
 
+  /** Number of fully completed turns. Read by `qwen_sessions` for
+   *  operator overviews; the same counter appears in `last_known` on
+   *  error PollResults. */
+  get turns_completed(): number {
+    return this._turns_completed;
+  }
+
+  /** Live budget snapshot — same shape that `poll()` embeds in its
+   *  result. Exposed independently so `qwen_sessions` can build a
+   *  multi-session overview without producing a full PollResult per
+   *  session. */
+  budgetStats(): import("./types.js").SessionBudgetStats {
+    return {
+      est_tokens: this._estTokens(),
+      max_tokens: this._maxContextTokens,
+      tool_calls: this._toolCallCount,
+      max_tool_calls: this._maxToolCalls,
+    };
+  }
+
   // ── Event ring buffer ─────────────────────────────────────────
 
   /** Push an event into the ring; evict oldest when over cap. */
