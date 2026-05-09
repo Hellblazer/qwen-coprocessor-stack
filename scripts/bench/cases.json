@@ -70,5 +70,120 @@
       },
       "required": ["kept"]
     }
+  },
+  {
+    "name": "aggregate-by-category",
+    "operator": "aggregate",
+    "prompt": "Aggregate these bug reports by root-cause category. Return JSON {categories: [{name: string, count: integer, ids: integer[]}]}. Reports:\n#123 SQL injection in user form\n#124 XSS in comment renderer\n#125 SQL injection in admin search\n#126 CSRF on settings endpoint\n#127 XSS in profile page\n#128 Race condition in cache invalidation",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "count": { "type": "integer" },
+              "ids": { "type": "array", "items": { "type": "integer" } }
+            },
+            "required": ["name", "count", "ids"]
+          }
+        }
+      },
+      "required": ["categories"]
+    }
+  },
+  {
+    "name": "groupby-author",
+    "operator": "groupby",
+    "prompt": "Group these commits by author. Return JSON {groups: [{author: string, commits: [{sha: string, message: string}]}]}. Commits:\nabc123 alice: fix typo in readme\ndef456 bob: add new endpoint\nghi789 alice: refactor parser\njkl012 charlie: update deps\nmno345 alice: doc fixes\npqr678 bob: error handling",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "author": { "type": "string" },
+              "commits": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "sha": { "type": "string" },
+                    "message": { "type": "string" }
+                  },
+                  "required": ["sha", "message"]
+                }
+              }
+            },
+            "required": ["author", "commits"]
+          }
+        }
+      },
+      "required": ["groups"]
+    }
+  },
+  {
+    "name": "verify-claim-against-evidence",
+    "operator": "verify",
+    "prompt": "Verify whether the claim is supported by the evidence. Return JSON {verified: boolean, reasoning: string, citations: string[]}. Set verified=true ONLY if the evidence fully supports the claim; otherwise verified=false with reasoning explaining the gap.\n\nClaim: \"The supervisor exposes seven MCP tools for managing inference sessions.\"\n\nEvidence: The qwen-coprocessor-stack supervisor presents the following MCP tools to callers: qwen_spawn (create a session), qwen_poll (read events), qwen_send (push next message), qwen_stop (cancel), qwen_backends (list backends), qwen_sessions (live overview), qwen_oneshot (stateless dispatch), qwen_extensions (list installed extensions), qwen_reload_extensions (refresh cache).",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "verified": { "type": "boolean" },
+        "reasoning": { "type": "string" },
+        "citations": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["verified", "reasoning", "citations"]
+    }
+  },
+  {
+    "name": "check-rule-compliance",
+    "operator": "check",
+    "prompt": "Check whether the code follows the rule: \"every PUBLIC function (name not starting with underscore) must have a non-empty docstring.\" Return JSON {passes: boolean, violations: [{name: string, reason: string}]}. Private functions (underscore-prefix) are exempt.\n\n```python\ndef public_one():\n    \"\"\"Returns 1.\"\"\"\n    return 1\n\ndef public_two():\n    return 2\n\ndef _private_helper():\n    return 0\n\ndef public_three():\n    \"\"\"Returns 3.\"\"\"\n    return 3\n```",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "passes": { "type": "boolean" },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["name", "reason"]
+          }
+        }
+      },
+      "required": ["passes", "violations"]
+    }
+  },
+  {
+    "name": "generate-test-cases",
+    "operator": "generate",
+    "prompt": "Generate exactly three test cases for this function — one happy path, one edge case, one error path. Return JSON {tests: [{name: string, input: string, expected_output: string}]}.\n\n```python\ndef add(a, b):\n    \"\"\"Return a + b. Both args must be ints; raises TypeError otherwise.\"\"\"\n    if not isinstance(a, int) or not isinstance(b, int):\n        raise TypeError(\"ints only\")\n    return a + b\n```",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "input": { "type": "string" },
+              "expected_output": { "type": "string" }
+            },
+            "required": ["name", "input", "expected_output"]
+          }
+        }
+      },
+      "required": ["tests"]
+    }
   }
 ]
