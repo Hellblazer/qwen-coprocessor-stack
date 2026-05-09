@@ -1,0 +1,82 @@
+---
+name: qwen-status
+description: One-glance overview of the qwen-coprocessor-stack — plugin version, supervisor process state, dist build freshness, configured backends with live health, config-file path, and any obvious red flags (stale binary, env override masking config, dead default backend). Use when the user types `/qwen-status` or asks "is the qwen stack healthy" / "what's running" / "is everything wired up".
+argument-hint: (no args)
+allowed-tools: Bash, Read, mcp__plugin_qwen-coprocessor-stack_qwen-agent-server__qwen_backends
+---
+
+# /qwen-status
+
+Single-screen sanity check for the whole stack. Read-only — never writes anything. Designed so the operator can paste the output in a bug report or share with another collaborator.
+
+## What to gather (in this order)
+
+### 1. Plugin version + repo state
+
+- `cat /path/to/repo/.claude-plugin/plugin.json` — read `name`, `version`. Repo path is `/Users/hal.hildebrand/git/qwen-coprocessor-stack` for this operator; if you don't know it, infer from `pgrep -f qwen-agent-server/dist/server.js | head -1 | xargs -I{} ps -p {} -o args=` and back out the repo root from the `dist/server.js` path.
+- `git -C <repo> log -1 --format='%h %s (%cr)'` for the current commit.
+- Optional: `git -C <repo> status --short | head -3` if dirty (note as "uncommitted local changes").
+
+### 2. Supervisor process
+
+- `pgrep -f qwen-agent-server/dist/server.js` — there should be exactly one PID.
+- `ps -p <pid> -o pid,etime,rss,args` — capture start-elapsed time + working set.
+- **Stale-binary check**: compare `dist/server.js` mtime to the supervisor process's start time. If the binary is newer than the running process, the operator did `npm run build` after CC started and the running supervisor is on stale code. Surface this loudly — it's the same gotcha we hit during 0.2 development.
+  - Linux/macOS approach: `stat -f %m dist/server.js` (Mac) or `stat -c %Y` (Linux) for binary mtime. Process start: parse `ps -o lstart=` or compute from `etime`.
+  - Threshold: if binary mtime is newer than process start by more than 60 s, flag it.
+
+### 3. Backends + health
+
+- Call the MCP tool `qwen_backends` (no args).
+- Render a compact table with id / url / model / tier / capacity / healthy.
+- ✓ for `true`, ✗ for `false`, `?` for `null` (unprobed).
+
+### 4. Config sources
+
+- `echo "${QWEN_BACKENDS:-}"` — flag if non-empty (env override is masking the file).
+- `~/.qwen-coprocessor-stack/config.json`:
+  - if absent: note "absent (built-in default)".
+  - if present: show path + size + last-modified.
+- `echo "${QWEN_DEFAULT_EXTENSIONS:-}"` and `echo "${QWEN_ADMIN_TOOLS:-}"` — these are operator-facing knobs worth surfacing. Show "(unset)" if not set.
+
+### 5. Red flags
+
+A separate "Notes" section listing anything noteworthy:
+
+- Stale binary (see step 2).
+- `QWEN_BACKENDS` env set — silently overrides the config file; operator might not realise.
+- Backend with `healthy: false` — supervisor can't reach it; spawns may fail.
+- All backends `healthy: null` — never been probed; first spawn will be the cold-probe.
+- Process working set > 5 GB — could be a leak; worth a glance.
+- Stale `qwen-coprocessor` MCP registration in `claude mcp list` (the dead Python `server.py` from before the TypeScript rewrite). Probe with `claude mcp list 2>/dev/null | grep -i 'qwen' | grep -v 'plugin:'` — if anything matches, it's stale.
+
+If no red flags, say "no red flags."
+
+## Output shape (target)
+
+```
+qwen-coprocessor-stack
+  Plugin:     0.2.0  (commit abc1234, "v0.2.0 ship: backend lifecycle ...", 3 hours ago)
+  Supervisor: PID 12345, up 4h22m, RSS 142 MB
+  Build:     dist/server.js — 4h25m old (synced; fresh build)
+
+Backends (from ~/.qwen-coprocessor-stack/config.json)
+  ✓ qwentescence  http://qwentescence:1234/v1   qwen3.6-35b-a3b   remote / heavy
+
+Config
+  QWEN_BACKENDS:           (unset)
+  QWEN_DEFAULT_EXTENSIONS: (unset)
+  QWEN_ADMIN_TOOLS:        (unset)
+  config.json:             192 B, modified 3h ago
+
+Notes
+  no red flags
+```
+
+## Output style rules
+
+- Concise. Never wrap a line over ~100 chars.
+- No emojis. Use ✓ / ✗ / `?` glyphs only inside the backends table.
+- Suppress sections that are entirely empty rather than padding with "(none)".
+- If the supervisor process isn't running at all, say that prominently and skip the rest of the gather (no MCP call possible). Suggest `/reload-plugins`.
+- Suppress shell command output that doesn't add signal — synthesize, don't dump.

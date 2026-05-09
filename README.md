@@ -67,11 +67,21 @@ MCP server (`qwen-agent-server`) with `${CLAUDE_PLUGIN_ROOT}` resolved to the
 plugin install location, so paths stay portable. The five `qwen_*` MCP tools
 become available immediately after install.
 
-## Backend lifecycle (slash command)
+## Slash commands
 
-The plugin ships a `/qwen-backends` slash command for managing the
-supervisor's backend list without shell exports. Edits hot-apply on
-the next spawn — no supervisor restart required.
+The plugin ships two slash commands. State lives at
+`~/.qwen-coprocessor-stack/config.json` (object form, forward-extensible).
+
+### `/qwen-status` — single-glance overview
+
+Read-only. Prints plugin version, supervisor process state, build
+freshness (catches stale-binary-after-rebuild), backends with live
+health, config-file path, env overrides, and any red flags.
+
+### `/qwen-backends` — backend lifecycle
+
+Edits the config file in place; supervisor hot-applies on the next
+spawn (existing sessions stay pinned to their backend per RDR-001 §Q3).
 
 ```
 /qwen-backends list                                   # default; show + health
@@ -80,8 +90,7 @@ the next spawn — no supervisor restart required.
 /qwen-backends test [id]                              # probe live /health
 ```
 
-State lives at `~/.qwen-coprocessor-stack/config.json` (object form,
-forward-extensible). Resolution priority: `QWEN_BACKENDS` env var (kept
+Resolution priority for the backend list: `QWEN_BACKENDS` env var (kept
 for back-compat / one-shot overrides) → config file → built-in
 single-local default.
 
