@@ -116,9 +116,14 @@ mcp-bridges/
   qwen-agent-server/         MCP supervisor (TypeScript)
 extensions/                  Qwen Code extensions surface (see RDR-002)
 scripts/
-  setup-mac-host.sh          Build llama.cpp + download Qwen 3.6 27B
+  setup-mac-host.sh          Build llama.cpp + download Qwen 3.6 27B (Mac/Metal)
   setup-qwen-agent-server.sh Build + register the supervisor
-  start-stack.sh             Start the local llama-server
-  stop-stack.sh              Stop the local llama-server
+  start-stack.sh             Start the local llama-server (Mac/Metal)
+  stop-stack.sh              Stop the local llama-server (Mac/Metal)
+  launch-llama-vulkan.cmd    Windows/Vulkan launcher — runs llama-server with
+                             tuned flags (q8_0 KV cache, 32 GB prompt cache,
+                             128K ctx). Invoked by the scheduled task below.
+  register-llama-task.ps1    Register a Windows scheduled task that runs the
+                             above as SYSTEM at startup, restart-on-failure
 models/                      GGUF model weights (gitignored)
 ```
