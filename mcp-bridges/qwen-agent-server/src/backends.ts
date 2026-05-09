@@ -10,10 +10,96 @@
 // See RDR-001 §Routing for the 6-step algorithm and §Q4 for cap/idle
 // rationale (cap/idle live in server.ts; this module only routes).
 
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import pino from "pino";
 import type { Backend, SpawnOpts } from "./types.js";
 
 const log = pino({ name: "qwen-backends" });
+
+/**
+ * On-disk config file resolved at `~/.qwen-coprocessor-stack/config.json`.
+ *
+ * Supports a hot-reload pattern: callers re-invoke `loadBackends()` on
+ * each spawn / health probe; we cache by mtime and re-parse only when
+ * the file changes. Existing sessions stay pinned to their backend
+ * (RDR-001 §Q3) — only future spawns see the updated list.
+ *
+ * Schema (object form, forward-extensible — only `backends` is read today):
+ *
+ *   {
+ *     "backends": [
+ *       { "id": "...", "url": "...", "model": "...",
+ *         "tier": "local" | "remote",
+ *         "capacity": "fast" | "heavy",
+ *         "weight": 1 }
+ *     ]
+ *   }
+ *
+ * Resolution priority (highest first):
+ *   1. `QWEN_BACKENDS` env var (kept for back-compat / one-shot override)
+ *   2. config file `backends` array
+ *   3. `DEFAULT_BACKEND` fallback
+ */
+/** Default config dir; tests and operators can override via QWEN_CONFIG_DIR env var. */
+const DEFAULT_CONFIG_DIR = join(homedir(), ".qwen-coprocessor-stack");
+
+export function getConfigDir(): string {
+  const override = process.env["QWEN_CONFIG_DIR"];
+  return override && override.trim() !== "" ? override : DEFAULT_CONFIG_DIR;
+}
+
+export function getConfigPath(): string {
+  return join(getConfigDir(), "config.json");
+}
+
+interface ConfigFileShape {
+  backends?: Backend[];
+}
+
+interface ConfigCache {
+  mtimeMs: number;
+  parsed: Backend[] | null;
+}
+
+let _configCache: ConfigCache | null = null;
+
+/** Test-only: drop the cached config so the next read re-parses. */
+export function _resetConfigCache(): void {
+  _configCache = null;
+}
+
+function readConfigBackends(): Backend[] | null {
+  const path = getConfigPath();
+  if (!existsSync(path)) return null;
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+  if (_configCache && _configCache.mtimeMs === mtimeMs) {
+    return _configCache.parsed;
+  }
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as ConfigFileShape;
+    if (!parsed || !Array.isArray(parsed.backends) || parsed.backends.length === 0) {
+      _configCache = { mtimeMs, parsed: null };
+      return null;
+    }
+    _configCache = { mtimeMs, parsed: parsed.backends };
+    return parsed.backends;
+  } catch (err) {
+    log.warn(
+      { event_type: "config_invalid", path, err: err instanceof Error ? err.message : String(err) },
+      "config.json present but unreadable; falling through to env / default",
+    );
+    _configCache = { mtimeMs, parsed: null };
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Configuration
@@ -33,26 +119,55 @@ const HEAVY_KEYWORDS_DEFAULT = "prove,derive,architect,design";
 const HEAVY_THRESHOLD_DEFAULT = 2_000;
 
 /**
- * Read backends from QWEN_BACKENDS env var (JSON array of Backend) or
- * fall back to a single local backend at port 8080. Invalid JSON is
- * treated as "no override" — log a warning and use default.
+ * Refresh `pool.backends` in-place from `loadBackends()`. Mutates the
+ * existing array reference (splice) so any callers that captured a
+ * reference at pool construction time see the new list.
+ *
+ * Safe to call on every spawn / health probe — the env read is cheap
+ * and the file read is mtime-cached. Existing sessions stay pinned to
+ * their backend (RDR-001 §Q3); only future spawns and health listings
+ * see the updated list.
+ */
+export function refreshPoolBackends(pool: { backends: Backend[] }): void {
+  const fresh = loadBackends();
+  pool.backends.splice(0, pool.backends.length, ...fresh);
+}
+
+/**
+ * Read the active backend list, with hot-reload semantics.
+ *
+ * Resolution priority:
+ *   1. QWEN_BACKENDS env var — back-compat / shell override
+ *   2. ~/.qwen-coprocessor-stack/config.json `backends` array
+ *   3. DEFAULT_BACKEND fallback
+ *
+ * Invalid JSON at either source is logged as a warning and the next
+ * tier is consulted. The config file is mtime-cached so re-invocation
+ * on every spawn is cheap (one stat + maybe one parse).
  */
 export function loadBackends(): Backend[] {
+  // 1. env override
   const raw = process.env["QWEN_BACKENDS"];
-  if (!raw) return [DEFAULT_BACKEND];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return [DEFAULT_BACKEND];
+  if (raw && raw.trim() !== "") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as Backend[];
+      }
+    } catch {
+      log.warn(
+        { event_type: "config_invalid", source: "env" },
+        "QWEN_BACKENDS is not valid JSON; falling through to config file / default",
+      );
     }
-    return parsed as Backend[];
-  } catch {
-    log.warn(
-      { event_type: "config_invalid" },
-      "QWEN_BACKENDS is not valid JSON; using default local backend",
-    );
-    return [DEFAULT_BACKEND];
   }
+
+  // 2. config file
+  const fromFile = readConfigBackends();
+  if (fromFile) return fromFile;
+
+  // 3. default
+  return [DEFAULT_BACKEND];
 }
 
 // ─────────────────────────────────────────────────────────────────

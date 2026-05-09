@@ -53,17 +53,37 @@ To shut down the local llama-server: `./scripts/stop-stack.sh`.
 
 ## Install as a plugin
 
-This repo doubles as a Claude Code plugin. After `npm run build` in step 3:
+This repo doubles as a Claude Code plugin. After `npm install` in step 3:
 
 ```bash
-# From any Claude Code session:
-/plugin install <path-to-this-repo>
+# From any shell with the claude CLI on PATH:
+claude plugin marketplace add /path/to/this/repo
+claude plugin install qwen-coprocessor-stack@qwen-coprocessor-stack
+# Then reload from any CC session: /reload-plugins
 ```
 
 The plugin manifest at `.claude-plugin/plugin.json` registers the supervisor's
 MCP server (`qwen-agent-server`) with `${CLAUDE_PLUGIN_ROOT}` resolved to the
 plugin install location, so paths stay portable. The five `qwen_*` MCP tools
 become available immediately after install.
+
+## Backend lifecycle (slash command)
+
+The plugin ships a `/qwen-backends` slash command for managing the
+supervisor's backend list without shell exports. Edits hot-apply on
+the next spawn — no supervisor restart required.
+
+```
+/qwen-backends list                                   # default; show + health
+/qwen-backends add qwentescence http://qwentescence:1234/v1
+/qwen-backends remove qwentescence
+/qwen-backends test [id]                              # probe live /health
+```
+
+State lives at `~/.qwen-coprocessor-stack/config.json` (object form,
+forward-extensible). Resolution priority: `QWEN_BACKENDS` env var (kept
+for back-compat / one-shot overrides) → config file → built-in
+single-local default.
 
 > **Note:** The repo also contains a project-scoped `.mcp.json` at the repo
 > root with absolute paths, used when running Claude Code directly from

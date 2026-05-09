@@ -79,6 +79,7 @@ vi.mock("../src/backends.js", () => ({
   loadBackends: (...args: unknown[]) => mockLoadBackends(...args),
   chooseBackend: (...args: unknown[]) => mockChooseBackend(...args),
   getCachedHealth: (...args: unknown[]) => mockGetCachedHealth(...args),
+  refreshPoolBackends: vi.fn(),
   resetHealthCache: vi.fn(),
 }));
 

@@ -5,12 +5,18 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   approxTokens,
   chooseBackend,
   classifyCapacity,
   loadBackends,
+  refreshPoolBackends,
   resetHealthCache,
+  _resetConfigCache,
 } from "../src/backends.js";
 import type { Backend } from "../src/types.js";
 
@@ -72,6 +78,102 @@ describe("loadBackends", () => {
     const pool = loadBackends();
     expect(pool).toHaveLength(1);
     expect(pool[0]?.id).toBe("local-27b");
+  });
+});
+
+describe("loadBackends — config file resolution", () => {
+  let tmpConfigDir: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    tmpConfigDir = mkdtempSync(join(tmpdir(), "qwen-config-"));
+    configPath = join(tmpConfigDir, "config.json");
+    process.env["QWEN_CONFIG_DIR"] = tmpConfigDir;
+    delete process.env["QWEN_BACKENDS"];
+    _resetConfigCache();
+  });
+
+  afterEach(() => {
+    rmSync(tmpConfigDir, { recursive: true, force: true });
+    delete process.env["QWEN_CONFIG_DIR"];
+    _resetConfigCache();
+  });
+
+  it("reads backends from config.json when present", () => {
+    writeFileSync(configPath, JSON.stringify({ backends: [remote35, remote72] }), "utf8");
+    const pool = loadBackends();
+    expect(pool).toHaveLength(2);
+    expect(pool[0]?.id).toBe("remote-35b");
+    expect(pool[1]?.id).toBe("remote-72b");
+  });
+
+  it("falls back to default when config file does not exist", () => {
+    // No file written
+    const pool = loadBackends();
+    expect(pool).toHaveLength(1);
+    expect(pool[0]?.id).toBe("local-27b");
+  });
+
+  it("falls back to default when config file has empty backends array", () => {
+    writeFileSync(configPath, JSON.stringify({ backends: [] }), "utf8");
+    const pool = loadBackends();
+    expect(pool[0]?.id).toBe("local-27b");
+  });
+
+  it("falls back to default when config file is malformed JSON (logs but doesn't crash)", () => {
+    writeFileSync(configPath, "{not-json", "utf8");
+    const pool = loadBackends();
+    expect(pool[0]?.id).toBe("local-27b");
+  });
+
+  it("env var QWEN_BACKENDS takes priority over config file", () => {
+    writeFileSync(configPath, JSON.stringify({ backends: [remote35] }), "utf8");
+    process.env["QWEN_BACKENDS"] = JSON.stringify([remote72]);
+    const pool = loadBackends();
+    expect(pool).toHaveLength(1);
+    expect(pool[0]?.id).toBe("remote-72b"); // from env, not from file
+  });
+
+  it("hot-reload: file edit between calls is observed", () => {
+    writeFileSync(configPath, JSON.stringify({ backends: [remote35] }), "utf8");
+    const before = loadBackends();
+    expect(before[0]?.id).toBe("remote-35b");
+
+    // Edit file. Bump mtime to force cache miss (some FS clocks are coarse).
+    writeFileSync(configPath, JSON.stringify({ backends: [remote72] }), "utf8");
+    const future = new Date(Date.now() + 5000);
+    utimesSync(configPath, future, future);
+
+    const after = loadBackends();
+    expect(after[0]?.id).toBe("remote-72b");
+  });
+
+  it("mtime cache: same file, no edit, no re-parse", () => {
+    writeFileSync(configPath, JSON.stringify({ backends: [remote35] }), "utf8");
+    const first = loadBackends();
+    const second = loadBackends();
+    // Same array contents — proves cache returned consistent shape
+    expect(first[0]?.id).toBe(second[0]?.id);
+  });
+});
+
+describe("refreshPoolBackends", () => {
+  it("mutates pool.backends in place from current config", () => {
+    const pool = { backends: [local27] };
+    process.env["QWEN_BACKENDS"] = JSON.stringify([remote35, remote72]);
+    refreshPoolBackends(pool);
+    expect(pool.backends).toHaveLength(2);
+    expect(pool.backends[0]?.id).toBe("remote-35b");
+    delete process.env["QWEN_BACKENDS"];
+  });
+
+  it("clears pool.backends down to default when env unset and no file", () => {
+    const pool = { backends: [local27, remote35, remote72] };
+    delete process.env["QWEN_BACKENDS"];
+    delete process.env["QWEN_CONFIG_DIR"];
+    refreshPoolBackends(pool);
+    expect(pool.backends).toHaveLength(1);
+    expect(pool.backends[0]?.id).toBe("local-27b");
   });
 });
 

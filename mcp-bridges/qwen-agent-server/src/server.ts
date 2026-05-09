@@ -25,7 +25,7 @@ import type {
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
-import { getCachedHealth } from "./backends.js";
+import { getCachedHealth, refreshPoolBackends } from "./backends.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -151,7 +151,6 @@ export function createToolHandlers(
   installedExtensionsCache?: InstalledExtensionsCache,
 ): ToolHandlers {
   const pool = existingPool ?? createPool();
-  const backends = pool.backends;
   let shuttingDown = false;
 
   // ── qwen_spawn ─────────────────────────────────────────────
@@ -192,6 +191,13 @@ export function createToolHandlers(
         throw err;
       }
     }
+
+    // Hot-reload the backend list from env / config file before each
+    // spawn so operator edits via `/qwen-backends add|remove` apply
+    // without restarting the supervisor. Existing sessions stay pinned
+    // to their backend (RDR-001 §Q3) — only this fresh spawn sees the
+    // new list.
+    refreshPoolBackends(pool);
 
     let session;
     try {
@@ -266,8 +272,11 @@ export function createToolHandlers(
   // ── qwen_backends ─────────────────────────────────────────
 
   const qwen_backends: ToolHandlers["qwen_backends"] = async () => {
+    // Hot-reload from env / config file so operator edits surface in
+    // the next list call without restarting the supervisor.
+    refreshPoolBackends(pool);
     const results = await Promise.all(
-      backends.map(async (b) => {
+      pool.backends.map(async (b) => {
         const healthy = await getCachedHealth(b);
         const info: BackendInfo = {
           id: b.id,
