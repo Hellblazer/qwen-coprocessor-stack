@@ -86,6 +86,7 @@ forward-extensible — `backends`, `default_extensions` today).
 | `/qwen-stack:backends list \| add \| remove \| test` | Backend lifecycle — edits config file in place; supervisor hot-applies on next spawn |
 | `/qwen-stack:extensions list \| info <name>` | Read-only listing of installed Qwen Code extensions with version, source, enabled state, declared commands/skills/agents/MCP servers |
 | `/qwen-stack:defaults list \| set <a,b,c> \| set --none \| clear` | Manage the session-default extension list applied when a spawn doesn't specify `opts.extensions.only` |
+| `/qwen-stack:budget list \| set [--max-context-tokens N] [--max-tool-calls M] \| clear [field]` | Manage the `session_budget` caps that abort a runaway session before the HTTP layer panics |
 
 Resolution priorities (env > file > default):
 
@@ -138,8 +139,9 @@ Resolution priority for the defaults: per-spawn opts → `QWEN_MAX_CONTEXT_TOKEN
 }
 ```
 
-A `/qwen-stack:budget` slash command for inspecting / overriding caps is
-deferred to v0.5; for v0.4 the config file and env vars are the surface.
+Operator-facing surface: `/qwen-stack:budget list | set [--max-context-tokens N]
+[--max-tool-calls M] | clear [max-context-tokens | max-tool-calls]` (v0.5).
+Config-file edits hot-apply on the next spawn — no supervisor restart.
 
 
 ## MCP tools
