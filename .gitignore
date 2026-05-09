@@ -26,3 +26,6 @@ __pycache__/
 # at repo root would create a duplicate 'qwen-agent-server' registration
 # alongside the plugin's 'supervisor' entry. Don't bring it back.
 .mcp.json
+
+# Local exploration / scratch — never committed
+notes/
