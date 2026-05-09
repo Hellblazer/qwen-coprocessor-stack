@@ -19,7 +19,7 @@ related:
 
 ## Status
 
-**Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event): see "Amendments" section at the end of this file.
+**Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event; live budget counters on `qwen_poll`): see "Amendments" section at the end of this file.
 
 **Draft** (2026-05-04). Reframed earlier the same day from a rejected
 "canonical plugin catalogue" framing — operator preference, not repo
@@ -709,3 +709,58 @@ amendments:
 Drain semantics from the original RDR continue to hold: caps are
 captured at session construction; running sessions are unaffected by
 config edits made after their spawn.
+
+### 2026-05-09 — `qwen_poll.budget` live counters (reverses the v0.4 deferral)
+
+The earlier 2026-05-09 amendment (this same file, §Session budget)
+deferred `qwen_session_stats` with the rationale "pollers can already
+infer from emitted events." The v0.5 smoke test on commit `aa0546c`
+showed that rationale was wrong in practice.
+
+Reproducer: spawn a session with a tight `max_context_tokens` (200) and
+ask the inner Qwen to read three small system files. Qwen dispatched
+all three reads in parallel; the `/etc/passwd` result alone (9.6 KB,
+~2400 est tokens) blew past 50 / 75 / 90 % of the cap in a single
+iteration of `_run`'s tool_result branch. All three `context_pressure`
+events fired on the same `ts`, with the abort right behind them.
+Event-only callers had no window to react gracefully.
+
+The fix is non-clever: surface the live counters on every `qwen_poll`
+so an orchestrator can act between thresholds instead of waiting for
+discrete crossings. Both fields zero-disabled, matching `SpawnOpts`:
+
+```ts
+interface SessionBudgetStats {
+  est_tokens: number;       // accumulated chars / 4
+  max_tokens: number;       // 0 = disabled
+  tool_calls: number;
+  max_tool_calls: number;   // 0 = unlimited
+}
+
+interface PollResult {
+  // ...existing fields...
+  budget?: SessionBudgetStats;
+}
+```
+
+The supervisor always populates `budget`. The field is typed optional
+solely for back-compat with destructuring callers and any prior
+PollResult consumers that exist outside this codebase.
+
+Why this isn't a `qwen_session_stats` MCP tool:
+
+- Pollers already round-trip per turn; adding a second tool would
+  double the chatter for the same data.
+- The counters are session-scoped state that `poll` is the canonical
+  reader of. A separate tool would duplicate the lookup-by-task_id
+  surface.
+- Future fields (e.g. per-tool breakdown, prior_context size, evict
+  candidacy hints) extend `budget` rather than spawning more tools.
+
+Drain semantics: counters are read live from the session at poll time;
+they're not snapshotted. A session that aborted with `code=context_exceeded`
+remains pollable — its `budget` shows the post-abort counters so a
+post-mortem caller can attribute the abort to the right knob.
+
+Out of scope (carried forward from prior amendments): per-tool-result
+caps, mid-flight summarization, prior_context tool-call ledger.

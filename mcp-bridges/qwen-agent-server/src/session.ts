@@ -350,6 +350,15 @@ export class QwenSession {
       recent_events: slice,
       more_events_available: hasMore,
       latest_event_id: latestId,
+      // Live budget counters (RDR-002 v0.6 amendment). Always set so
+      // pollers don't have to special-case post-abort sessions; both
+      // caps are zero-disabled per the SessionBudgetStats contract.
+      budget: {
+        est_tokens: this._estTokens(),
+        max_tokens: this._maxContextTokens,
+        tool_calls: this._toolCallCount,
+        max_tool_calls: this._maxToolCalls,
+      },
     };
 
     if ((this._state === "idle" || this._state === "complete") && this._last_message !== undefined) {

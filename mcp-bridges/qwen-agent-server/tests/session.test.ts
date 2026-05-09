@@ -141,6 +141,45 @@ async function flush(): Promise<void> {
   }
 }
 
+/** Build an SDK assistant message with one tool_use block. */
+function toolUseMsg(name: string, id: string, input: Record<string, unknown> = {}): SDKMessage {
+  return {
+    type: "assistant",
+    uuid: id,
+    session_id: "s1",
+    message: {
+      id,
+      type: "message",
+      role: "assistant",
+      content: [{ type: "tool_use", id, name, input }],
+      model: "qwen3.6-35b-a3b",
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  } as unknown as SDKMessage;
+}
+
+/** Build an SDK user message with one tool_result of the given char-length string. */
+function toolResultMsg(toolUseId: string, contentLen: number): SDKMessage {
+  return {
+    type: "user",
+    session_id: "s1",
+    parent_tool_use_id: null,
+    uuid: `r-${toolUseId}`,
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          content: "x".repeat(contentLen),
+        },
+      ],
+    },
+  } as unknown as SDKMessage;
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Tests
 
@@ -765,6 +804,103 @@ describe("QwenSession", () => {
     });
   });
 
+  // ── Live budget counters in poll (RDR-002 v0.6 amendment) ───
+  //
+  // The v0.5 smoke test (commit aa0546c) showed that all three
+  // context_pressure thresholds can fire on the same iteration when one
+  // tool_result is much larger than the cap. Discrete events give the
+  // orchestrator no early-warning window in that case. Surfacing live
+  // counters on every poll lets the orchestrator wind down between
+  // events — independent of whether a discrete threshold fired.
+
+  describe("poll budget field", () => {
+    it("populates budget on every poll, including back-compat sessions with no caps", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      const polled = session.poll({});
+      expect(polled.budget).toEqual({
+        est_tokens: 0,
+        max_tokens: 0,
+        tool_calls: 0,
+        max_tool_calls: 0,
+      });
+
+      ctrl.end();
+    });
+
+    it("budget.max_tokens / max_tool_calls reflect the spawn opts", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ max_context_tokens: 50_000, max_tool_calls: 25 }),
+      );
+      const polled = session.poll({});
+      expect(polled.budget?.max_tokens).toBe(50_000);
+      expect(polled.budget?.max_tool_calls).toBe(25);
+
+      ctrl.end();
+    });
+
+    it("budget counters advance after tool_call and tool_result events", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ max_context_tokens: 50_000, max_tool_calls: 25 }),
+      );
+
+      // Initial: zeros.
+      expect(session.poll({}).budget?.est_tokens).toBe(0);
+      expect(session.poll({}).budget?.tool_calls).toBe(0);
+
+      // Drive a tool_use + tool_result through the SDK loop.
+      ctrl.push(toolUseMsg("read", "tu_1"));
+      await flush();
+      const afterCall = session.poll({}).budget!;
+      expect(afterCall.tool_calls).toBe(1);
+      // No tool_result yet; est_tokens still 0.
+      expect(afterCall.est_tokens).toBe(0);
+
+      ctrl.push(toolResultMsg("tu_1", 4_000)); // 4000 chars → 1000 est tokens
+      await flush();
+      const afterResult = session.poll({}).budget!;
+      expect(afterResult.est_tokens).toBe(1_000);
+      expect(afterResult.tool_calls).toBe(1);
+
+      ctrl.end();
+    });
+
+    it("budget remains readable after a context_exceeded abort", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ max_context_tokens: 100 }),
+      );
+      // 600 chars → est=150, exceeds cap=100. Triggers abort.
+      ctrl.push(toolResultMsg("tu_x", 600));
+      await flush();
+
+      expect(session.state).toBe("error");
+      const polled = session.poll({});
+      expect(polled.budget).toEqual({
+        est_tokens: 150,
+        max_tokens: 100,
+        tool_calls: 0,
+        max_tool_calls: 0,
+      });
+    });
+  });
+
   // ── Session budget (RDR-002 §Session budget, 2026-05-09) ─────
   //
   // The supervisor pre-2026-05-09 had no internal cap on accumulated
@@ -775,45 +911,6 @@ describe("QwenSession", () => {
   //   - clean abort with code=context_exceeded once a cap is exceeded
 
   describe("session budget", () => {
-    /** Build an SDK assistant message with one tool_use block. */
-    function toolUseMsg(name: string, id: string, input: Record<string, unknown> = {}): SDKMessage {
-      return {
-        type: "assistant",
-        uuid: id,
-        session_id: "s1",
-        message: {
-          id: id,
-          type: "message",
-          role: "assistant",
-          content: [{ type: "tool_use", id, name, input }],
-          model: "qwen3.6-35b-a3b",
-          stop_reason: null,
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
-        },
-      } as unknown as SDKMessage;
-    }
-
-    /** Build an SDK user message with one tool_result of the given char-length string. */
-    function toolResultMsg(toolUseId: string, contentLen: number): SDKMessage {
-      return {
-        type: "user",
-        session_id: "s1",
-        parent_tool_use_id: null,
-        uuid: `r-${toolUseId}`,
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: toolUseId,
-              content: "x".repeat(contentLen),
-            },
-          ],
-        },
-      } as unknown as SDKMessage;
-    }
-
     it("emits context_pressure at 50/75/90% with the right level field", async () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;

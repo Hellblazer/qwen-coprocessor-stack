@@ -117,7 +117,12 @@ and a one-line message that includes both counters.
 
 Pre-abort, a `context_pressure` event fires once each at 50 / 75 / 90 %
 of `max_context_tokens` so a long-running poller can wind a session down
-gracefully instead of being surprised. Event data:
+gracefully instead of being surprised. Every `qwen_poll` response also
+carries a live `budget: { est_tokens, max_tokens, tool_calls, max_tool_calls }`
+field so the orchestrator can react between thresholds — the v0.5 smoke
+test showed that one oversized tool_result can trip 50 / 75 / 90 % on
+the same iteration, leaving event-only callers no early-warning window.
+Event data:
 
 ```json
 { "level": "warn|high|critical",

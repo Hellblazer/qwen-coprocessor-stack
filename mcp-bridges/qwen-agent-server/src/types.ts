@@ -190,6 +190,41 @@ export interface LastKnown {
 }
 
 /**
+ * Live budget counters surfaced on every `qwen_poll` (RDR-002 §Session
+ * budget, 2026-05-09 v0.6 amendment).
+ *
+ * The v0.4 amendment deferred a `qwen_session_stats` MCP tool with the
+ * rationale "pollers can already infer from emitted events." The v0.5
+ * smoke test (commit aa0546c) showed why that rationale is wrong in
+ * practice: a single oversized tool_result (one /etc/passwd read,
+ * 9.6 KB → 2400 est tokens) blew past 50 / 75 / 90 % of a tight cap in
+ * a single iteration, firing all three `context_pressure` events on
+ * the same timestamp with the abort right behind them. Discrete
+ * thresholds give pollers no early-warning window when the input is
+ * one big payload.
+ *
+ * Folding the live counters into every poll lets the orchestrator
+ * make per-poll decisions ("est_tokens passed 30K, finish the current
+ * sub-task and re-spawn with prior_context") independently of whether
+ * a discrete pressure event has fired yet.
+ *
+ * Both cap fields are zero-disabled (matching `SpawnOpts`):
+ * `max_tokens=0` means the token cap is disabled; `max_tool_calls=0`
+ * means unlimited. Pollers should treat zero as "no cap" rather than
+ * "100 % full."
+ */
+export interface SessionBudgetStats {
+  /** Accumulated tool_result chars / 4 estimate. */
+  est_tokens: number;
+  /** The session's max_context_tokens at construction; 0 = disabled. */
+  max_tokens: number;
+  /** Tool-call count observed so far. */
+  tool_calls: number;
+  /** The session's max_tool_calls at construction; 0 = unlimited. */
+  max_tool_calls: number;
+}
+
+/**
  * Result of `qwen_poll`. Always includes state and the recent slice of
  * events; other fields appear conditionally per state.
  */
@@ -208,6 +243,12 @@ export interface PollResult {
     message: string;
   };
   last_known?: LastKnown;
+  /**
+   * Live budget counters. Always present for sessions constructed with
+   * the v0.6+ supervisor; optional in the type for back-compat with
+   * destructuring callers and prior PollResult consumers.
+   */
+  budget?: SessionBudgetStats;
 }
 
 /**
