@@ -10,7 +10,8 @@
     "postinstall": "tsc",
     "test": "vitest run --exclude 'tests/integration/**'",
     "test:integration": "vitest run --dir tests/integration",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "bench": "npm run build && tsx ../../scripts/bench/qwen_vs_claude.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "25.6.0",
+    "tsx": "4.20.6",
     "typescript": "6.0.3",
     "vitest": "4.1.5"
   },

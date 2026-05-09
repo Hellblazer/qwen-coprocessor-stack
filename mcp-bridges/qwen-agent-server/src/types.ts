@@ -115,6 +115,27 @@ export interface SpawnOpts {
    * unlimited. Same abort contract as max_context_tokens.
    */
   max_tool_calls?: number;
+  /**
+   * When false (default), the supervisor prepends a `/no_think`
+   * directive to every user message so the inner Qwen3.6 model skips
+   * its chain-of-thought "thinking mode." Disabling is load-bearing
+   * for dispatch / RAG workloads — Artificial Analysis measured ~6×
+   * output token bloat with thinking ON. Set true if you actually
+   * want the reasoning trace surfaced (debugging, novel problems).
+   * RDR-002 v0.8 amendment.
+   */
+  thinking_mode?: boolean;
+  /**
+   * Optional JSON schema describing the desired output shape. When
+   * set, a directive describing the schema is appended to the inner
+   * Qwen's system prompt asking for JSON-only output. The supervisor
+   * does not run a full Ajv-style validator — that lands in v0.9 with
+   * llama.cpp grammar enforcement. For now, callers should treat this
+   * as best-effort guidance and validate themselves; `qwen_oneshot`
+   * is the schema-aware single-turn dispatch surface that wraps
+   * spawn + wait + JSON.parse + optional retry.
+   */
+  json_schema?: Record<string, unknown>;
 }
 
 /**
@@ -283,6 +304,36 @@ export interface BackendInfo {
   tier: Backend["tier"];
   capacity: Backend["capacity"];
   healthy: boolean | null;
+}
+
+/**
+ * Result of `qwen_oneshot` (RDR-002 v0.8 amendment) — stateless
+ * single-turn dispatch wrapping spawn → wait-for-idle → optional JSON
+ * parse → stop. Designed as a drop-in shape for nexus-style operator
+ * dispatch where the caller wants schema-bounded synthesis without
+ * managing a multi-turn session.
+ *
+ * `ok` mirrors the typical Result shape; on success, `result` carries
+ * the assistant text and `parsed` carries `JSON.parse(result)` when
+ * `json_schema` was supplied AND the parse succeeded. On failure,
+ * `error.code` distinguishes timeout / session-aborted / parse-fail.
+ */
+export interface OneshotResult {
+  ok: boolean;
+  task_id: string;
+  /** Number of attempts taken; 1 + retries on JSON parse failure. */
+  attempts: number;
+  state: SessionState;
+  /** Last assistant message, when present. */
+  result?: string;
+  /** Parsed result, when json_schema was set and result was valid JSON. */
+  parsed?: unknown;
+  error?: {
+    code: "timeout" | "validation_failed" | "session_error" | "no_result";
+    message: string;
+  };
+  /** Live budget at the time of return. */
+  budget?: SessionBudgetStats;
 }
 
 /**

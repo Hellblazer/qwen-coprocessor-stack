@@ -164,6 +164,7 @@ Config-file edits hot-apply on the next spawn — no supervisor restart.
 | `qwen_stop`      | Cancel and remove a session. Idempotent. |
 | `qwen_backends`  | List configured backends and their cached health. |
 | `qwen_sessions`  | Live overview of pooled sessions — task_id, backend, state, last-poll timestamp, turns completed, live budget counters. Read-only. |
+| `qwen_oneshot`   | Stateless single-turn dispatch: spawn → wait → optional JSON parse + retry → stop. Schema-aware where `opts.json_schema` is supplied. Drop-in for `claude -p --json-schema`-style operator dispatch. |
 
 ## Architecture
 

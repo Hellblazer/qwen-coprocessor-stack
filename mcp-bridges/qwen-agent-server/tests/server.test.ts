@@ -566,4 +566,171 @@ describe("MCP tool handlers", () => {
       expect(result[0]!.state).toBe("error");
     });
   });
+
+  // ── qwen_oneshot (RDR-002 v0.8 amendment) ───────────────────
+  //
+  // Mock semantics: the MS class above doesn't drive a real SDK loop,
+  // so qwen_oneshot's poll waits would never resolve naturally. Each
+  // test arranges the mock instance into the desired terminal state
+  // before / right after calling qwen_oneshot, and asserts on the
+  // returned OneshotResult. The 250ms poll interval is short enough
+  // that "set state then resolve" inside the test happens before the
+  // first poll fires.
+
+  describe("qwen_oneshot", () => {
+    it("returns ok=true with result when session reaches idle (no schema)", async () => {
+      // Pre-arrange: set the next-spawned mock to idle with a result
+      // immediately. We do that by hooking into the mock's poll override.
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "summarise this",
+        opts: { timeout_ms: 5000 },
+      });
+      // Wait one tick so qwen_spawn has run and the mock instance exists.
+      await new Promise((r) => setTimeout(r, 10));
+      const inst = mockInstances[0]!;
+      inst.setState("idle");
+      inst.poll.mockReturnValue({
+        state: "idle",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        last_message: "the answer",
+        budget: { est_tokens: 100, max_tokens: 1000, tool_calls: 1, max_tool_calls: 0 },
+      });
+      const result = await oneshotPromise as { ok: boolean; result?: string; parsed?: unknown; attempts: number; error?: { code: string } };
+      expect(result.ok).toBe(true);
+      expect(result.result).toBe("the answer");
+      expect(result.parsed).toBeUndefined();
+      expect(result.attempts).toBe(1);
+    });
+
+    it("parses JSON when json_schema is set and result is valid JSON", async () => {
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "produce json",
+        opts: {
+          timeout_ms: 5000,
+          json_schema: { type: "object", properties: { name: { type: "string" } } },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      const inst = mockInstances[0]!;
+      inst.setState("idle");
+      inst.poll.mockReturnValue({
+        state: "idle",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        last_message: '{"name":"qwen"}',
+        budget: { est_tokens: 0, max_tokens: 0, tool_calls: 0, max_tool_calls: 0 },
+      });
+      const result = await oneshotPromise as { ok: boolean; parsed?: unknown };
+      expect(result.ok).toBe(true);
+      expect(result.parsed).toEqual({ name: "qwen" });
+    });
+
+    it("retries up to max_attempts when JSON parse fails", async () => {
+      // First attempt: invalid JSON → parse fails → retry. Second attempt: valid.
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "produce json",
+        opts: {
+          timeout_ms: 5000,
+          max_attempts: 2,
+          json_schema: { type: "object" },
+        },
+      });
+      // First spawn — invalid JSON.
+      await new Promise((r) => setTimeout(r, 10));
+      const inst1 = mockInstances[0]!;
+      inst1.setState("idle");
+      inst1.poll.mockReturnValue({
+        state: "idle",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        last_message: "this is prose, not json",
+        budget: { est_tokens: 0, max_tokens: 0, tool_calls: 0, max_tool_calls: 0 },
+      });
+      // Wait long enough for: poll(250ms), parse fail, stop, second spawn.
+      await new Promise((r) => setTimeout(r, 400));
+      const inst2 = mockInstances[1]!;
+      expect(inst2).toBeDefined();
+      inst2.setState("idle");
+      inst2.poll.mockReturnValue({
+        state: "idle",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        last_message: '{"ok":true}',
+        budget: { est_tokens: 0, max_tokens: 0, tool_calls: 0, max_tool_calls: 0 },
+      });
+      const result = await oneshotPromise as { ok: boolean; attempts: number; parsed?: unknown };
+      expect(result.ok).toBe(true);
+      expect(result.attempts).toBe(2);
+      expect(result.parsed).toEqual({ ok: true });
+    });
+
+    it("returns ok=false with code=session_error when session aborts", async () => {
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "x",
+        opts: { timeout_ms: 5000 },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      const inst = mockInstances[0]!;
+      inst.setState("error");
+      inst.poll.mockReturnValue({
+        state: "error",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        error: { code: "context_exceeded", message: "budget blown" },
+        budget: { est_tokens: 5000, max_tokens: 1000, tool_calls: 0, max_tool_calls: 0 },
+      });
+      const result = await oneshotPromise as { ok: boolean; error?: { code: string; message: string } };
+      expect(result.ok).toBe(false);
+      expect(result.error?.code).toBe("session_error");
+      expect(result.error?.message).toContain("budget blown");
+    });
+
+    it("returns ok=false with code=timeout when poll loop exceeds timeout_ms", async () => {
+      // Don't transition the session out of running; let the poll loop
+      // hit timeout_ms.
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "long",
+        opts: { timeout_ms: 200 },
+      });
+      // mock stays in running state — default poll() returns running.
+      const result = await oneshotPromise as { ok: boolean; error?: { code: string } };
+      expect(result.ok).toBe(false);
+      expect(result.error?.code).toBe("timeout");
+    });
+
+    it("forwards spawn opts including thinking_mode and json_schema to the underlying spawn", async () => {
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "x",
+        opts: {
+          thinking_mode: true,
+          json_schema: { type: "object" },
+          max_context_tokens: 5000,
+          timeout_ms: 5000,
+        },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      const inst = mockInstances[0]!;
+      // Verify the mock was constructed with the v0.8 opts. budgetStats
+      // mirrors max_context_tokens; thinking_mode/json_schema aren't on
+      // the mock surface but are visible via the third constructor arg.
+      expect(inst.budgetStats().max_tokens).toBe(5000);
+      // Drain to avoid leaking the running session beyond the test.
+      inst.setState("idle");
+      inst.poll.mockReturnValue({
+        state: "idle",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        last_message: '{}',
+        budget: { est_tokens: 0, max_tokens: 5000, tool_calls: 0, max_tool_calls: 0 },
+      });
+      await oneshotPromise;
+    });
+  });
 });

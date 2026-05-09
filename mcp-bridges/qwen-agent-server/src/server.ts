@@ -20,6 +20,7 @@ import { z } from "zod";
 
 import type {
   BackendInfo,
+  OneshotResult,
   PollOpts,
   PollResult,
   SessionInfo,
@@ -88,6 +89,8 @@ export const qwenSpawnOptsSchema = z.object({
   }).optional(),
   max_context_tokens: z.number().int().nonnegative().optional(),
   max_tool_calls: z.number().int().nonnegative().optional(),
+  thinking_mode: z.boolean().optional(),
+  json_schema: z.record(z.string(), z.unknown()).optional(),
 }).optional();
 
 type RawSpawnOpts = z.infer<typeof qwenSpawnOptsSchema>;
@@ -124,6 +127,8 @@ export function buildSpawnOptsFromRaw(rawOpts: RawSpawnOpts): Partial<SpawnOpts>
   }
   if (rawOpts.max_context_tokens !== undefined) spawnOpts.max_context_tokens = rawOpts.max_context_tokens;
   if (rawOpts.max_tool_calls !== undefined) spawnOpts.max_tool_calls = rawOpts.max_tool_calls;
+  if (rawOpts.thinking_mode !== undefined) spawnOpts.thinking_mode = rawOpts.thinking_mode;
+  if (rawOpts.json_schema !== undefined) spawnOpts.json_schema = rawOpts.json_schema;
   return spawnOpts;
 }
 
@@ -146,6 +151,17 @@ export type ToolHandlers = {
    * RDR-002 v0.7 amendment.
    */
   qwen_sessions: (args: Record<string, never>) => Promise<SessionInfo[]>;
+  /**
+   * Stateless single-turn dispatch: spawn → wait until idle/complete →
+   * optional JSON parse + retry → stop → return. Schema-aware where
+   * `opts.json_schema` is supplied. Designed as the supervisor-side
+   * shape that drop-in-replaces `claude -p --json-schema` for nexus
+   * operator dispatch (RDR-002 v0.8 amendment).
+   */
+  qwen_oneshot: (args: {
+    task: string;
+    opts?: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number };
+  }) => Promise<OneshotResult>;
   /**
    * Read-only listing of installed extensions, with version / path /
    * source / enabled-state and declared commands/skills/agents/MCP
@@ -339,6 +355,131 @@ export function createToolHandlers(
     return out;
   };
 
+  // ── qwen_oneshot (stateless dispatch, RDR-002 v0.8 amendment) ──
+  //
+  // Single-turn wrapper around spawn + poll-until-done + optional
+  // JSON.parse + stop. The schema-aware return shape exists to drop
+  // into nexus operator dispatch as a Qwen alternative to `claude -p
+  // --json-schema`. The supervisor itself does not run a full Ajv
+  // validator; callers either rely on Qwen3.6's instruction-following
+  // (system-prompt directive in session.ts) or post-validate.
+  // Validation-failure retry is bounded by `max_attempts` so a model
+  // that consistently emits prose doesn't burn budget infinitely.
+
+  const ONESHOT_POLL_INTERVAL_MS = 250;
+
+  const qwen_oneshot: ToolHandlers["qwen_oneshot"] = async ({ task, opts }) => {
+    const timeout_ms = opts?.timeout_ms ?? 300_000;
+    const max_attempts = Math.max(1, opts?.max_attempts ?? 1);
+    // Strip the oneshot-specific fields before forwarding to qwen_spawn.
+    const spawnOpts: Partial<SpawnOpts> = { ...opts };
+    delete (spawnOpts as Record<string, unknown>)["timeout_ms"];
+    delete (spawnOpts as Record<string, unknown>)["max_attempts"];
+
+    let attempts = 0;
+    let last_task_id = "";
+    let last_state: import("./types.js").SessionState = "error";
+    let last_result: string | undefined;
+    let last_budget: import("./types.js").SessionBudgetStats | undefined;
+    let last_error: OneshotResult["error"];
+
+    while (attempts < max_attempts) {
+      attempts++;
+
+      const spawn = await qwen_spawn({ task, opts: spawnOpts });
+      if ("error" in spawn) {
+        last_error = { code: "session_error", message: spawn.error.message };
+        break;
+      }
+      last_task_id = spawn.task_id;
+
+      const start = Date.now();
+      // Poll until idle/complete/error/timeout.
+      let polled: PollResult;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        polled = await qwen_poll({ task_id: last_task_id, opts: {} }) as PollResult;
+        last_state = polled.state;
+        last_budget = polled.budget;
+
+        if (polled.state === "idle" || polled.state === "complete") {
+          last_result = polled.last_message;
+          break;
+        }
+        if (polled.state === "error") {
+          last_error = {
+            code: "session_error",
+            message: polled.error?.message ?? "session aborted without message",
+          };
+          break;
+        }
+        if (Date.now() - start > timeout_ms) {
+          last_error = {
+            code: "timeout",
+            message: `oneshot timed out after ${timeout_ms}ms (state=${polled.state})`,
+          };
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, ONESHOT_POLL_INTERVAL_MS));
+      }
+
+      // Always stop the session — oneshot is stateless by contract.
+      await qwen_stop({ task_id: last_task_id });
+
+      if (last_error?.code === "session_error" || last_error?.code === "timeout") {
+        // Don't retry on session errors / timeouts; those are real failures
+        // and retrying is expensive.
+        break;
+      }
+
+      // Idle/complete reached. If schema requested, try to parse.
+      if (last_result === undefined || last_result === "") {
+        last_error = { code: "no_result", message: "session ended with no assistant message" };
+        break; // retrying won't help if model produced nothing
+      }
+      if (spawnOpts.json_schema === undefined) {
+        // No schema requested → success on first reach.
+        return {
+          ok: true,
+          task_id: last_task_id,
+          attempts,
+          state: last_state,
+          result: last_result,
+          ...(last_budget !== undefined ? { budget: last_budget } : {}),
+        };
+      }
+      try {
+        const parsed = JSON.parse(last_result);
+        return {
+          ok: true,
+          task_id: last_task_id,
+          attempts,
+          state: last_state,
+          result: last_result,
+          parsed,
+          ...(last_budget !== undefined ? { budget: last_budget } : {}),
+        };
+      } catch (err) {
+        last_error = {
+          code: "validation_failed",
+          message: `JSON.parse failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+        // fall through to retry (if attempts remain)
+      }
+    }
+
+    // Exhausted attempts or hit a terminal error.
+    return {
+      ok: false,
+      task_id: last_task_id,
+      attempts,
+      state: last_state,
+      ...(last_result !== undefined ? { result: last_result } : {}),
+      ...(last_error !== undefined ? { error: last_error } : {}),
+      ...(last_budget !== undefined ? { budget: last_budget } : {}),
+    };
+  };
+
   // ── qwen_extensions (read-only listing) ────────────────────
 
   const qwen_extensions: ToolHandlers["qwen_extensions"] = async () => {
@@ -388,6 +529,7 @@ export function createToolHandlers(
     qwen_stop,
     qwen_backends,
     qwen_sessions,
+    qwen_oneshot,
     qwen_extensions,
     ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
@@ -529,6 +671,28 @@ async function main(): Promise<void> {
     {},
     async (_args) => {
       const result = await handlers.qwen_sessions({});
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  mcpServer.tool(
+    "qwen_oneshot",
+    "Stateless single-turn dispatch: spawn → wait until idle → optional JSON parse + retry → stop → return. Schema-aware where opts.json_schema is supplied. Drop-in shape for nexus operator dispatch as a Qwen alternative to `claude -p --json-schema`.",
+    {
+      task: z.string().describe("Prompt for the inner Qwen"),
+      opts: qwenSpawnOptsSchema.unwrap().extend({
+        timeout_ms: z.number().int().positive().optional().describe("Hard limit per attempt; default 300000"),
+        max_attempts: z.number().int().positive().optional().describe("Retry on JSON-parse failure; default 1"),
+      }).optional(),
+    },
+    async (args) => {
+      const baseOpts = buildSpawnOptsFromRaw(args.opts);
+      const oneshotOpts: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number } = { ...baseOpts };
+      if (args.opts?.timeout_ms !== undefined) oneshotOpts.timeout_ms = args.opts.timeout_ms;
+      if (args.opts?.max_attempts !== undefined) oneshotOpts.max_attempts = args.opts.max_attempts;
+      const result = await handlers.qwen_oneshot({ task: args.task, opts: oneshotOpts });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };

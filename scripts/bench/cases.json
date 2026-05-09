@@ -1,0 +1,74 @@
+[
+  {
+    "name": "summarize-paragraph",
+    "operator": "summarize",
+    "prompt": "Summarize the following paragraph. Return JSON {summary: string, keypoints: string[]}. The paragraph: The supervisor sits between Claude Code and a locally-hosted Qwen 3.6 backend, presenting a small set of MCP tools (qwen_spawn / qwen_poll / qwen_send / qwen_stop) for managing long-lived inference sessions. Each session is pinned to a single backend at construction so the prefix cache stays warm across turns. A budget guardrail aborts cleanly if accumulated tool-result content exceeds a configurable cap, replacing an opaque HTTP-layer crash with a state=error event the orchestrator can react to.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" },
+        "keypoints": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["summary", "keypoints"]
+    }
+  },
+  {
+    "name": "extract-function-names",
+    "operator": "extract",
+    "prompt": "From this code, extract every top-level function name. Return JSON {functions: string[]}.\n\ndef ingest(path):\n    return open(path).read()\n\ndef _normalize(text):\n    return text.strip()\n\nasync def upsert(record):\n    await db.write(record)\n\nclass Store:\n    def get(self, k): ...\n\ndef compose(a, b):\n    return _normalize(a) + b",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "functions": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["functions"]
+    }
+  },
+  {
+    "name": "compare-paragraphs",
+    "operator": "compare",
+    "prompt": "Compare these two short product descriptions. Return JSON {commonalities: string[], differences: string[]}.\n\nA: SQLite is a serverless, file-based relational database with full SQL support, strong durability via WAL, and zero-configuration deployment. Single-writer; many-reader.\n\nB: DuckDB is a serverless, file-based analytical database with full SQL support, columnar storage optimized for OLAP queries, and zero-configuration deployment. Single-process by design.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "commonalities": { "type": "array", "items": { "type": "string" } },
+        "differences": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["commonalities", "differences"]
+    }
+  },
+  {
+    "name": "rank-by-criterion",
+    "operator": "rank",
+    "prompt": "Rank these 5 items by estimated implementation difficulty (low to high). Return JSON {ranked: [{item: string, rationale: string}]}. Items:\n1. Add a CLI flag\n2. Implement a new MCP tool with state\n3. Refactor a module's public API\n4. Fix a typo in a comment\n5. Design a new RDR for a major architecture change",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "ranked": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item": { "type": "string" },
+              "rationale": { "type": "string" }
+            },
+            "required": ["item", "rationale"]
+          }
+        }
+      },
+      "required": ["ranked"]
+    }
+  },
+  {
+    "name": "filter-by-criterion",
+    "operator": "filter",
+    "prompt": "Return only the items that mention 'database'. Return JSON {kept: string[]}. Items:\n1. SQLite stores data in one file.\n2. Async generators are great.\n3. PostgreSQL is a relational database.\n4. The MCP protocol uses JSON-RPC.\n5. DuckDB excels at analytical queries.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "kept": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["kept"]
+    }
+  }
+]

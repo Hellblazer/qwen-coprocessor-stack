@@ -19,7 +19,7 @@ related:
 
 ## Status
 
-**Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event; live budget counters on `qwen_poll`; backend-declared `ctx_size` for budget-default derivation + `qwen_sessions` overview tool): see "Amendments" section at the end of this file.
+**Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event; live budget counters on `qwen_poll`; backend-declared `ctx_size` for budget-default derivation + `qwen_sessions` overview tool; `thinking_mode` + `json_schema` SpawnOpts + `qwen_oneshot` dispatch tool): see "Amendments" section at the end of this file.
 
 **Draft** (2026-05-04). Reframed earlier the same day from a rejected
 "canonical plugin catalogue" framing — operator preference, not repo
@@ -838,3 +838,64 @@ Out of scope: filtering / pagination on `qwen_sessions` (cap is 3 by
 default, no pressure to add), per-tool-result caps (still deferred —
 the supervisor sees results post-hoc), mid-flight summarization,
 prior_context tool-call ledger.
+
+### 2026-05-09 — `thinking_mode` + `json_schema` SpawnOpts + `qwen_oneshot` (v0.8)
+
+The v0.7-era report identified the **operator-bundle layer of `nx_answer`** as the highest-leverage delegation target — `claude -p --json-schema` invoked from `nexus/operators/dispatch.py:229` for schema-bounded synthesis (`extract`, `rank`, `compare`, `summarize`, `generate`, `filter`, `check`, `verify`, `groupby`, `aggregate`). v0.8 ships the supervisor-side primitives that surface needs: a thinking-mode toggle, a schema-as-system-prompt directive, and a stateless `qwen_oneshot` MCP tool that drops into the same call shape as `claude_dispatch`.
+
+**(1) `thinking_mode?: boolean` SpawnOpt — defaults to `false`.**
+
+Qwen3.6 ships with chain-of-thought "thinking mode" ON by default. Artificial Analysis measured ~140M output tokens on their suite vs ~23M median (≈ 6× bloat). For dispatch / RAG workloads where the orchestrator pays per token (latency or generation cost), this is impractical.
+
+The documented mechanism for skipping thinking is the `/no_think` directive on the user message. The supervisor prepends it automatically to **every** outgoing user message (initial spawn prompt + every `qwen_send`) when `thinking_mode === false`. Set to `true` if you actually want the reasoning trace (debugging, novel problems where the trace is the artifact).
+
+Default-false is the operator-protective choice: it makes dispatch use cases work out of the box and forces an explicit opt-in for the verbose mode.
+
+**(2) `json_schema?: Record<string, unknown>` SpawnOpt.**
+
+When set, `buildSystemPrompt` appends an "Output contract — JSON only" directive describing the schema and asking the model for a single JSON value (no prose, no markdown fences). The supervisor itself does **not** run a full Ajv validator — that's deferred to v0.9 with llama.cpp grammar enforcement. For now, the schema is guidance plus a parse-and-retry loop in `qwen_oneshot`.
+
+The "schema-as-system-prompt vs. grammar-enforcement" tradeoff: grammar enforcement (GBNF / `response_format: json_schema`) gives a hard guarantee at the cost of a wrapper around the OpenAI-compat call. The Qwen Code SDK doesn't expose `response_format` directly, and the supervisor doesn't yet pipe `--grammar` through to llama-server. Schema-as-system-prompt is the lighter ship; it works because Qwen3.6's instruction-following on JSON output is well-documented as reliable. Field measurement (the bench harness, see below) is the right way to decide whether grammar enforcement is worth the next ship.
+
+**(3) `qwen_oneshot` MCP tool.**
+
+Stateless wrapper: spawn → poll-until-idle/error → optional `JSON.parse` → retry on parse failure (bounded by `max_attempts`, default 1) → stop → return.
+
+```ts
+qwen_oneshot({
+  task: string,
+  opts?: SpawnOpts & { timeout_ms?: number; max_attempts?: number }
+}) → OneshotResult
+```
+
+`OneshotResult` shape:
+
+- `ok: boolean` — overall success
+- `task_id`, `attempts`, `state`
+- `result?: string` — assistant text
+- `parsed?: unknown` — `JSON.parse(result)` when `json_schema` was set and parse succeeded
+- `error?: { code: "timeout" | "validation_failed" | "session_error" | "no_result", message }`
+- `budget?: SessionBudgetStats` — for post-mortem attribution
+
+Why a separate tool from spawn / poll / send / stop: the operator-dispatch caller wants a Result-shaped return without managing session lifecycle. Composing it client-side would mean every caller reimplements the same poll-loop + JSON-parse + retry + stop sequence. `qwen_oneshot` is the canonical surface for "do this one synthesis and return."
+
+**Failure semantics:**
+
+- `validation_failed` retries up to `max_attempts`; the supervisor spawns a fresh session each retry (same prompt + schema + opts) on the theory that the model's stochasticity will produce a different output.
+- `session_error` and `timeout` do **not** retry — those are real failures, retrying is expensive, and the caller should see the underlying signal.
+- `no_result` (the session ended `idle`/`complete` but `last_message` was empty) does not retry either; the model produced nothing, retry has no different inputs to work with.
+
+**(4) Bench harness at `scripts/bench/qwen_vs_claude.ts`.**
+
+A/B harness comparing `qwen_oneshot` against `claude -p --output-format json --json-schema <schema>` on the same prompt+schema. Five seed cases covering the bundleable operator shapes (`summarize`, `extract`, `compare`, `rank`, `filter`). Output is JSONL with per-(case, engine) latency, JSON-validity, and truncated output. Summary table at end.
+
+Run via `npm run bench` from the supervisor package; auto-builds first. `--only qwen` and `--only claude` halve the workload when validating one leg.
+
+What the harness does **not** measure: output quality (cross-model agreement, manual rating, oracle correctness), bundled-plan amortization, or cost. Those are downstream layers stacked on the JSONL.
+
+**Out of scope (carried forward):**
+
+- llama.cpp grammar enforcement (v0.9 candidate — pending bench data on whether it's load-bearing).
+- `qwen_dispatch` operator-side path inside nexus (upstream PR, gated on bench results).
+- Per-operator routing (Claude-vs-Qwen pinning by verb) — same gate.
+- Full Ajv-style schema validation in the supervisor — defer until callers need a strict-validation mode beyond the parse-and-retry semantic.

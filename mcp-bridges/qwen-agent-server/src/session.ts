@@ -154,6 +154,8 @@ export class QwenSession {
   private _accumulatedToolResultChars = 0;
   private _toolCallCount = 0;
   private _emittedPressure = new Set<"warn" | "high" | "critical">();
+  // v0.8: thinking-mode and JSON-schema controls. See SpawnOpts.
+  private readonly _thinkingMode: boolean;
 
   // Multi-turn input queue + waker for the async-generator prompt.
   private _inputQueue: SDKUserMessage[] = [];
@@ -175,6 +177,10 @@ export class QwenSession {
     // Zero/undefined disables the cap; defaults flow in from server.ts.
     this._maxContextTokens = opts.max_context_tokens ?? 0;
     this._maxToolCalls = opts.max_tool_calls ?? 0;
+    // Default thinking_mode to false (RDR-002 v0.8 amendment) — Qwen3.6
+    // ships with thinking ON which causes ~6× output bloat in dispatch
+    // workloads (Artificial Analysis 2026-04). Caller can opt back in.
+    this._thinkingMode = opts.thinking_mode === true;
 
     // RDR-002 step 11: extensions_loaded is the first event in the
     // session's log when a resolution is provided. Populating before
@@ -188,7 +194,8 @@ export class QwenSession {
       );
     }
 
-    // Seed the queue with the initial user message.
+    // Seed the queue with the initial user message. _mkUserMessage
+    // applies the /no_think prefix when thinking_mode is disabled.
     this._inputQueue.push(this._mkUserMessage(prompt));
 
     // Build excludeTools list. allow_subagents removes 'agent' from the
@@ -197,8 +204,10 @@ export class QwenSession {
       ? DEFAULT_EXCLUDED_TOOLS.filter((t) => t !== "agent")
       : [...DEFAULT_EXCLUDED_TOOLS];
 
-    // Build system prompt: coprocessor preamble + caller's system + prior_context.
-    const systemPrompt = buildSystemPrompt(opts.system, opts.prior_context);
+    // Build system prompt: coprocessor preamble + caller's system +
+    // prior_context + optional JSON-schema directive when opts.json_schema
+    // is supplied (RDR-002 v0.8 amendment).
+    const systemPrompt = buildSystemPrompt(opts.system, opts.prior_context, opts.json_schema);
 
     // §S4 Permission mode: yolo only when write_authority===true.
     const permissionMode = opts.write_authority === true ? "yolo" : "default";
@@ -411,13 +420,19 @@ export class QwenSession {
   // ── Internals ─────────────────────────────────────────────────
 
   private _mkUserMessage(text: string): SDKUserMessage {
+    // RDR-002 v0.8: Qwen3.6's documented mechanism for skipping
+    // chain-of-thought is the `/no_think` directive on the user
+    // message. Apply per-message rather than once-per-session because
+    // the chat template renders directives on the message they
+    // accompany; subsequent turns need their own prefix.
+    const out = this._thinkingMode ? text : `/no_think\n\n${text}`;
     return {
       type: "user",
       session_id: this.task_id,
       parent_tool_use_id: null,
       message: {
         role: "user",
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text: out }],
       },
     };
   }
@@ -691,6 +706,7 @@ function describeResolvedExtensions(
 function buildSystemPrompt(
   system: string | undefined,
   priorContext: PriorContext | undefined,
+  jsonSchema: Record<string, unknown> | undefined,
 ): string {
   const parts: string[] = [COPROCESSOR_PREAMBLE];
 
@@ -707,6 +723,23 @@ function buildSystemPrompt(
 
   if (system) {
     parts.push(system);
+  }
+
+  // RDR-002 v0.8: schema-as-system-prompt. The supervisor doesn't
+  // grammar-enforce yet (v0.9 candidate); for now we instruct the
+  // model and rely on Qwen3.6's well-documented JSON output reliability.
+  // qwen_oneshot wraps spawn + JSON.parse + retry to round out the
+  // surface for callers that want a Result-shaped return.
+  if (jsonSchema !== undefined) {
+    parts.push(
+      "[Output contract — JSON only]\n" +
+        "Your final assistant message MUST be a single JSON value (no\n" +
+        "prose, no markdown fences, no preamble) conforming to this\n" +
+        "JSON Schema:\n\n" +
+        JSON.stringify(jsonSchema, null, 2) +
+        "\n\nIf the task cannot be completed, return a JSON object with\n" +
+        '`{"error": "<one-line explanation>"}` rather than free text.',
+    );
   }
 
   return parts.join("\n\n");

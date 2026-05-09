@@ -804,6 +804,123 @@ describe("QwenSession", () => {
     });
   });
 
+  // ── thinking_mode + json_schema (RDR-002 v0.8 amendment) ────
+
+  describe("thinking_mode + json_schema", () => {
+    /**
+     * Capture the SDK prompt iterable's first user message so we can
+     * assert on the prepended /no_think (or its absence). The SDK mock
+     * receives a `prompt: AsyncIterable<SDKUserMessage>` — pull the
+     * first item and inspect its content.
+     */
+    async function firstPromptMessage(): Promise<string | undefined> {
+      // The session pushed the initial user message into _inputQueue at
+      // construction; the SDK mock holds a reference via its captured
+      // options. Easier to assert by walking through — but we don't
+      // have direct access. Use a controllable iter and let the session
+      // run to a result, then grab the prompt content from session
+      // poll's last_user_message instead. That field is set to the
+      // raw caller-supplied prompt, not the prefixed one — so for
+      // *this* test we need a different lever.
+      return undefined;
+    }
+    void firstPromptMessage;
+
+    it("prepends /no_think to initial user message when thinking_mode=false (default)", async () => {
+      // Drive the SDK loop and capture the user message it sees as
+      // input. We hook the mock's prompt iterable by inspecting its
+      // capturedOptions and walking the prompt's first emission.
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "compute pi", makeSpawnOpts());
+      // Start the run loop and poll once so the input queue is drained
+      // by the SDK's first await on prompt.next(). Easier: peek at
+      // private _inputQueue via type-cast. The first message in the
+      // queue is what the SDK will receive next; assertions on that
+      // are equivalent in semantics.
+      const firstQueued = (session as unknown as {
+        _inputQueue: Array<{ message: { content: Array<{ text: string }> } }>;
+      })._inputQueue[0];
+      expect(firstQueued).toBeDefined();
+      expect(firstQueued!.message.content[0]!.text).toBe("/no_think\n\ncompute pi");
+
+      ctrl.end();
+    });
+
+    it("does NOT prepend /no_think when thinking_mode=true", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(
+        LOCAL_BACKEND,
+        "compute pi",
+        makeSpawnOpts({ thinking_mode: true }),
+      );
+      const firstQueued = (session as unknown as {
+        _inputQueue: Array<{ message: { content: Array<{ text: string }> } }>;
+      })._inputQueue[0];
+      expect(firstQueued!.message.content[0]!.text).toBe("compute pi");
+
+      ctrl.end();
+    });
+
+    it("prepends /no_think to subsequent send() messages too", async () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "first", makeSpawnOpts());
+      // Drive to idle, then send another message.
+      ctrl.push(resultMsg("done turn 1"));
+      await flush();
+      session.send("second");
+      const queued = (session as unknown as {
+        _inputQueue: Array<{ message: { content: Array<{ text: string }> } }>;
+      })._inputQueue;
+      // The most recent push is at the tail; SDK has already drained
+      // the first. send() pushed a new one with the prefix applied.
+      const tail = queued[queued.length - 1]!;
+      expect(tail.message.content[0]!.text).toBe("/no_think\n\nsecond");
+
+      ctrl.end();
+    });
+
+    it("appends a JSON-schema directive to systemPrompt when json_schema is set", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const schema = {
+        type: "object",
+        properties: { name: { type: "string" }, count: { type: "integer" } },
+        required: ["name", "count"],
+      };
+      new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        makeSpawnOpts({ json_schema: schema }),
+      );
+      const sys = capturedOptions?.systemPrompt as string | undefined;
+      expect(sys).toBeDefined();
+      expect(sys).toContain("[Output contract — JSON only]");
+      expect(sys).toContain("\"required\":");
+      expect(sys).toContain("\"count\"");
+
+      ctrl.end();
+    });
+
+    it("does NOT append the JSON directive when json_schema is unset", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      const sys = capturedOptions?.systemPrompt as string | undefined;
+      expect(sys).toBeDefined();
+      expect(sys).not.toContain("[Output contract — JSON only]");
+
+      ctrl.end();
+    });
+  });
+
   // ── Live budget counters in poll (RDR-002 v0.6 amendment) ───
   //
   // The v0.5 smoke test (commit aa0546c) showed that all three
