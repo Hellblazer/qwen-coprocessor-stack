@@ -39,19 +39,27 @@ import { createToolHandlers, type ToolHandlers } from "../../mcp-bridges/qwen-ag
 // ─────────────────────────────────────────────────────────────────
 // Types
 
+interface Oracle {
+  match: "set" | "exact";
+  expected: Record<string, unknown>;
+}
+
 interface Case {
   name: string;
   operator: string;
   prompt: string;
   schema: Record<string, unknown>;
+  oracle?: Oracle;
 }
 
 interface RunRow {
   case: string;
   engine: "qwen" | "claude";
+  repeat: number;
   elapsed_ms: number;
   ok: boolean;
   json_valid: boolean;
+  oracle_match?: boolean;
   output_len: number;
   output_truncated?: string;
   error?: string;
@@ -68,6 +76,9 @@ interface Args {
   outPath: string;
   only?: "qwen" | "claude";
   perCaseTimeoutMs: number;
+  repeat: number;
+  operatorFilter?: string;
+  caseFilter?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -75,6 +86,7 @@ function parseArgs(argv: string[]): Args {
     casesPath: join(__dirname, "cases.json"),
     outPath: join(__dirname, "out", `bench-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`),
     perCaseTimeoutMs: 120_000,
+    repeat: 1,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -85,8 +97,32 @@ function parseArgs(argv: string[]): Args {
       if (v !== "qwen" && v !== "claude") throw new Error(`--only must be qwen|claude, got ${v}`);
       out.only = v;
     } else if (a === "--timeout-ms") out.perCaseTimeoutMs = parseInt(argv[++i]!, 10);
+    else if (a === "--repeat") out.repeat = parseInt(argv[++i]!, 10);
+    else if (a === "--operator") out.operatorFilter = argv[++i]!;
+    else if (a === "--case") out.caseFilter = argv[++i]!;
   }
+  if (!Number.isFinite(out.repeat) || out.repeat < 1) throw new Error(`--repeat must be ≥1`);
   return out;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Oracle grading
+
+function gradeOracle(parsed: unknown, oracle: Oracle | undefined): boolean | undefined {
+  if (!oracle || parsed === null || typeof parsed !== "object") return undefined;
+  const got = parsed as Record<string, unknown>;
+  for (const [key, exp] of Object.entries(oracle.expected)) {
+    const actual = got[key];
+    if (oracle.match === "set" && Array.isArray(exp) && Array.isArray(actual)) {
+      const a = new Set(exp.map(String));
+      const b = new Set(actual.map(String));
+      if (a.size !== b.size) return false;
+      for (const v of a) if (!b.has(v)) return false;
+    } else if (JSON.stringify(actual) !== JSON.stringify(exp)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -96,6 +132,7 @@ async function runQwen(
   handlers: ToolHandlers,
   c: Case,
   timeoutMs: number,
+  repeat: number,
 ): Promise<RunRow> {
   const t0 = Date.now();
   try {
@@ -112,6 +149,7 @@ async function runQwen(
       return {
         case: c.name,
         engine: "qwen",
+        repeat,
         elapsed_ms: elapsed,
         ok: false,
         json_valid: false,
@@ -120,12 +158,15 @@ async function runQwen(
         error: result.error?.message ?? "unknown",
       };
     }
+    const oracleMatch = gradeOracle(result.parsed, c.oracle);
     return {
       case: c.name,
       engine: "qwen",
+      repeat,
       elapsed_ms: elapsed,
       ok: true,
       json_valid: result.parsed !== undefined,
+      ...(oracleMatch !== undefined ? { oracle_match: oracleMatch } : {}),
       output_len: result.result?.length ?? 0,
       ...(result.result !== undefined ? { output_truncated: truncate(result.result) } : {}),
     };
@@ -133,6 +174,7 @@ async function runQwen(
     return {
       case: c.name,
       engine: "qwen",
+      repeat,
       elapsed_ms: Date.now() - t0,
       ok: false,
       json_valid: false,
@@ -185,7 +227,7 @@ function extractClaudeAnswer(stdout: string): { text: string; parsed: unknown | 
   return { text: stdout, parsed: undefined };
 }
 
-async function runClaude(c: Case, timeoutMs: number): Promise<RunRow> {
+async function runClaude(c: Case, timeoutMs: number, repeat: number): Promise<RunRow> {
   const t0 = Date.now();
   return new Promise((resolve) => {
     const proc = spawn(
@@ -208,6 +250,7 @@ async function runClaude(c: Case, timeoutMs: number): Promise<RunRow> {
       resolve({
         case: c.name,
         engine: "claude",
+        repeat,
         elapsed_ms: Date.now() - t0,
         ok: false,
         json_valid: false,
@@ -223,12 +266,15 @@ async function runClaude(c: Case, timeoutMs: number): Promise<RunRow> {
       const ok = code === 0;
       const { text, parsed } = extractClaudeAnswer(stdout);
       const jsonValid = parsed !== undefined;
+      const oracleMatch = gradeOracle(parsed, c.oracle);
       resolve({
         case: c.name,
         engine: "claude",
+        repeat,
         elapsed_ms: elapsed,
         ok,
         json_valid: jsonValid,
+        ...(oracleMatch !== undefined ? { oracle_match: oracleMatch } : {}),
         output_len: text.length,
         ...(text ? { output_truncated: truncate(text) } : {}),
         ...(ok ? {} : { error: stderr.slice(0, 500) || `exit ${code}` }),
@@ -240,6 +286,7 @@ async function runClaude(c: Case, timeoutMs: number): Promise<RunRow> {
       resolve({
         case: c.name,
         engine: "claude",
+        repeat,
         elapsed_ms: Date.now() - t0,
         ok: false,
         json_valid: false,
@@ -262,9 +309,11 @@ function truncate(s: string, max = 800): string {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const cases: Case[] = JSON.parse(readFileSync(args.casesPath, "utf-8"));
+  let cases: Case[] = JSON.parse(readFileSync(args.casesPath, "utf-8"));
+  if (args.operatorFilter) cases = cases.filter((c) => c.operator === args.operatorFilter);
+  if (args.caseFilter) cases = cases.filter((c) => c.name === args.caseFilter);
 
-  console.log(`bench: ${cases.length} cases, only=${args.only ?? "both"}`);
+  console.log(`bench: ${cases.length} cases × ${args.repeat} repeats, only=${args.only ?? "both"}`);
   console.log(`bench: writing to ${args.outPath}`);
 
   // Spawn a fresh supervisor pool. Mirrors production main() in
@@ -284,20 +333,25 @@ async function main(): Promise<void> {
   const rows: RunRow[] = [];
 
   for (const c of cases) {
-    console.log(`bench: ${c.name}`);
-    if (args.only !== "qwen" /* run claude */) {
-      const row = await runClaude(c, args.perCaseTimeoutMs);
-      rows.push(row);
-      console.log(
-        `  claude: ${row.ok ? "ok" : "FAIL"} ${row.elapsed_ms}ms json_valid=${row.json_valid} len=${row.output_len}`,
-      );
-    }
-    if (args.only !== "claude" /* run qwen */) {
-      const row = await runQwen(handlers!, c, args.perCaseTimeoutMs);
-      rows.push(row);
-      console.log(
-        `  qwen:   ${row.ok ? "ok" : "FAIL"} ${row.elapsed_ms}ms json_valid=${row.json_valid} len=${row.output_len}`,
-      );
+    for (let rep = 1; rep <= args.repeat; rep++) {
+      const tag = args.repeat > 1 ? `${c.name} [${rep}/${args.repeat}]` : c.name;
+      console.log(`bench: ${tag}`);
+      if (args.only !== "qwen" /* run claude */) {
+        const row = await runClaude(c, args.perCaseTimeoutMs, rep);
+        rows.push(row);
+        const oracle = row.oracle_match === undefined ? "" : ` oracle=${row.oracle_match}`;
+        console.log(
+          `  claude: ${row.ok ? "ok" : "FAIL"} ${row.elapsed_ms}ms json_valid=${row.json_valid}${oracle} len=${row.output_len}`,
+        );
+      }
+      if (args.only !== "claude" /* run qwen */) {
+        const row = await runQwen(handlers!, c, args.perCaseTimeoutMs, rep);
+        rows.push(row);
+        const oracle = row.oracle_match === undefined ? "" : ` oracle=${row.oracle_match}`;
+        console.log(
+          `  qwen:   ${row.ok ? "ok" : "FAIL"} ${row.elapsed_ms}ms json_valid=${row.json_valid}${oracle} len=${row.output_len}`,
+        );
+      }
     }
   }
 
@@ -306,20 +360,26 @@ async function main(): Promise<void> {
 
   // Summary table.
   console.log("\nSummary:");
-  const byEngine: Record<string, { n: number; ok: number; valid: number; ms: number[] }> = {};
+  const byEngine: Record<string, { n: number; ok: number; valid: number; oracleN: number; oracleOk: number; ms: number[] }> = {};
   for (const r of rows) {
-    byEngine[r.engine] ??= { n: 0, ok: 0, valid: 0, ms: [] };
-    byEngine[r.engine]!.n++;
-    if (r.ok) byEngine[r.engine]!.ok++;
-    if (r.json_valid) byEngine[r.engine]!.valid++;
-    byEngine[r.engine]!.ms.push(r.elapsed_ms);
+    byEngine[r.engine] ??= { n: 0, ok: 0, valid: 0, oracleN: 0, oracleOk: 0, ms: [] };
+    const s = byEngine[r.engine]!;
+    s.n++;
+    if (r.ok) s.ok++;
+    if (r.json_valid) s.valid++;
+    if (r.oracle_match !== undefined) {
+      s.oracleN++;
+      if (r.oracle_match) s.oracleOk++;
+    }
+    s.ms.push(r.elapsed_ms);
   }
   for (const [engine, s] of Object.entries(byEngine)) {
     const sorted = [...s.ms].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
     const total = sorted.reduce((a, b) => a + b, 0);
+    const oracle = s.oracleN > 0 ? `  oracle=${s.oracleOk}/${s.oracleN}` : "";
     console.log(
-      `  ${engine.padEnd(8)} ok=${s.ok}/${s.n}  json_valid=${s.valid}/${s.n}  median=${median}ms  total=${total}ms`,
+      `  ${engine.padEnd(8)} ok=${s.ok}/${s.n}  json_valid=${s.valid}/${s.n}${oracle}  median=${median}ms  total=${total}ms`,
     );
   }
 

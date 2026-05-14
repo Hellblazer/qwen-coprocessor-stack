@@ -15,13 +15,77 @@
   {
     "name": "extract-function-names",
     "operator": "extract",
-    "prompt": "From this code, extract every top-level function name. Return JSON {functions: string[]}.\n\ndef ingest(path):\n    return open(path).read()\n\ndef _normalize(text):\n    return text.strip()\n\nasync def upsert(record):\n    await db.write(record)\n\nclass Store:\n    def get(self, k): ...\n\ndef compose(a, b):\n    return _normalize(a) + b",
+    "prompt": "From this code, extract every top-level function name. Include underscore-prefixed (private) functions; exclude class methods. Return JSON {functions: string[]}.\n\ndef ingest(path):\n    return open(path).read()\n\ndef _normalize(text):\n    return text.strip()\n\nasync def upsert(record):\n    await db.write(record)\n\nclass Store:\n    def get(self, k): ...\n\ndef compose(a, b):\n    return _normalize(a) + b",
     "schema": {
       "type": "object",
       "properties": {
         "functions": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["functions"]
+    },
+    "oracle": {
+      "match": "set",
+      "expected": { "functions": ["ingest", "_normalize", "upsert", "compose"] }
+    }
+  },
+  {
+    "name": "extract-urls-from-prose",
+    "operator": "extract",
+    "prompt": "Extract every URL mentioned in this text. Strip any surrounding punctuation. Return JSON {urls: string[]}.\n\nText: Visit https://example.com or https://docs.example.com/path for setup. The company at https://acme.io/products (now defunct) used to host https://acme.io/legacy. Some prose mentions https://other.example/page, then continues.",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "urls": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["urls"]
+    },
+    "oracle": {
+      "match": "set",
+      "expected": {
+        "urls": [
+          "https://example.com",
+          "https://docs.example.com/path",
+          "https://acme.io/products",
+          "https://acme.io/legacy",
+          "https://other.example/page"
+        ]
+      }
+    }
+  },
+  {
+    "name": "extract-iso-dates-from-log",
+    "operator": "extract",
+    "prompt": "Extract every ISO-format date (YYYY-MM-DD) appearing at the start of a log line. Ignore version numbers and any dates inside other text. Return JSON {dates: string[]}.\n\nLog:\n2026-05-01 INFO startup\n2026-05-03 WARN slowdown\nfix landed in version 1.2.3 last week\n2026-05-09 ERROR fatal\n2026-05-09 INFO recovery\nrelease 2026 was bumpy overall",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "dates": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["dates"]
+    },
+    "oracle": {
+      "match": "set",
+      "expected": {
+        "dates": ["2026-05-01", "2026-05-03", "2026-05-09", "2026-05-09"]
+      }
+    }
+  },
+  {
+    "name": "extract-cli-long-flags",
+    "operator": "extract",
+    "prompt": "Extract every long CLI flag name (the `--name` form) from this help text. Include only the flag itself (no argument metavars, no descriptions). Return JSON {flags: string[]}.\n\nUsage: foo [options]\n  --verbose         enable verbose mode\n  --output PATH     set output path\n  --quiet           suppress logs\n  -n, --dry-run     dry run mode\n  --max-retries N   retry budget\n  --help            show this help",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "flags": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["flags"]
+    },
+    "oracle": {
+      "match": "set",
+      "expected": {
+        "flags": ["--verbose", "--output", "--quiet", "--dry-run", "--max-retries", "--help"]
+      }
     }
   },
   {
