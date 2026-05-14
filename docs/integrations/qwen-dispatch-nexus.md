@@ -17,6 +17,30 @@ weakness. Bench harness gained `--repeat N` and per-case `oracle`
 that bench with --repeat ≥ 5 against a current qwentescence model and look
 for any oracle miss; one is enough to re-pin extract.**
 
+### Re-validation 2026-05-14
+
+Re-ran with the in-tree harness:
+
+```bash
+cd mcp-bridges/qwen-agent-server
+npm run bench -- --operator extract --repeat 5 --only qwen --timeout-ms 180000
+```
+
+Result against qwentescence (qwen3.6-35b-a3b):
+
+```
+qwen  ok=20/20  json_valid=20/20  oracle=20/20  median=17.8s  total=370s
+```
+
+All 4 extract cases × 5 repeats clean. No miss on the original
+`extract-function-names` case. **Promotion holds.** Run output at
+`scripts/bench/out/bench-2026-05-14T21-33-03-340Z.jsonl` (local —
+`scripts/bench/out/` is gitignored).
+
+`--repeat`, `--operator <name>`, `--case <name>`, and oracle grading
+landed in the in-tree harness (commit 72b21e8), so the next
+re-validation is a single `npm run bench` invocation.
+
 Original sketch below preserved for history.
 
 ---
