@@ -9,13 +9,13 @@
 //   - Eviction pass 2: least-recently-polled by last_polled_at
 //   - Reaper: sweeps idle sessions every 5 min (interval.unref()d)
 
-import pino from "pino";
+import { createLogger } from "./log.js";
 import type { Backend, SpawnOpts } from "./types.js";
 import { QwenSession } from "./session.js";
 import { chooseBackend, getSessionBudgetDefaults, loadBackends } from "./backends.js";
 import type { ResolveExtensionsResult } from "./extensions.js";
 
-const log = pino({ name: "qwen-pool" });
+const log = createLogger("qwen-pool");
 
 // ─────────────────────────────────────────────────────────────────
 // Types

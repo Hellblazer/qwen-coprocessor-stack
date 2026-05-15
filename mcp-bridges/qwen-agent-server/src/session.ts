@@ -24,7 +24,7 @@
 import { randomBytes } from "node:crypto";
 import type { Query } from "@qwen-code/sdk";
 import { query } from "@qwen-code/sdk";
-import pino from "pino";
+import { createLogger } from "./log.js";
 
 import type {
   Backend,
@@ -59,7 +59,7 @@ export interface SpawnInfra {
   wrapperPath: string;
 }
 
-const log = pino({ name: "qwen-session" });
+const log = createLogger("qwen-session");
 
 // ─────────────────────────────────────────────────────────────────
 // Constants
