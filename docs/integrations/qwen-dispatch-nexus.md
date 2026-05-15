@@ -41,7 +41,52 @@ export NEXUS_DISPATCH_QWEN_OPERATORS=topic_labeler,plan_miss_planner
 # Aspect adapter (opt-in; pair with v2 prompt for best results):
 export NEXUS_ASPECT_BACKEND=qwen
 export NEXUS_SCHOLARLY_PAPER_VERSION=v2
+
+# Tier-B agentic tools (currently only nx_enrich_beads is wired via #796):
+export NEXUS_TIER_B_DISPATCHER=qwen_agent
 ```
+
+### Tier-B prerequisite — `nx` qwen extension
+
+The qwen-agent-server supervisor reaches the nexus MCP surface
+through a Qwen Code **extension**. Install once per operator
+workstation:
+
+```bash
+mkdir -p ~/.qwen/extensions/nx
+cat > ~/.qwen/extensions/nx/qwen-extension.json <<'JSON'
+{
+  "name": "nx",
+  "version": "0.1.0",
+  "description": "Nexus MCP server — search, query, memory, store, catalog.",
+  "mcpServers": {
+    "nx": {
+      "command": "nx-mcp"
+    }
+  }
+}
+JSON
+```
+
+(`nx-mcp` is the console script shipped by the `nexus` Python
+package; if it's not on PATH, use the absolute venv path
+`~/git/nexus/.venv/bin/nx-mcp`.)
+
+Then reload the supervisor's installed-extensions cache and verify:
+
+```bash
+# Via the slash command if available:
+/qwen-stack:extensions
+# Or via MCP tool from any Claude Code session:
+#   mcp__plugin_qwen-stack_supervisor__qwen_reload_extensions
+#   mcp__plugin_qwen-stack_supervisor__qwen_extensions
+```
+
+The supervisor should report `{name: "nx", enabled_user: true,
+mcp_servers: ["nx"]}`. Smoke-test by spawning a qwen session with
+`extensions: {only: ["nx"]}` and asking it to call the nx
+`search` tool — successful end-to-end run was verified
+2026-05-15 with 43 search results returned and 1 tool call.
 
 ### Aspect bench corpus
 
