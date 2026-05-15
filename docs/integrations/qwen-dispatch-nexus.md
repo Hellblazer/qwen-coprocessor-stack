@@ -41,6 +41,26 @@ All 4 extract cases × 5 repeats clean. No miss on the original
 landed in the in-tree harness (commit 72b21e8), so the next
 re-validation is a single `npm run bench` invocation.
 
+### Full 10-operator re-validation 2026-05-14
+
+```bash
+npm run bench -- --repeat 5 --timeout-ms 180000
+```
+
+13 cases × 5 repeats × 2 engines = 130 dispatches against qwentescence
+(qwen3.6-35b-a3b):
+
+| Engine | ok | json_valid | oracle | median | total |
+|---|---|---|---|---|---|
+| claude | 65/65 | 65/65 | 20/20 | 14.2s | 15:32 |
+| qwen   | 65/65 | 65/65 | 20/20 | 14.6s | 18:18 |
+
+**Clean sweep across all 10 operators.** Latency parity tightened from
+2026-05-09 (1.36×) to 1.03× — Qwen median is 0.4s slower than Claude.
+Likely a combination of prefix-cache hits across repeats and a warmer
+qwentescence backend. Run output:
+`scripts/bench/out/bench-2026-05-14T22-25-00-818Z.jsonl`.
+
 Original sketch below preserved for history.
 
 ---
