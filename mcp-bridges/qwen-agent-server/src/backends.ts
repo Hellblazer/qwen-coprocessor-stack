@@ -13,10 +13,10 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import pino from "pino";
+import { createLogger } from "./log.js";
 import type { Backend, SpawnOpts } from "./types.js";
 
-const log = pino({ name: "qwen-backends" });
+const log = createLogger("qwen-backends");
 
 /**
  * On-disk config file resolved at `~/.qwen-coprocessor-stack/config.json`.

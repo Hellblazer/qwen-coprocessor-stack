@@ -32,11 +32,11 @@ import { statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import pino from "pino";
+import { createLogger } from "./log.js";
 
 import { readConfigDefaultExtensions } from "./backends.js";
 
-const log = pino({ name: "qwen-extensions" });
+const log = createLogger("qwen-extensions");
 
 /**
  * Default `which` implementation used when a caller doesn't inject one.

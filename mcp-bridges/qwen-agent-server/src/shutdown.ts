@@ -16,10 +16,10 @@
 // The reaper interval handle is NOT cleared here — it should be
 // unref()d so it doesn't block process exit (done in server.ts).
 
-import pino from "pino";
+import { createLogger } from "./log.js";
 import type { SessionPool } from "./pool.js";
 
-const log = pino({ name: "qwen-shutdown" });
+const log = createLogger("qwen-shutdown");
 
 const STOP_TIMEOUT_MS = 5_000;
 

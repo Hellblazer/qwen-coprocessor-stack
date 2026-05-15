@@ -12,7 +12,7 @@
 //   qwen_stop     — cancel a session
 //   qwen_backends — list backend health
 
-import pino from "pino";
+import { createLogger } from "./log.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
@@ -49,7 +49,7 @@ import {
   type InstalledExtensionsCache,
 } from "./extensions.js";
 
-const log = pino({ name: "qwen-agent-server" });
+const log = createLogger("qwen-agent-server");
 
 // ─────────────────────────────────────────────────────────────────
 // not-found poll result
