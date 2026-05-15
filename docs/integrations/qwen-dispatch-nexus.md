@@ -1,9 +1,46 @@
 # qwen_dispatch — informal upstream nexus design sketch
 
-**Status:** SHIPPED 2026-05-10. Upstream PRs:
+**Status:** SHIPPED. Upstream nexus PRs:
+
+**Phase 1 — bundleable operators (2026-05-10):**
 - **nexus#623** (initial qwen_dispatch + per-operator routing) — merged 2026-05-10T00:31Z
 - **nexus#626** (promote `extract` to qwen-default + conftest env isolation) — merged 2026-05-10T01:26Z
-- **nexus#776** (cost telemetry — `operator_dispatch_cost` structured log on both dispatchers; qwen computes would-have-cost via Sonnet 4.x rate constants dated 2026-05-14) — merged 2026-05-15T02:02Z
+
+**Phase 2 — cost telemetry (2026-05-15):**
+- **nexus#776** (`operator_dispatch_cost` structured log on both dispatchers; qwen computes would-have-cost via Sonnet 4.x rate constants dated 2026-05-14) — merged 2026-05-15T02:02Z
+
+**Phase 3 — beyond bundleable operators (2026-05-15, audit at `docs/integrations/qwen-offload-audit-2026-05-14.md`):**
+- **nexus#778** (named-call-site primitive `pick_dispatcher_for(call_site)` + `topic_labeler` migration) — merged 2026-05-15T02:43Z
+- **nexus#779** (`plan_miss_planner` route-flip — no dedicated bench, structurally identical to bundleable operators) — merged 2026-05-15T02:51Z
+- **nexus#780** (`aspect_extractor` Path B parallel adapter behind `NEXUS_ASPECT_BACKEND={claude,qwen}`) — merged 2026-05-15T03:02Z
+- **nexus#782** (`scripts/spikes/spike_c_aspect_qwen_parity.py` A/B parity harness — accepts `--uri` / `--manifest`, field-by-field `AspectRecord` diff) — merged 2026-05-15T03:19Z
+
+### To activate Phase 3
+
+```bash
+# Trivial route-flips (low risk — schema-bounded, host-validated):
+export NEXUS_DISPATCH_QWEN_OPERATORS=topic_labeler,plan_miss_planner
+
+# Aspect adapter (opt-in; bench against a real corpus first):
+export NEXUS_ASPECT_BACKEND=qwen
+```
+
+### Aspect bench corpus
+
+For the deferred aspect parity run: `~/git/ART/docs/papers/` (84 PDFs,
+Grossberg-lab cognitive-modeling literature). Invocation will be:
+
+```bash
+cd ~/git/nexus
+python scripts/spikes/spike_c_aspect_qwen_parity.py \
+    --uri ~/git/ART/docs/papers/*.pdf \
+    --limit 10 \
+    --out /tmp/aspect-parity.jsonl
+```
+
+(Adjust `--limit` based on appetite; full 84 papers × 2 engines ≈ 50-90
+minutes wall-clock at single-paper invocation. The harness also supports
+the batch path; check its `--help` when running.)
 
 End state under `NEXUS_DISPATCH_BACKEND=auto`:
 - `QWEN_OPERATORS_DEFAULT` = all 10 bundleable operators (summarize, compare, rank, filter, aggregate, groupby, verify, check, generate, **extract**)
