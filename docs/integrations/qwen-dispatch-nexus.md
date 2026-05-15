@@ -1,8 +1,9 @@
 # qwen_dispatch — informal upstream nexus design sketch
 
-**Status:** SHIPPED 2026-05-10. Upstream PRs merged:
+**Status:** SHIPPED 2026-05-10. Upstream PRs:
 - **nexus#623** (initial qwen_dispatch + per-operator routing) — merged 2026-05-10T00:31Z
 - **nexus#626** (promote `extract` to qwen-default + conftest env isolation) — merged 2026-05-10T01:26Z
+- **nexus#776** (cost telemetry — `operator_dispatch_cost` structured log on both dispatchers; qwen computes would-have-cost via Sonnet 4.x rate constants dated 2026-05-14) — filed 2026-05-14
 
 End state under `NEXUS_DISPATCH_BACKEND=auto`:
 - `QWEN_OPERATORS_DEFAULT` = all 10 bundleable operators (summarize, compare, rank, filter, aggregate, groupby, verify, check, generate, **extract**)
