@@ -14,6 +14,23 @@
 - **nexus#779** (`plan_miss_planner` route-flip — no dedicated bench, structurally identical to bundleable operators) — merged 2026-05-15T02:51Z
 - **nexus#780** (`aspect_extractor` Path B parallel adapter behind `NEXUS_ASPECT_BACKEND={claude,qwen}`) — merged 2026-05-15T03:02Z
 - **nexus#782** (`scripts/spikes/spike_c_aspect_qwen_parity.py` A/B parity harness — accepts `--uri` / `--manifest`, field-by-field `AspectRecord` diff) — merged 2026-05-15T03:19Z
+- **nexus#790** (`scholarly-paper-v2` prompt — opt-in via `NEXUS_SCHOLARLY_PAPER_VERSION=v2`; tightens dataset/baseline definitions: theoretical papers return [] for cited prior data; ablation variants are NOT baselines) — merged 2026-05-15T15:08Z
+- **nexus#793** (harness improvements: `--prompt-override` flag for spike_c + `judge_aspect_diffs.py` LLM-judged semantic-equivalence metric) — merged 2026-05-15
+
+### Aspect bench results — 10-paper Grossberg corpus (`~/git/ART/docs/papers/`)
+
+Four prompt iterations + semantic-equivalence judge (qwen self-judging on diff items, ~$0.10/run):
+
+| Field | v1 strict / sem | v2 strict / sem | v3 strict / sem | **v4 strict / sem** |
+|---|---|---|---|---|
+| `experimental_datasets` | 20% / 46% | 40% / 57% | 70% / 90% | **80% / 100%** |
+| `experimental_baselines` | 40% / 64% | 60% / 73% | 40% / 70% | **80% / 93%** |
+| Prose fields | 70-90% | 90-100% | 80-90% | 80-90% |
+| Salient sentences | 100% | 100% | 100% | 100% |
+
+v4 (the shipped scholarly-paper-v2) reaches **100% semantic / 80% strict** on datasets and **93% / 80%** on baselines. Remaining gaps are pure paraphrase noise the judge correctly resolves.
+
+Latency: claude 20-26s/paper, qwen 145-240s/paper (5-12× slower — much wider than the operator bench's 1.03× because aspect prompts run 30-120k input tokens vs the operator bench's ~12k). Cost saving: ~$0.18/paper. **The aspect offload story is cost-savings, not latency.**
 
 ### To activate Phase 3
 
@@ -21,8 +38,9 @@
 # Trivial route-flips (low risk — schema-bounded, host-validated):
 export NEXUS_DISPATCH_QWEN_OPERATORS=topic_labeler,plan_miss_planner
 
-# Aspect adapter (opt-in; bench against a real corpus first):
+# Aspect adapter (opt-in; pair with v2 prompt for best results):
 export NEXUS_ASPECT_BACKEND=qwen
+export NEXUS_SCHOLARLY_PAPER_VERSION=v2
 ```
 
 ### Aspect bench corpus
