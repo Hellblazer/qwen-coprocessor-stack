@@ -100,6 +100,12 @@ succeeded on Qwen precisely because they don't do that — the data is in
 the prompt and the answer comes out. Tool-use-in-prompt is a different
 regime, gated by the qwen-agent-server bridge's robustness.
 
+## Status — recommended sequence executed 2026-05-15
+
+- **Step 1 (named-call-site primitive + topic_labeler):** nexus#778 merged 2026-05-15T02:43Z. Added `pick_dispatcher_for(call_site)` to `dispatch_router`; migrated `taxonomy_cmd._generate_labels_batch` to it. Default routing claude; opt-in via `NEXUS_DISPATCH_QWEN_OPERATORS=topic_labeler`.
+- **Step 2 (plan-miss planner route-flip):** nexus#779 merged 2026-05-15T02:51Z. Migrated `_nx_answer_plan_miss` to `pick_dispatcher_for("plan_miss_planner")`. No dedicated bench (planner is structurally identical to bundleable operators).
+- **Step 3 (aspect_extractor Path B adapter):** nexus#780 merged 2026-05-15T03:02Z. Parallel `qwen_dispatch`-backed `_invoke_once_qwen` / `_invoke_once_batch_qwen` behind `NEXUS_ASPECT_BACKEND={claude,qwen}`. Default claude. Pure A/B substrate — production-corpus bench is a follow-on.
+
 ## Recommended next step
 
 **Bench `aspect_extractor` first.** Reasoning:
