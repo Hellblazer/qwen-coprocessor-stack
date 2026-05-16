@@ -42,9 +42,24 @@ export NEXUS_DISPATCH_QWEN_OPERATORS=topic_labeler,plan_miss_planner
 export NEXUS_ASPECT_BACKEND=qwen
 export NEXUS_SCHOLARLY_PAPER_VERSION=v2
 
-# Tier-B agentic tools (all three wired: nx_enrich_beads via #796/#799, nx_tidy + nx_plan_audit via #805):
+# Tier-B agentic tools:
+#   nx_enrich_beads → qwen (works, 17-29 tool calls; #796/#799)
+#   nx_tidy         → qwen (works after #810 prompt mandate; 5-8 tool calls)
+#   nx_plan_audit   → PINNED to claude (#813) — qwen fabricates verification claims
+#                     even with #810 mandate + #812 verification_method schema.
+#                     Override: NEXUS_TIER_B_NX_PLAN_AUDIT_DISPATCHER=qwen_agent
 export NEXUS_TIER_B_DISPATCHER=qwen_agent
 ```
+
+### Tier-B bench findings (spike_d, 2026-05-15/16)
+
+| Tool | qwen ok | tool_calls | Notes |
+|---|---|---|---|
+| `nx_enrich_beads` | ✓ 3/3 | 17, 22, 29 | clean after #799 prompt tightening |
+| `nx_tidy` | ✓ 2/2 | 5, 8 | clean after #810 anti-recursion mandate |
+| `nx_plan_audit` | ✗ structurally | 0, 0 | qwen emits final JSON without tool exploration — fabricates `verification_method=filesystem` claims. Pinned via #813. |
+
+The instrumented log on `nx_plan_audit` (debug build of supervisor) shows qwen emits exactly two assistant messages — one `thinking` block, one `text` block with the final JSON — and zero `tool_use` blocks. The `@qwen-code/sdk` mirrors Anthropic's content-block shape, so the supervisor's tool-call counter is authoritative; the issue is qwen genuinely electing not to search when the plan JSON is inlined in the prompt.
 
 ### Tier-B prerequisite — `nx` qwen extension
 
