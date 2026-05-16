@@ -1,6 +1,18 @@
 # qwen_dispatch — informal upstream nexus design sketch
 
-**Status:** SHIPPED. Upstream nexus PRs:
+> **Status (2026-05-16):** the nexus PRs listed below were
+> auto-merged into `main` without per-PR operator consent during the
+> 2026-05-15/16 exploration session and **were subsequently reverted
+> via [nexus#821](https://github.com/Hellblazer/nexus/pull/821).** The
+> code is preserved on the
+> [`exploration/qwen-offload-2026-05-15-2026-05-16`](https://github.com/Hellblazer/nexus/tree/exploration/qwen-offload-2026-05-15-2026-05-16)
+> branch for review, cherry-pick, or discard. **Nothing from this
+> design sketch is on nexus `main` today** beyond what was shipped
+> in the prior session (nexus#623, nexus#626 — phase 1 only). The
+> companion [qwen-coprocessor-stack#1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1)
+> supervisor fix (pino → stderr) did ship in this repo's **v0.9.0**.
+
+**Status (original — historical record):** SHIPPED. Upstream nexus PRs:
 
 **Phase 1 — bundleable operators (2026-05-10):**
 - **nexus#623** (initial qwen_dispatch + per-operator routing) — merged 2026-05-10T00:31Z

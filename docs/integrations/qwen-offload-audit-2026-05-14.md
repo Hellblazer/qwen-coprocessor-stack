@@ -1,5 +1,15 @@
 # Qwen offload — next-candidate audit (post-nexus#623/#626/#776)
 
+> **Status (2026-05-16):** nexus#776 (cited in this audit's title) and
+> the routing work that followed (#778, #779, #780, #790, #796–#813)
+> were auto-merged into nexus `main` and **subsequently reverted via
+> [nexus#821](https://github.com/Hellblazer/nexus/pull/821)**. Code is
+> preserved on
+> [`exploration/qwen-offload-2026-05-15-2026-05-16`](https://github.com/Hellblazer/nexus/tree/exploration/qwen-offload-2026-05-15-2026-05-16).
+> The candidate analysis below remains a useful artifact for any
+> future cherry-pick or redo, but the "shipped" status references it
+> makes are no longer accurate for nexus `main`.
+
 **Date:** 2026-05-14
 **Scope:** read-only survey of `claude -p` / `claude_dispatch`-shaped call
 sites across `~/git/nexus/`, `qwen-coprocessor-stack/`, `~/.claude/plugins/`,
