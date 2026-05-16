@@ -209,6 +209,53 @@ take precedence over the file when set. See
 [`mcp-bridges/qwen-agent-server/README.md`](mcp-bridges/qwen-agent-server/README.md#configuration)
 for the full reference.
 
+## Downstream integrations
+
+This stack ships the MCP supervisor; downstream applications wire
+their dispatch layers through it. The reference integration is
+[nexus](https://github.com/Hellblazer/nexus), which uses the supervisor
+to offload `claude -p`-shaped operator dispatch, aspect extraction, and
+selected agentic tools to local Qwen as a cost-bound coprocessor.
+
+Three integration tiers, each documented in
+[`docs/integrations/qwen-dispatch-nexus.md`](docs/integrations/qwen-dispatch-nexus.md):
+
+- **Operator dispatch** (oneshot, JSON-schema-bounded): nexus reaches
+  llama-server directly via OpenAI-compat httpx — `qwen_oneshot` and
+  the full supervisor pool are bypassed for this hot path. 10
+  bundleable operators + 2 named call sites (`topic_labeler`,
+  `plan_miss_planner`) validated against claude with 1.03× latency
+  parity on schema-bounded prompts.
+
+- **Aspect extractor** (large-context oneshot, 30-120k input tokens
+  per call): same direct-llama path. Drives a per-document
+  scholarly-paper extraction on ingest; 5-12× slower than claude but
+  cost-savings dominate at corpus scale. Paired with a v2 prompt
+  revision tightened against a Grossberg cognitive-modeling corpus.
+
+- **Tier-B agentic tools** (multi-turn with MCP tool use): nexus
+  routes through this stack's supervisor via `qwen_oneshot` with
+  `opts.extensions: {only: ["nx"]}`. **This requires an `nx` Qwen
+  Code extension** at `~/.qwen/extensions/nx/qwen-extension.json`
+  wiring nexus's `nx-mcp` server into qwen CLI sessions — the full
+  install snippet is in the linked doc. Without it the supervisor
+  spawns sessions without nexus tool access and tier-B routing
+  degrades.
+
+Bench evidence backing each routing decision lives at
+[`docs/integrations/qwen-offload-2026-05-session-summary.md`](docs/integrations/qwen-offload-2026-05-session-summary.md).
+
+### Protocol notes for any MCP-stdio client
+
+The supervisor's pino loggers were redirected to **stderr** in
+[PR #1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1)
+so the stdout channel stays clean for JSON-RPC frames. Earlier
+versions emitted pino lines on stdout, which Claude Code's MCP plugin
+tolerated but the reference Python MCP SDK rejected with strict
+`JSONRPCMessage` pydantic validation. Any third-party MCP client
+connecting to a pre-#1 supervisor binary will hit the same parse
+errors — rebuild from `main` or use a build that includes #1.
+
 ## Development
 
 ```bash
