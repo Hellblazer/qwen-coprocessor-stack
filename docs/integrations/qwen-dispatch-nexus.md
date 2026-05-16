@@ -42,7 +42,7 @@ export NEXUS_DISPATCH_QWEN_OPERATORS=topic_labeler,plan_miss_planner
 export NEXUS_ASPECT_BACKEND=qwen
 export NEXUS_SCHOLARLY_PAPER_VERSION=v2
 
-# Tier-B agentic tools (currently only nx_enrich_beads is wired via #796):
+# Tier-B agentic tools (all three wired: nx_enrich_beads via #796/#799, nx_tidy + nx_plan_audit via #805):
 export NEXUS_TIER_B_DISPATCHER=qwen_agent
 ```
 
