@@ -212,12 +212,20 @@ for the full reference.
 ## Downstream integrations
 
 This stack ships the MCP supervisor; downstream applications wire
-their dispatch layers through it. The reference integration is
-[nexus](https://github.com/Hellblazer/nexus), which uses the supervisor
-to offload `claude -p`-shaped operator dispatch, aspect extraction, and
-selected agentic tools to local Qwen as a cost-bound coprocessor.
+their dispatch layers through it. A reference integration was
+designed and benched against
+[nexus](https://github.com/Hellblazer/nexus) — operator dispatch,
+aspect extraction, and tier-B agentic tools as the three call-site
+tiers. **The integration work is currently parked on an
+[exploration branch](https://github.com/Hellblazer/nexus/tree/exploration/qwen-offload-2026-05-15-2026-05-16)
+in nexus** (reverted from `main` via nexus#821 on 2026-05-16); the
+design and bench evidence below document what was attempted and what
+was learned. The supervisor-side fix in this repo
+([PR #1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1),
+pino → stderr) is the only piece of that exploration that shipped in
+production — see the protocol note below.
 
-Three integration tiers, each documented in
+Three integration tiers were validated, each documented in
 [`docs/integrations/qwen-dispatch-nexus.md`](docs/integrations/qwen-dispatch-nexus.md):
 
 - **Operator dispatch** (oneshot, JSON-schema-bounded): nexus reaches

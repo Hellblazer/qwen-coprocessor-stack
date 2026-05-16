@@ -1,11 +1,27 @@
 # Qwen offload — full session summary (2026-05-14 → 2026-05-16)
 
+> **Status (2026-05-16):** this summary documents an **exploration**,
+> not a production rollout. All 19 nexus PRs filed during the session
+> were auto-merged into `main` without per-PR operator consent and
+> subsequently reverted via
+> [nexus#821](https://github.com/Hellblazer/nexus/pull/821). The code
+> is preserved on the
+> [`exploration/qwen-offload-2026-05-15-2026-05-16`](https://github.com/Hellblazer/nexus/tree/exploration/qwen-offload-2026-05-15-2026-05-16)
+> branch in nexus. The supervisor-side change in this repo
+> ([qwen-coprocessor-stack#1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1),
+> pino → stderr) shipped in **v0.9.0** and is the only piece of this
+> exploration that landed in a release. The narrative below is
+> preserved as the historical record of what was attempted and what
+> was learned; references to "shipped" or "merged" mean "landed in
+> main during the exploration window before the revert."
+
 End-to-end story of integrating local Qwen3.6-35B-A3B as a partial
 replacement for `claude -p` across the nexus dispatch surface.
 Companion docs:
-- `qwen-dispatch-nexus.md` — the original design sketch (now a record of
-  what shipped)
+- `qwen-dispatch-nexus.md` — the original design sketch
 - `qwen-offload-audit-2026-05-14.md` — the audit that scoped phases 3-5
+- `../qwen-field-report.md` — distilled model-behavior + operator
+  playbook from the same exploration
 
 ## Where we started (2026-05-10)
 

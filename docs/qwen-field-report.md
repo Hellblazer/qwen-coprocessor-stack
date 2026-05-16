@@ -1,8 +1,22 @@
 # Qwen3.6-35B-A3B coprocessor field report
 
+> **Status (2026-05-16):** the nexus-side integration work documented
+> below was an **exploration**, not a production rollout. All 19 PRs
+> filed against nexus `main` between 2026-05-15 and 2026-05-16 were
+> auto-merged without per-PR operator consent and subsequently reverted
+> via [nexus#821](https://github.com/Hellblazer/nexus/pull/821). The
+> code is preserved on the
+> [`exploration/qwen-offload-2026-05-15-2026-05-16`](https://github.com/Hellblazer/nexus/tree/exploration/qwen-offload-2026-05-15-2026-05-16)
+> branch in nexus for review, cherry-picking, redo, or discard at the
+> operator's discretion. Nothing from this exploration is on nexus
+> `main` today. The supervisor-side fix in **this** repo
+> ([qwen-coprocessor-stack#1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1),
+> pino → stderr) is the only piece that shipped in production —
+> released as **v0.9.0**.
+
 A consolidation of everything we've learned about Qwen3.6-35B-A3B as a
-local coprocessor through the nexus integration arc (2026-05-10 →
-2026-05-16). Companion to:
+local coprocessor through the nexus integration exploration
+(2026-05-10 → 2026-05-16). Companion to:
 
 - [`docs/integrations/qwen-dispatch-nexus.md`](integrations/qwen-dispatch-nexus.md) — design sketch + shipped state
 - [`docs/integrations/qwen-offload-audit-2026-05-14.md`](integrations/qwen-offload-audit-2026-05-14.md) — original candidate audit
@@ -16,8 +30,12 @@ works, what doesn't, why, and what to do about it**.
 
 ## 0. Nexus changes inventory
 
-Every nexus PR shipped through this integration arc, in phase order.
-All merged unless noted; full bodies in the
+Every nexus PR filed through this integration exploration, in phase
+order. **All 19 were reverted from nexus `main` via [nexus#821](https://github.com/Hellblazer/nexus/pull/821)
+on 2026-05-16.** The code is preserved on the
+[`exploration/qwen-offload-2026-05-15-2026-05-16`](https://github.com/Hellblazer/nexus/tree/exploration/qwen-offload-2026-05-15-2026-05-16)
+branch for the operator to review, cherry-pick, or discard at their
+discretion. Full bodies in the
 [`docs/integrations/qwen-offload-2026-05-session-summary.md`](integrations/qwen-offload-2026-05-session-summary.md)
 companion.
 
@@ -58,9 +76,9 @@ companion.
 
 - [nexus#816](https://github.com/Hellblazer/nexus/pull/816) — `CHANGELOG.md` block under `[Unreleased]` + `README.md` "Qwen offload (optional)" section + `docs/configuration.md` per-env-knob reference covering all eleven env knobs.
 
-**Companion supervisor change (this repo, 2026-05-15)**
+**Companion supervisor change (this repo, 2026-05-15) — the only piece that shipped in production**
 
-- [qwen-coprocessor-stack#1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1) — pino loggers redirected to stderr. Shipped in v0.9.0. Required for any third-party MCP-stdio client doing strict `JSONRPCMessage` validation.
+- [qwen-coprocessor-stack#1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1) — pino loggers redirected to stderr. **Released in v0.9.0.** Required for any third-party MCP-stdio client doing strict `JSONRPCMessage` validation.
 
 ---
 
@@ -271,9 +289,16 @@ qwen-code / Qwen Team. None are filed today.
 
 ## 3. Operator playbook
 
-Day-to-day guidance for operating the qwen offload integration.
+Day-to-day guidance **assuming the exploration branch gets cherry-
+picked into production at some future point.** None of these env
+knobs do anything against current nexus `main` — the routing code is
+on the [`exploration/qwen-offload-2026-05-15-2026-05-16`](https://github.com/Hellblazer/nexus/tree/exploration/qwen-offload-2026-05-15-2026-05-16)
+branch only. The playbook below documents the intended shape so that
+if any of the work is revived, the activation pattern is documented.
 
-### 3.1 Activation surface
+### 3.1 Intended activation surface
+
+If/when the exploration work is reintroduced to nexus `main`:
 
 ```bash
 # Operator-tier — schema-bounded oneshot, low risk
@@ -295,7 +320,8 @@ extension at `~/.qwen/extensions/nx/qwen-extension.json` (snippet in
 `docs/integrations/qwen-dispatch-nexus.md`).
 
 **Prerequisite for any MCP-stdio integrator:** supervisor must be
-≥ v0.9.0 (PR #1 pino-to-stderr fix).
+≥ v0.9.0 (PR #1 pino-to-stderr fix — the only piece of this
+exploration that did ship in production).
 
 ### 3.2 When to pin to claude
 
