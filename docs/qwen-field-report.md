@@ -14,6 +14,56 @@ works, what doesn't, why, and what to do about it**.
 
 ---
 
+## 0. Nexus changes inventory
+
+Every nexus PR shipped through this integration arc, in phase order.
+All merged unless noted; full bodies in the
+[`docs/integrations/qwen-offload-2026-05-session-summary.md`](integrations/qwen-offload-2026-05-session-summary.md)
+companion.
+
+**Phase 0 — operator-tier baseline (2026-05-10, prior session)**
+
+- [nexus#623](https://github.com/Hellblazer/nexus/pull/623) — `qwen_dispatch` + per-operator routing. Drop-in alternative to `claude_dispatch` for the 10 bundleable nexus operators, via httpx → llama-server OpenAI-compat.
+- [nexus#626](https://github.com/Hellblazer/nexus/pull/626) — `extract` promoted to qwen-default after a 4-case × 5-repeat 20/20 oracle-match bench.
+
+**Phase 1 — cost telemetry (2026-05-15)**
+
+- [nexus#776](https://github.com/Hellblazer/nexus/pull/776) — `operator_dispatch_cost` structlog entry on both `claude_dispatch` and `qwen_dispatch`. Sonnet 4.x rate constants ($3 / $15 per MTok input/output, dated 2026-05-14). Qwen computes a would-have-cost estimate. Non-breaking; log-only.
+
+**Phase 2 — named call-site routing (2026-05-15)**
+
+- [nexus#778](https://github.com/Hellblazer/nexus/pull/778) — `pick_dispatcher_for(call_site: str)` primitive in `dispatch_router`. Lets non-bundleable code paths share the existing env-pin surface. Migrates `taxonomy_cmd._generate_labels_batch` to it under the logical name `topic_labeler`.
+- [nexus#779](https://github.com/Hellblazer/nexus/pull/779) — `_nx_answer_plan_miss` migrated to the same primitive under `plan_miss_planner`. No dedicated bench — structurally identical to bundleable operators.
+
+**Phase 3 — aspect extractor (2026-05-15)**
+
+- [nexus#780](https://github.com/Hellblazer/nexus/pull/780) — Path-B parallel adapter for `aspect_extractor` behind `NEXUS_ASPECT_BACKEND={claude,qwen}`. Predates `claude_dispatch` so it gets its own qwen-routed path; existing subprocess machinery untouched.
+- [nexus#782](https://github.com/Hellblazer/nexus/pull/782) — `scripts/spikes/spike_c_aspect_qwen_parity.py`. A/B parity harness with field-by-field `AspectRecord` diff; accepts `--uri` / `--manifest`.
+- [nexus#790](https://github.com/Hellblazer/nexus/pull/790) — `scholarly-paper-v2` prompt revision. Opt-in via `NEXUS_SCHOLARLY_PAPER_VERSION=v2`. Tightens `experimental_datasets` and `experimental_baselines` rules.
+- [nexus#793](https://github.com/Hellblazer/nexus/pull/793) — spike_c harness improvements: `--prompt-override` flag + `judge_aspect_diffs.py` LLM-judged semantic-equivalence rescorer.
+
+**Phase 4 — tier-B agentic tools (2026-05-15/16)**
+
+- [nexus#796](https://github.com/Hellblazer/nexus/pull/796) — `qwen_agent_dispatch`. MCP-stdio client to this stack's supervisor calling its `qwen_oneshot` tool with `opts.extensions`. Opt-in routing for `nx_enrich_beads` via `NEXUS_TIER_B_DISPATCHER=qwen_agent`.
+- [nexus#797](https://github.com/Hellblazer/nexus/pull/797) — `scripts/spikes/spike_d_tier_b_parity.py`. A/B parity harness for tier-B tool-use dispatch with three-axis metric (semantic, structural, tool-call count).
+- [nexus#798](https://github.com/Hellblazer/nexus/pull/798) — wire-shape fix. `qwen_agent_dispatch` was passing `extensions=["nx"]` as a bare array; supervisor's zod schema expects `{enable?, disable?, only?}`. Treats list arg as `{only: [...]}`.
+- [nexus#799](https://github.com/Hellblazer/nexus/pull/799) — `nx_enrich_beads` prompt tightened with JSON-only finalization directive; `max_tool_calls` raised 20 → 50 based on bench evidence.
+- [nexus#804](https://github.com/Hellblazer/nexus/pull/804) — generalized parity judge. `judge_parity_diffs.py` covers both spike_c and spike_d schemas with auto-detect. `judge_aspect_diffs.py` retained as a deprecated shim.
+- [nexus#805](https://github.com/Hellblazer/nexus/pull/805) — `nx_tidy` and `nx_plan_audit` routing through the same `qwen_agent_dispatch` pattern. Spike_d skip-logic flag-gated for replay of pre-completion benches.
+- [nexus#810](https://github.com/Hellblazer/nexus/pull/810) — tool-use mandate prompt revisions for `nx_tidy` and `nx_plan_audit`. nx_tidy moved from 0 tool calls to 5–8; nx_plan_audit didn't move (see §1.2(a)).
+- [nexus#812](https://github.com/Hellblazer/nexus/pull/812) — `verification_method` enum on `nx_plan_audit` findings. Structural honesty enforcement. Qwen filled the slot with `filesystem` claims despite zero tool calls — schema-honesty got lied through.
+- [nexus#813](https://github.com/Hellblazer/nexus/pull/813) — `nx_plan_audit` baked into `TIER_B_CLAUDE_PINNED`. Per-tool override env surface (`NEXUS_TIER_B_<TOOL>_DISPATCHER`) for operators who want to re-bench.
+
+**Phase 5 — operator documentation (2026-05-16)**
+
+- [nexus#816](https://github.com/Hellblazer/nexus/pull/816) — `CHANGELOG.md` block under `[Unreleased]` + `README.md` "Qwen offload (optional)" section + `docs/configuration.md` per-env-knob reference covering all eleven env knobs.
+
+**Companion supervisor change (this repo, 2026-05-15)**
+
+- [qwen-coprocessor-stack#1](https://github.com/Hellblazer/qwen-coprocessor-stack/pull/1) — pino loggers redirected to stderr. Shipped in v0.9.0. Required for any third-party MCP-stdio client doing strict `JSONRPCMessage` validation.
+
+---
+
 ## 1. Model-behavior field report
 
 What we measured about Qwen3.6-35B-A3B against `claude -p` /
