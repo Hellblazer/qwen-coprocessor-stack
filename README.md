@@ -165,6 +165,39 @@ Config-file edits hot-apply on the next spawn — no supervisor restart.
 | `qwen_backends`  | List configured backends and their cached health. |
 | `qwen_sessions`  | Live overview of pooled sessions — task_id, backend, state, last-poll timestamp, turns completed, live budget counters. Read-only. |
 | `qwen_oneshot`   | Stateless single-turn dispatch: spawn → wait → optional JSON parse + retry → stop. Schema-aware where `opts.json_schema` is supplied. Drop-in for `claude -p --json-schema`-style operator dispatch. |
+| `qwen_oneshot_vision` | Stateless **multimodal** dispatch (image+text → text). Bypasses the SDK (which is text-only) and POSTs OpenAI-compat content arrays directly to a backend's `/v1/chat/completions`. Image inputs as `{path}` / `{url}` / `{base64,mime}`. Requires the backend to be running with `--mmproj` loaded — see [Multimodal support](#multimodal-support-vision) below. |
+
+## Multimodal support (vision)
+
+The Qwen 3.6 model family is `image-text-to-text` capable. To enable
+image inputs on your llama-server backend, load the matching vision
+projector (`mmproj-*.gguf`) alongside the LM weights:
+
+1. **Download the projector** from the same HuggingFace repo as your
+   LM weights. Pick the BF16 or F16 variant (~0.85 GB each); F32 is
+   only worth it if you have spare VRAM. For unsloth quantizations:
+   - `unsloth/Qwen3.6-35B-A3B-GGUF` → `mmproj-BF16.gguf`
+   - `unsloth/Qwen3.6-27B-GGUF` → `mmproj-F16.gguf`
+2. **Place it next to the LM weights** in your `models/` directory.
+3. **Restart `llama-server` with `--mmproj <path>`.** The bundled
+   `scripts/start-stack.sh` (Mac/Metal) and
+   `scripts/launch-llama-vulkan.cmd` (Strix Halo) already include
+   this flag — it activates when the file is present and is
+   gracefully omitted when not.
+4. **Verify**: `curl http://<backend>/v1/models` should report
+   `capabilities` including `'multimodal'`.
+
+Once enabled, call `qwen_oneshot_vision` with one or more image
+inputs alongside your text prompt. The supervisor's session pool
+and KV-cache machinery are **not** involved — multimodal dispatch
+is stateless and per-request (each call is independent of any
+other session). If you call against a backend that doesn't have
+`--mmproj` loaded, the supervisor returns
+`error.code = 'backend_no_mmproj'` cleanly rather than crashing.
+
+Note: `llama-server` silently disables `cache-reuse` in multimodal
+mode (upstream behaviour). The flag stays set in the launch
+scripts; the downgrade is logged at model-load time.
 
 ## Architecture
 
