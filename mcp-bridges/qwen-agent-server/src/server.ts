@@ -27,7 +27,7 @@ import type {
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
-import { getCachedHealth, refreshPoolBackends } from "./backends.js";
+import { chooseBackend, getCachedHealth, refreshPoolBackends } from "./backends.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -48,6 +48,12 @@ import {
   type ExtensionInfo,
   type InstalledExtensionsCache,
 } from "./extensions.js";
+import {
+  dispatchVisionOneshot,
+  type VisionImageInput,
+  type VisionOneshotOpts,
+  type VisionOneshotResult,
+} from "./vision.js";
 
 const log = createLogger("qwen-agent-server");
 
@@ -162,6 +168,24 @@ export type ToolHandlers = {
     task: string;
     opts?: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number };
   }) => Promise<OneshotResult>;
+  /**
+   * Stateless multimodal dispatch: POST directly to a backend's
+   * /v1/chat/completions with mixed text + image content, bypassing
+   * the @qwen-code/sdk path (which has no ImageBlock and is text-only).
+   *
+   * Prerequisite: the chosen backend must be running llama-server with
+   * `--mmproj <projector>.gguf`. Without it the backend returns an
+   * "image input is not supported" error which the supervisor surfaces
+   * as `error.code="backend_no_mmproj"`.
+   *
+   * Backend selection mirrors qwen_spawn's chooseBackend logic; pass
+   * `opts.backend` to pin to a specific backend id.
+   */
+  qwen_oneshot_vision: (args: {
+    task: string;
+    images: VisionImageInput[];
+    opts?: VisionOneshotOpts & { backend?: string };
+  }) => Promise<VisionOneshotResult>;
   /**
    * Read-only listing of installed extensions, with version / path /
    * source / enabled-state and declared commands/skills/agents/MCP
@@ -485,6 +509,64 @@ export function createToolHandlers(
     };
   };
 
+  // ── qwen_oneshot_vision (multimodal direct-HTTP dispatch) ──
+  //
+  // Bypasses the SDK / Qwen CLI subprocess entirely. POSTs OpenAI-compat
+  // multimodal content arrays directly to a backend's /v1/chat/completions.
+  // The chosen backend must be running llama-server with --mmproj loaded
+  // or the call fails with backend_no_mmproj.
+
+  const qwen_oneshot_vision: ToolHandlers["qwen_oneshot_vision"] = async ({
+    task,
+    images,
+    opts,
+  }) => {
+    if (shuttingDown) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: { code: "backend_error", message: "supervisor shutting down" },
+      };
+    }
+    if (!Array.isArray(images) || images.length === 0) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: {
+          code: "backend_error",
+          message: "qwen_oneshot_vision requires at least one image",
+        },
+      };
+    }
+
+    // Use the same backend selection as qwen_spawn — chooseBackend
+    // takes a SpawnOpts; cast to its expected shape with just the
+    // fields that matter (backend pin, tier, capacity).
+    const spawnOptsForRouting = {
+      ...(opts?.backend !== undefined ? { backend: opts.backend } : {}),
+    } as SpawnOpts;
+    const backend = await chooseBackend(pool.backends, spawnOptsForRouting, task);
+    if (!backend) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: {
+          code: "backend_error",
+          message: opts?.backend
+            ? `no backend matches pin "${opts.backend}"`
+            : "no eligible backends in pool",
+        },
+      };
+    }
+
+    const dispatchOpts: VisionOneshotOpts = { ...opts };
+    delete (dispatchOpts as { backend?: unknown }).backend;
+    return dispatchVisionOneshot(backend, task, images, dispatchOpts);
+  };
+
   // ── qwen_extensions (read-only listing) ────────────────────
 
   const qwen_extensions: ToolHandlers["qwen_extensions"] = async () => {
@@ -535,6 +617,7 @@ export function createToolHandlers(
     qwen_backends,
     qwen_sessions,
     qwen_oneshot,
+    qwen_oneshot_vision,
     qwen_extensions,
     ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
@@ -698,6 +781,54 @@ async function main(): Promise<void> {
       if (args.opts?.timeout_ms !== undefined) oneshotOpts.timeout_ms = args.opts.timeout_ms;
       if (args.opts?.max_attempts !== undefined) oneshotOpts.max_attempts = args.opts.max_attempts;
       const result = await handlers.qwen_oneshot({ task: args.task, opts: oneshotOpts });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  // ── qwen_oneshot_vision MCP wire ──
+  //
+  // Direct-HTTP multimodal dispatch; bypasses the SDK because the SDK's
+  // ContentBlock union has no ImageBlock. Backend must be running with
+  // --mmproj loaded (see scripts/start-stack.sh and
+  // scripts/launch-llama-vulkan.cmd in this repo for the launch shape).
+  const visionImageInputSchema = z.union([
+    z.object({
+      path: z.string().describe("Filesystem path readable by the supervisor process."),
+      mime: z.string().optional().describe("MIME type override; inferred from extension if omitted."),
+    }),
+    z.object({
+      url: z.string().describe("http(s):// or data: URL passed through verbatim."),
+    }),
+    z.object({
+      base64: z.string().describe("Raw base64-encoded image bytes (no data: prefix)."),
+      mime: z.string().describe("MIME type, e.g. image/png, image/jpeg, image/webp."),
+    }),
+  ]);
+
+  mcpServer.tool(
+    "qwen_oneshot_vision",
+    "Stateless multimodal dispatch: image(s) + text → JSON-or-text response. Bypasses the SDK (which is text-only) and POSTs OpenAI-compat content arrays directly to a backend's /v1/chat/completions. The chosen backend must be running llama-server with --mmproj loaded; otherwise the call fails with error.code='backend_no_mmproj'.",
+    {
+      task: z.string().describe("Text prompt accompanying the image(s)."),
+      images: z.array(visionImageInputSchema).min(1).describe("One or more images. Discriminated union of {path}, {url}, or {base64,mime}."),
+      opts: z.object({
+        json_schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema constraint; emitted as response_format.json_schema."),
+        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 300000."),
+        max_tokens: z.number().int().positive().optional().describe("Max tokens to generate; default 2048."),
+        temperature: z.number().min(0).max(2).optional().describe("Sampling temperature; default 0.3."),
+        system: z.string().optional().describe("Optional system-role prefix."),
+        no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen thinking-mode reasoning; default true."),
+        backend: z.string().optional().describe("Pin to a specific backend by id; defaults to chooseBackend selection."),
+      }).optional(),
+    },
+    async (args) => {
+      const result = await handlers.qwen_oneshot_vision({
+        task: args.task,
+        images: args.images as VisionImageInput[],
+        ...(args.opts !== undefined ? { opts: args.opts as VisionOneshotOpts & { backend?: string } } : {}),
+      });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
