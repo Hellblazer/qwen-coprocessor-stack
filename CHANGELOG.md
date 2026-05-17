@@ -12,6 +12,55 @@ the **supervisor binary** (built via `npm run build` in
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-17
+
+### Added
+
+- **`qwen_oneshot_vision` MCP tool** — stateless multimodal dispatch.
+  Accepts `{task, images, opts?}` where `images` is an array of
+  `{path}` / `{url}` / `{base64, mime}` discriminated-union entries.
+  Bypasses the `@qwen-code/sdk` pipeline (which is text-only — the
+  SDK's `ContentBlock` union has no `ImageBlock`) and POSTs OpenAI-
+  compatible content arrays directly to the chosen backend's
+  `/v1/chat/completions` endpoint. Returns a `VisionOneshotResult`
+  with `ok` / `result` / `parsed` / `usage` / `elapsed_ms` /
+  `backend_id` / `error` parity with `qwen_oneshot`.
+
+  Backend selection mirrors `qwen_spawn`'s `chooseBackend` logic;
+  `opts.backend` pins to a specific backend id. `opts.json_schema`
+  emits `response_format.json_schema` with `strict: true`.
+  `opts.no_think` defaults to true (prepends `/no_think` to the user
+  message to suppress thinking-mode reasoning that would otherwise
+  eat the token budget on vision tasks).
+
+  Error code `backend_no_mmproj` is set when the backend rejects the
+  request with the llama-server hint *"image input is not supported
+  - hint: if this is unexpected, you may need to provide the
+  mmproj"*. Callers can route around or fail cleanly.
+
+- **`scripts/start-stack.sh` and `scripts/launch-llama-vulkan.cmd`
+  enable multimodal via `--mmproj`.** The Mac/Metal local backend
+  picks up an optional `MMPROJ_FILE` env var (defaults to
+  `mmproj-Qwen3.6-27B-F16.gguf` in `models/`) and prints which mode
+  it lands in. The Windows / Strix Halo launch hard-wires the BF16
+  35B-A3B projector at `D:\models\mmproj-Qwen3.6-35B-A3B-BF16.gguf`.
+
+  **Prerequisite for operators** wanting multimodal: download the
+  matching `mmproj-*.gguf` from the same HuggingFace repo as the LM
+  weights, place it alongside the model file (matching name pattern),
+  and restart `llama-server`. `/v1/models` reports `capabilities`
+  including `'multimodal'` once the projector is loaded.
+
+### Notes for integrators
+
+- Existing `qwen_oneshot` and the rest of the SDK-backed tool surface
+  remain text-only and unchanged. `qwen_oneshot_vision` is a separate
+  code path that does not affect the supervisor's session pool or
+  KV-cache affinity (the multimodal call is stateless per-request).
+- `cache-reuse` is silently disabled by `llama-server` in multimodal
+  mode, per upstream behaviour. The launch flag stays set on the
+  Strix Halo box; the downgrade is logged at model-load time.
+
 ## [0.9.0] - 2026-05-16
 
 ### Fixed
