@@ -8,12 +8,17 @@ REM   2026-05-09 v2: ctx 131072 (128K)
 REM   2026-05-09 v3: KV cache q8_0 (halved memory), prompt cache 32 GB,
 REM                  cache-reuse 32 (aggressive prefix matching),
 REM                  kv-unified (enable cache-idle-slots cross-slot residency).
+REM   2026-05-17 v4: --mmproj enables multimodal (image+text -> text) via
+REM                  /v1/chat/completions. Note: cache-reuse is silently
+REM                  disabled by llama-server in multimodal mode — keep
+REM                  the flag set; downgrade is logged at load time.
 
 if exist D:\llama\server.log move /Y D:\llama\server.log D:\llama\server.log.prev > /dev/null 2>&1
 if exist D:\llama\server.err move /Y D:\llama\server.err D:\llama\server.err.prev > /dev/null 2>&1
 
 D:\llama\llama-server.exe ^
   -m D:\models\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf ^
+  --mmproj D:\models\mmproj-Qwen3.6-35B-A3B-BF16.gguf ^
   --host 0.0.0.0 ^
   --port 1234 ^
   --n-gpu-layers 99 ^

@@ -18,6 +18,11 @@ LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
 HF_FILE="${HF_FILE:-Qwen3.6-27B-UD-Q6_K_XL.gguf}"
 MODEL_PATH="$ROOT/models/$HF_FILE"
 MODEL_ALIAS="${MODEL_ALIAS:-qwen3.6-27b-instruct}"
+# Vision projector (RDR-005, v0.10): when present, llama-server enables
+# multimodal (image+text → text) on /v1/chat/completions. Optional —
+# unset MMPROJ_FILE or remove the file to revert to text-only.
+MMPROJ_FILE="${MMPROJ_FILE:-mmproj-Qwen3.6-27B-F16.gguf}"
+MMPROJ_PATH="$ROOT/models/$MMPROJ_FILE"
 
 [ -x "$LLAMA_BIN" ] || { echo "[!] llama-server not built. Run scripts/setup-mac-host.sh first."; exit 1; }
 [ -f "$MODEL_PATH" ] || { echo "[!] Model not present at $MODEL_PATH. Run scripts/setup-mac-host.sh first."; exit 1; }
@@ -26,9 +31,18 @@ PIDFILE="$ROOT/logs/llama-server.pid"
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
   echo "[+] llama-server already running (pid $(cat "$PIDFILE"))"
 else
+  MMPROJ_ARGS=()
+  if [ -f "$MMPROJ_PATH" ]; then
+    echo "[*] Vision projector found at $MMPROJ_PATH — enabling multimodal."
+    MMPROJ_ARGS=(--mmproj "$MMPROJ_PATH")
+  else
+    echo "[i] No vision projector at $MMPROJ_PATH — text-only mode."
+  fi
+
   echo "[*] Starting llama-server on :8080 ..."
   "$LLAMA_BIN" \
     -m "$MODEL_PATH" \
+    "${MMPROJ_ARGS[@]}" \
     --alias "$MODEL_ALIAS" \
     -ngl 99 \
     -c 65536 \
