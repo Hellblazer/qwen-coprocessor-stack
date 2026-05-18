@@ -27,7 +27,12 @@ import type {
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
-import { chooseBackend, getCachedHealth, refreshPoolBackends } from "./backends.js";
+import {
+  chooseBackend,
+  chooseBackendByModality,
+  getCachedHealth,
+  refreshPoolBackends,
+} from "./backends.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -54,6 +59,31 @@ import {
   type VisionOneshotOpts,
   type VisionOneshotResult,
 } from "./vision.js";
+import { dispatchEmbed, type EmbedOpts, type EmbedResult } from "./embed.js";
+import { dispatchRerank, type RerankOpts, type RerankResult } from "./rerank.js";
+import {
+  dispatchTokenize,
+  type TokenizeOpts,
+  type TokenizeResult,
+} from "./tokenize.js";
+
+/**
+ * Progress emitter passed as second arg to long-running tool handlers.
+ * Tool registrations construct one per call from the MCP request's
+ * `_meta.progressToken` (when present); handlers call `emit(...)` at
+ * meaningful checkpoints. No-op when the client didn't supply a token.
+ *
+ * Keeping this as a plain callback rather than threading the entire
+ * MCP `extra` object into pure handler code keeps the createToolHandlers
+ * surface testable without an MCP transport (tests inject a vi.fn()).
+ */
+export type ProgressEmitter = (event: {
+  progress: number;
+  total?: number;
+  message?: string;
+}) => void;
+
+const NOOP_PROGRESS: ProgressEmitter = () => {};
 
 const log = createLogger("qwen-agent-server");
 
@@ -164,10 +194,13 @@ export type ToolHandlers = {
    * shape that drop-in-replaces `claude -p --json-schema` for nexus
    * operator dispatch (RDR-002 v0.8 amendment).
    */
-  qwen_oneshot: (args: {
-    task: string;
-    opts?: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number };
-  }) => Promise<OneshotResult>;
+  qwen_oneshot: (
+    args: {
+      task: string;
+      opts?: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number };
+    },
+    progress?: ProgressEmitter,
+  ) => Promise<OneshotResult>;
   /**
    * Stateless multimodal dispatch: POST directly to a backend's
    * /v1/chat/completions with mixed text + image content, bypassing
@@ -181,11 +214,42 @@ export type ToolHandlers = {
    * Backend selection mirrors qwen_spawn's chooseBackend logic; pass
    * `opts.backend` to pin to a specific backend id.
    */
-  qwen_oneshot_vision: (args: {
-    task: string;
-    images: VisionImageInput[];
-    opts?: VisionOneshotOpts & { backend?: string };
-  }) => Promise<VisionOneshotResult>;
+  qwen_oneshot_vision: (
+    args: {
+      task: string;
+      images: VisionImageInput[];
+      opts?: VisionOneshotOpts & { backend?: string };
+    },
+    progress?: ProgressEmitter,
+  ) => Promise<VisionOneshotResult>;
+  /**
+   * Stateless embeddings dispatch. POSTs to a backend's /v1/embeddings
+   * (OpenAI-compat). Requires a backend declared with
+   * `modality: 'embedding'` or pinned via `opts.backend`.
+   */
+  qwen_embed: (args: {
+    texts: string[];
+    opts?: EmbedOpts & { backend?: string };
+  }) => Promise<EmbedResult>;
+  /**
+   * Stateless reranking dispatch. POSTs to a backend's /v1/rerank.
+   * Requires a backend declared with `modality: 'rerank'` or pinned
+   * via `opts.backend`.
+   */
+  qwen_rerank: (args: {
+    query: string;
+    documents: string[];
+    opts?: RerankOpts & { backend?: string };
+  }) => Promise<RerankResult>;
+  /**
+   * Exact token-count for any text/multimodal backend's loaded model.
+   * Hits llama-server's /tokenize (NOT under /v1). Used for pre-flight
+   * budget arithmetic and chunk sizing.
+   */
+  qwen_tokenize: (args: {
+    content: string;
+    opts?: TokenizeOpts & { backend?: string };
+  }) => Promise<TokenizeResult>;
   /**
    * Read-only listing of installed extensions, with version / path /
    * source / enabled-state and declared commands/skills/agents/MCP
@@ -403,7 +467,10 @@ export function createToolHandlers(
 
   const ONESHOT_POLL_INTERVAL_MS = 250;
 
-  const qwen_oneshot: ToolHandlers["qwen_oneshot"] = async ({ task, opts }) => {
+  const qwen_oneshot: ToolHandlers["qwen_oneshot"] = async (
+    { task, opts },
+    progress = NOOP_PROGRESS,
+  ) => {
     const oneshot_start = Date.now();
     const timeout_ms = opts?.timeout_ms ?? 300_000;
     const max_attempts = Math.max(1, opts?.max_attempts ?? 1);
@@ -421,6 +488,11 @@ export function createToolHandlers(
 
     while (attempts < max_attempts) {
       attempts++;
+      progress({
+        progress: attempts - 1,
+        total: max_attempts,
+        message: `attempt ${attempts}/${max_attempts}: spawning`,
+      });
 
       const spawn = await qwen_spawn({ task, opts: spawnOpts });
       if ("error" in spawn) {
@@ -533,11 +605,10 @@ export function createToolHandlers(
   // The chosen backend must be running llama-server with --mmproj loaded
   // or the call fails with backend_no_mmproj.
 
-  const qwen_oneshot_vision: ToolHandlers["qwen_oneshot_vision"] = async ({
-    task,
-    images,
-    opts,
-  }) => {
+  const qwen_oneshot_vision: ToolHandlers["qwen_oneshot_vision"] = async (
+    { task, images, opts },
+    progress = NOOP_PROGRESS,
+  ) => {
     if (shuttingDown) {
       return {
         ok: false,
@@ -581,7 +652,167 @@ export function createToolHandlers(
 
     const dispatchOpts: VisionOneshotOpts = { ...opts };
     delete (dispatchOpts as { backend?: unknown }).backend;
-    return dispatchVisionOneshot(backend, task, images, dispatchOpts);
+    progress({ progress: 0, total: 1, message: `dispatching to ${backend.id}` });
+    const result = await dispatchVisionOneshot(backend, task, images, dispatchOpts);
+    progress({
+      progress: 1,
+      total: 1,
+      message: result.ok ? "done" : `error: ${result.error?.code}`,
+    });
+    return result;
+  };
+
+  // ── qwen_embed / qwen_rerank / qwen_tokenize ────────────────
+  //
+  // All three bypass the SDK and POST directly to llama-server
+  // endpoints. Embed and rerank require backends declared with the
+  // corresponding modality; tokenize accepts any text/multimodal
+  // backend (the tokenizer is colocated with the loaded model).
+
+  const qwen_embed: ToolHandlers["qwen_embed"] = async ({ texts, opts }) => {
+    const elapsed_start = Date.now();
+    if (!Array.isArray(texts) || texts.length === 0) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: { code: "backend_error", message: "texts must be a non-empty array" },
+      };
+    }
+    refreshPoolBackends(pool);
+    const backend = await chooseBackendByModality(
+      pool.backends,
+      "embedding",
+      opts?.backend,
+    );
+    if (!backend) {
+      return {
+        ok: false,
+        elapsed_ms: Date.now() - elapsed_start,
+        backend_id: "",
+        error: {
+          code: "backend_error",
+          message: opts?.backend
+            ? `no backend matches pin "${opts.backend}"`
+            : "no backend declared with modality='embedding'",
+        },
+      };
+    }
+    if (opts?.backend !== undefined && (backend.modality ?? "text") !== "embedding") {
+      return {
+        ok: false,
+        elapsed_ms: Date.now() - elapsed_start,
+        backend_id: backend.id,
+        error: {
+          code: "wrong_modality",
+          message: `backend "${backend.id}" has modality=${backend.modality ?? "text"}, not 'embedding'`,
+        },
+      };
+    }
+    const dispatchOpts: EmbedOpts = { ...opts };
+    delete (dispatchOpts as { backend?: unknown }).backend;
+    return dispatchEmbed(backend, texts, dispatchOpts);
+  };
+
+  const qwen_rerank: ToolHandlers["qwen_rerank"] = async ({
+    query,
+    documents,
+    opts,
+  }) => {
+    const elapsed_start = Date.now();
+    if (typeof query !== "string" || query.length === 0) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: { code: "backend_error", message: "query must be a non-empty string" },
+      };
+    }
+    if (!Array.isArray(documents) || documents.length === 0) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: {
+          code: "backend_error",
+          message: "documents must be a non-empty array",
+        },
+      };
+    }
+    refreshPoolBackends(pool);
+    const backend = await chooseBackendByModality(
+      pool.backends,
+      "rerank",
+      opts?.backend,
+    );
+    if (!backend) {
+      return {
+        ok: false,
+        elapsed_ms: Date.now() - elapsed_start,
+        backend_id: "",
+        error: {
+          code: "backend_error",
+          message: opts?.backend
+            ? `no backend matches pin "${opts.backend}"`
+            : "no backend declared with modality='rerank'",
+        },
+      };
+    }
+    if (opts?.backend !== undefined && (backend.modality ?? "text") !== "rerank") {
+      return {
+        ok: false,
+        elapsed_ms: Date.now() - elapsed_start,
+        backend_id: backend.id,
+        error: {
+          code: "wrong_modality",
+          message: `backend "${backend.id}" has modality=${backend.modality ?? "text"}, not 'rerank'`,
+        },
+      };
+    }
+    const dispatchOpts: RerankOpts = { ...opts };
+    delete (dispatchOpts as { backend?: unknown }).backend;
+    return dispatchRerank(backend, query, documents, dispatchOpts);
+  };
+
+  const qwen_tokenize: ToolHandlers["qwen_tokenize"] = async ({ content, opts }) => {
+    const elapsed_start = Date.now();
+    if (typeof content !== "string") {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: { code: "backend_error", message: "content must be a string" },
+      };
+    }
+    refreshPoolBackends(pool);
+    // Tokenize accepts any text/multimodal backend. Honour pin; otherwise
+    // try 'text', then 'multimodal'. We do NOT route to embedding /
+    // rerank backends — their tokenizer endpoint may be disabled
+    // depending on llama-server build flags.
+    let backend: import("./types.js").Backend | null = null;
+    if (opts?.backend !== undefined) {
+      backend = pool.backends.find((b) => b.id === opts.backend) ?? null;
+    } else {
+      backend =
+        (await chooseBackendByModality(pool.backends, "text")) ??
+        (await chooseBackendByModality(pool.backends, "multimodal"));
+    }
+    if (!backend) {
+      return {
+        ok: false,
+        elapsed_ms: Date.now() - elapsed_start,
+        backend_id: "",
+        error: {
+          code: "backend_error",
+          message: opts?.backend
+            ? `no backend matches pin "${opts.backend}"`
+            : "no healthy text/multimodal backend available",
+        },
+      };
+    }
+    const dispatchOpts: TokenizeOpts = { ...opts };
+    delete (dispatchOpts as { backend?: unknown }).backend;
+    return dispatchTokenize(backend, content, dispatchOpts);
   };
 
   // ── qwen_extensions (read-only listing) ────────────────────
@@ -635,6 +866,9 @@ export function createToolHandlers(
     qwen_sessions,
     qwen_oneshot,
     qwen_oneshot_vision,
+    qwen_embed,
+    qwen_rerank,
+    qwen_tokenize,
     qwen_extensions,
     ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
@@ -643,6 +877,45 @@ export function createToolHandlers(
 
 // ─────────────────────────────────────────────────────────────────
 // MCP server wiring (production entrypoint)
+
+/**
+ * Build a ProgressEmitter bound to the current MCP request. When the
+ * client supplied a `_meta.progressToken`, emitted events are forwarded
+ * as `notifications/progress`. When no token is present (the common
+ * case for non-streaming clients), every call is a no-op.
+ *
+ * The MCP SDK's `extra.sendNotification` is shaped to accept the
+ * `notifications/progress` schema; we widen `extra` to `unknown` and
+ * narrow inside to keep this helper agnostic of the SDK's exact
+ * RequestHandlerExtra type (which changes across minor versions).
+ */
+function makeProgressEmitter(extra: unknown): ProgressEmitter {
+  const x = extra as {
+    _meta?: { progressToken?: string | number };
+    sendNotification?: (n: unknown) => Promise<void> | void;
+  } | undefined;
+  const token = x?._meta?.progressToken;
+  if (token === undefined || typeof x?.sendNotification !== "function") {
+    return NOOP_PROGRESS;
+  }
+  const send = x.sendNotification.bind(x);
+  return ({ progress, total, message }) => {
+    try {
+      void send({
+        method: "notifications/progress",
+        params: {
+          progressToken: token,
+          progress,
+          ...(total !== undefined ? { total } : {}),
+          ...(message !== undefined ? { message } : {}),
+        },
+      });
+    } catch {
+      // Progress notifications are best-effort; never let an emission
+      // failure abort the underlying tool call.
+    }
+  };
+}
 
 async function main(): Promise<void> {
   log.info("qwen-agent-server starting");
@@ -792,12 +1065,16 @@ async function main(): Promise<void> {
         max_attempts: z.number().int().positive().optional().describe("Retry on JSON-parse failure; default 1"),
       }).optional(),
     },
-    async (args) => {
+    async (args, extra) => {
       const baseOpts = buildSpawnOptsFromRaw(args.opts);
       const oneshotOpts: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number } = { ...baseOpts };
       if (args.opts?.timeout_ms !== undefined) oneshotOpts.timeout_ms = args.opts.timeout_ms;
       if (args.opts?.max_attempts !== undefined) oneshotOpts.max_attempts = args.opts.max_attempts;
-      const result = await handlers.qwen_oneshot({ task: args.task, opts: oneshotOpts });
+      const progress = makeProgressEmitter(extra);
+      const result = await handlers.qwen_oneshot(
+        { task: args.task, opts: oneshotOpts },
+        progress,
+      );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
@@ -841,11 +1118,92 @@ async function main(): Promise<void> {
         backend: z.string().optional().describe("Pin to a specific backend by id; defaults to chooseBackend selection."),
       }).optional(),
     },
+    async (args, extra) => {
+      const progress = makeProgressEmitter(extra);
+      const result = await handlers.qwen_oneshot_vision(
+        {
+          task: args.task,
+          images: args.images as VisionImageInput[],
+          ...(args.opts !== undefined ? { opts: args.opts as VisionOneshotOpts & { backend?: string } } : {}),
+        },
+        progress,
+      );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  // ── qwen_embed / qwen_rerank / qwen_tokenize MCP wires ──
+  //
+  // Surface llama-server's /v1/embeddings, /v1/rerank, /tokenize as
+  // first-class MCP tools. Each bypasses the SDK because the SDK is
+  // text-chat only. Backend selection is modality-based — operator
+  // declares which loaded model serves which role.
+
+  mcpServer.tool(
+    "qwen_embed",
+    "Generate embeddings for one or many text inputs via /v1/embeddings. Routes to a backend declared with modality='embedding' (e.g. bge-m3, qwen3-embedding-0.6b). Order of returned embeddings matches the input order.",
+    {
+      texts: z.array(z.string()).min(1).describe("One or more text inputs to embed."),
+      opts: z.object({
+        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 60000."),
+        encoding_format: z.enum(["float", "base64"]).optional().describe("'float' (default) returns number[]; 'base64' is a llama-server passthrough."),
+        backend: z.string().optional().describe("Pin to a specific backend by id; bypasses modality routing."),
+      }).optional(),
+    },
     async (args) => {
-      const result = await handlers.qwen_oneshot_vision({
-        task: args.task,
-        images: args.images as VisionImageInput[],
-        ...(args.opts !== undefined ? { opts: args.opts as VisionOneshotOpts & { backend?: string } } : {}),
+      const result = await handlers.qwen_embed({
+        texts: args.texts,
+        ...(args.opts !== undefined ? { opts: args.opts as EmbedOpts & { backend?: string } } : {}),
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  mcpServer.tool(
+    "qwen_rerank",
+    "Rerank documents by relevance to a query via /v1/rerank. Routes to a backend declared with modality='rerank' (e.g. qwen3-reranker, bge-reranker). Results are sorted by relevance_score descending; the original input index is preserved on each result.",
+    {
+      query: z.string().describe("Query against which documents will be scored."),
+      documents: z.array(z.string()).min(1).describe("Documents to rerank."),
+      opts: z.object({
+        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 60000."),
+        top_n: z.number().int().positive().optional().describe("Return only the top-N results server-side."),
+        return_documents: z.boolean().optional().describe("If true, include each document's text in its result entry; default false."),
+        backend: z.string().optional().describe("Pin to a specific backend by id."),
+      }).optional(),
+    },
+    async (args) => {
+      const result = await handlers.qwen_rerank({
+        query: args.query,
+        documents: args.documents,
+        ...(args.opts !== undefined ? { opts: args.opts as RerankOpts & { backend?: string } } : {}),
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  mcpServer.tool(
+    "qwen_tokenize",
+    "Return exact token IDs and count for `content` against a backend's loaded model. Hits llama-server's /tokenize endpoint (sits outside /v1). Used for pre-flight budget arithmetic and chunk sizing. Routes to any healthy text/multimodal backend (embedding/rerank backends are excluded).",
+    {
+      content: z.string().describe("Text to tokenize."),
+      opts: z.object({
+        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 30000."),
+        add_special: z.boolean().optional().describe("Include the model's special tokens (BOS etc) in the output; default false."),
+        with_pieces: z.boolean().optional().describe("Also return token pieces (string form) under result.pieces; default false."),
+        backend: z.string().optional().describe("Pin to a specific backend by id."),
+      }).optional(),
+    },
+    async (args) => {
+      const result = await handlers.qwen_tokenize({
+        content: args.content,
+        ...(args.opts !== undefined ? { opts: args.opts as TokenizeOpts & { backend?: string } } : {}),
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],

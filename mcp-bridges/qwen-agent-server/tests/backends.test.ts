@@ -12,6 +12,7 @@ import { join } from "node:path";
 import {
   approxTokens,
   chooseBackend,
+  chooseBackendByModality,
   classifyCapacity,
   getSessionBudgetDefaults,
   loadBackends,
@@ -341,6 +342,97 @@ describe("chooseBackend — routing algorithm", () => {
       b.tier === "local";
     const result = await chooseBackend(pool, { tier: "remote" }, "x", lookup);
     expect(result?.tier).toBe("local");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// chooseBackendByModality — used by qwen_embed / qwen_rerank /
+// qwen_tokenize. Filters by declared modality, then health, then
+// round-robins. Treats unset modality as 'text'.
+
+describe("chooseBackendByModality", () => {
+  const embedA: Backend = {
+    id: "embed-a",
+    url: "http://a:9001/v1",
+    model: "bge-m3",
+    tier: "local",
+    capacity: "fast",
+    modality: "embedding",
+  };
+  const embedB: Backend = { ...embedA, id: "embed-b", url: "http://b:9001/v1" };
+  const rerankA: Backend = {
+    id: "rerank-a",
+    url: "http://a:9002/v1",
+    model: "qwen3-reranker",
+    tier: "local",
+    capacity: "fast",
+    modality: "rerank",
+  };
+  const allHealthy = async (): Promise<boolean> => true;
+  const allDown = async (): Promise<boolean> => false;
+
+  it("returns pinned backend regardless of modality", async () => {
+    const r = await chooseBackendByModality(
+      [local27, embedA],
+      "embedding",
+      "local-27b",
+      allHealthy,
+    );
+    expect(r?.id).toBe("local-27b");
+  });
+
+  it("pin to nonexistent returns null", async () => {
+    const r = await chooseBackendByModality([embedA], "embedding", "ghost", allHealthy);
+    expect(r).toBeNull();
+  });
+
+  it("filters by exact modality match (treats unset as 'text')", async () => {
+    const r = await chooseBackendByModality(
+      [local27, embedA, rerankA],
+      "embedding",
+      undefined,
+      allHealthy,
+    );
+    expect(r?.modality).toBe("embedding");
+  });
+
+  it("no candidates with wanted modality → null", async () => {
+    const r = await chooseBackendByModality(
+      [local27, rerankA],
+      "embedding",
+      undefined,
+      allHealthy,
+    );
+    expect(r).toBeNull();
+  });
+
+  it("all candidates unhealthy → null", async () => {
+    const r = await chooseBackendByModality(
+      [embedA, embedB],
+      "embedding",
+      undefined,
+      allDown,
+    );
+    expect(r).toBeNull();
+  });
+
+  it("round-robins across multiple healthy candidates with same modality", async () => {
+    const picks = new Set<string>();
+    for (let i = 0; i < 8; i++) {
+      const r = await chooseBackendByModality(
+        [embedA, embedB],
+        "embedding",
+        undefined,
+        allHealthy,
+      );
+      if (r) picks.add(r.id);
+    }
+    expect(picks.size).toBe(2);
+  });
+
+  it("empty pool returns null", async () => {
+    const r = await chooseBackendByModality([], "embedding", undefined, allHealthy);
+    expect(r).toBeNull();
   });
 });
 

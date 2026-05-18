@@ -77,7 +77,7 @@ vi.mock("../src/session.js", () => ({
 // ─────────────────────────────────────────────────────────────────
 // Hoisted backend mocks
 
-const { mockLoadBackends, mockChooseBackend, mockGetCachedHealth } = vi.hoisted(() => {
+const { mockLoadBackends, mockChooseBackend, mockChooseBackendByModality, mockGetCachedHealth } = vi.hoisted(() => {
   const MOCK_BACKEND = {
     id: "local-27b",
     url: "http://localhost:8080/v1",
@@ -89,6 +89,7 @@ const { mockLoadBackends, mockChooseBackend, mockGetCachedHealth } = vi.hoisted(
   return {
     mockLoadBackends: vi.fn().mockReturnValue([MOCK_BACKEND]),
     mockChooseBackend: vi.fn().mockResolvedValue(MOCK_BACKEND),
+    mockChooseBackendByModality: vi.fn().mockResolvedValue(null),
     mockGetCachedHealth: vi.fn().mockResolvedValue(true),
   };
 });
@@ -96,6 +97,7 @@ const { mockLoadBackends, mockChooseBackend, mockGetCachedHealth } = vi.hoisted(
 vi.mock("../src/backends.js", () => ({
   loadBackends: (...args: unknown[]) => mockLoadBackends(...args),
   chooseBackend: (...args: unknown[]) => mockChooseBackend(...args),
+  chooseBackendByModality: (...args: unknown[]) => mockChooseBackendByModality(...args),
   getCachedHealth: (...args: unknown[]) => mockGetCachedHealth(...args),
   refreshPoolBackends: vi.fn(),
   resetHealthCache: vi.fn(),
@@ -846,6 +848,248 @@ describe("MCP tool handlers", () => {
         budget: { est_tokens: 0, max_tokens: 5000, tool_calls: 0, max_tool_calls: 0 },
       });
       await oneshotPromise;
+    });
+  });
+
+  // ── qwen_embed / qwen_rerank / qwen_tokenize ────────────────
+
+  describe("qwen_embed", () => {
+    const EMBED_BACKEND: Backend = {
+      id: "embed-local",
+      url: "http://localhost:9001/v1",
+      model: "bge-m3",
+      tier: "local",
+      capacity: "fast",
+      modality: "embedding",
+    };
+
+    let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      fetchSpy = vi.spyOn(globalThis, "fetch");
+    });
+
+    afterEach(() => {
+      fetchSpy.mockRestore();
+    });
+
+    it("returns wrong_modality when pinned backend has wrong modality", async () => {
+      mockChooseBackendByModality.mockResolvedValueOnce({
+        ...EMBED_BACKEND,
+        modality: "text",
+      });
+      const result = await callTool(handlers, "qwen_embed", {
+        texts: ["hi"],
+        opts: { backend: "embed-local" },
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "wrong_modality" },
+      });
+    });
+
+    it("returns backend_error when no embedding backend exists", async () => {
+      mockChooseBackendByModality.mockResolvedValueOnce(null);
+      const result = await callTool(handlers, "qwen_embed", { texts: ["hi"] });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "backend_error" },
+      });
+    });
+
+    it("rejects empty texts array", async () => {
+      const result = await callTool(handlers, "qwen_embed", { texts: [] });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "backend_error", message: expect.stringContaining("non-empty") },
+      });
+    });
+
+    it("dispatches to embedding backend on happy path", async () => {
+      mockChooseBackendByModality.mockResolvedValueOnce(EMBED_BACKEND);
+      fetchSpy.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ data: [{ index: 0, embedding: [0.1] }], model: "bge-m3" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      const result = await callTool(handlers, "qwen_embed", { texts: ["hi"] }) as {
+        ok: boolean;
+        embeddings?: number[][];
+        backend_id?: string;
+      };
+      expect(result.ok).toBe(true);
+      expect(result.embeddings).toEqual([[0.1]]);
+      expect(result.backend_id).toBe("embed-local");
+    });
+  });
+
+  describe("qwen_rerank", () => {
+    const RERANK_BACKEND: Backend = {
+      id: "rerank-local",
+      url: "http://localhost:9002/v1",
+      model: "qwen3-reranker",
+      tier: "local",
+      capacity: "fast",
+      modality: "rerank",
+    };
+
+    let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      fetchSpy = vi.spyOn(globalThis, "fetch");
+    });
+
+    afterEach(() => {
+      fetchSpy.mockRestore();
+    });
+
+    it("rejects empty query", async () => {
+      const result = await callTool(handlers, "qwen_rerank", {
+        query: "",
+        documents: ["a"],
+      });
+      expect(result).toMatchObject({ ok: false, error: { code: "backend_error" } });
+    });
+
+    it("rejects empty documents array", async () => {
+      const result = await callTool(handlers, "qwen_rerank", {
+        query: "q",
+        documents: [],
+      });
+      expect(result).toMatchObject({ ok: false, error: { code: "backend_error" } });
+    });
+
+    it("returns backend_error when no rerank backend exists", async () => {
+      mockChooseBackendByModality.mockResolvedValueOnce(null);
+      const result = await callTool(handlers, "qwen_rerank", {
+        query: "q",
+        documents: ["a"],
+      });
+      expect(result).toMatchObject({ ok: false, error: { code: "backend_error" } });
+    });
+
+    it("dispatches to rerank backend on happy path", async () => {
+      mockChooseBackendByModality.mockResolvedValueOnce(RERANK_BACKEND);
+      fetchSpy.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ results: [{ index: 0, relevance_score: 0.9 }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      const result = await callTool(handlers, "qwen_rerank", {
+        query: "q",
+        documents: ["a"],
+      }) as { ok: boolean; results?: Array<{ index: number; relevance_score: number }> };
+      expect(result.ok).toBe(true);
+      expect(result.results?.[0]!.relevance_score).toBe(0.9);
+    });
+  });
+
+  describe("qwen_tokenize", () => {
+    const TEXT_BACKEND: Backend = {
+      id: "text-local",
+      url: "http://localhost:8080/v1",
+      model: "qwen3.6",
+      tier: "local",
+      capacity: "fast",
+    };
+
+    let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      fetchSpy = vi.spyOn(globalThis, "fetch");
+    });
+
+    afterEach(() => {
+      fetchSpy.mockRestore();
+    });
+
+    it("falls back from text to multimodal backend selection", async () => {
+      // First call (text) returns null, second call (multimodal) hits.
+      mockChooseBackendByModality
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ ...TEXT_BACKEND, modality: "multimodal" });
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ tokens: [1, 2, 3] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      const result = await callTool(handlers, "qwen_tokenize", { content: "hi" }) as {
+        ok: boolean;
+        count?: number;
+      };
+      expect(result.ok).toBe(true);
+      expect(result.count).toBe(3);
+      expect(mockChooseBackendByModality).toHaveBeenCalledTimes(2);
+      expect(mockChooseBackendByModality.mock.calls[0]?.[1]).toBe("text");
+      expect(mockChooseBackendByModality.mock.calls[1]?.[1]).toBe("multimodal");
+    });
+
+    it("returns backend_error when no text/multimodal backend exists", async () => {
+      mockChooseBackendByModality.mockResolvedValue(null);
+      const result = await callTool(handlers, "qwen_tokenize", { content: "hi" });
+      expect(result).toMatchObject({ ok: false, error: { code: "backend_error" } });
+    });
+
+    it("honors backend pin without modality routing", async () => {
+      // Pin to the global MOCK_BACKEND (id 'local-27b') that the pool
+      // was initialized with. With a pin, chooseBackendByModality is
+      // bypassed entirely and the pool's backend list is consulted directly.
+      fetchSpy.mockResolvedValueOnce(
+        new Response(JSON.stringify({ tokens: [42] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      const result = await callTool(handlers, "qwen_tokenize", {
+        content: "hi",
+        opts: { backend: "local-27b" },
+      }) as { ok: boolean; count?: number };
+      expect(mockChooseBackendByModality).not.toHaveBeenCalled();
+      expect(result.ok).toBe(true);
+      expect(result.count).toBe(1);
+    });
+  });
+
+  describe("qwen_oneshot progress emission", () => {
+    it("invokes progress callback at each attempt boundary", async () => {
+      // Force schema-parse failure → retry → success path. With 2 attempts
+      // we expect 2 progress(attempt N/2) emissions.
+      mockInstances.length = 0;
+      const progressFn = vi.fn();
+
+      // Patch: drive sessions to idle with empty result so JSON parse
+      // fails on attempt 1 and succeeds on attempt 2. We achieve this
+      // via the QwenSession mock's poll returning different last_message.
+      // Simplest: skip schema, run 1 attempt → expect 1 emission.
+      const handler = handlers.qwen_oneshot;
+      // Drive the mock session to "idle" promptly.
+      const oneshotPromise = handler(
+        { task: "hello", opts: {} },
+        progressFn,
+      );
+      // The MockSession is created inside qwen_spawn; flip its state.
+      await new Promise((r) => setTimeout(r, 10));
+      mockInstances[mockInstances.length - 1]!.setState("idle");
+      (
+        mockInstances[mockInstances.length - 1]!.poll as ReturnType<typeof vi.fn>
+      ).mockImplementation(() => ({
+        state: "idle",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        last_message: "hi",
+      }));
+      await oneshotPromise;
+      expect(progressFn).toHaveBeenCalled();
+      const firstCall = progressFn.mock.calls[0]?.[0];
+      expect(firstCall).toMatchObject({
+        progress: 0,
+        total: 1,
+        message: expect.stringContaining("attempt 1/1"),
+      });
     });
   });
 });
