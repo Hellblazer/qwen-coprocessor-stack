@@ -21,6 +21,8 @@ stop_pidfile() {
   fi
 }
 
-stop_pidfile "llama-server"  "$ROOT/logs/llama-server.pid"
+stop_pidfile "llama-server"          "$ROOT/logs/llama-server.pid"
+stop_pidfile "llama-server (embed)"  "$ROOT/logs/llama-embed.pid"
+stop_pidfile "llama-server (rerank)" "$ROOT/logs/llama-rerank.pid"
 
 echo "[+] Stopped."

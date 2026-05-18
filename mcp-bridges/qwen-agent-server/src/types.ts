@@ -34,15 +34,22 @@ export interface Backend {
   ctx_size?: number;
   /**
    * Operator-declared modality of the loaded model on this backend.
-   * `'text'` (default when unset) — text-only completion. `'multimodal'`
-   * — backend is running with a vision projector (`--mmproj`) loaded
-   * and accepts image content arrays on `/v1/chat/completions`. This
-   * is informational only — the supervisor does not auto-route based
-   * on modality today; callers that need vision should pin a
-   * multimodal backend via `opts.backend` and check the
-   * `BackendInfo.modality` field on `qwen_backends`.
+   *
+   * - `'text'` (default when unset) — text completion via /v1/chat/completions.
+   * - `'multimodal'` — text + vision; backend is running llama-server
+   *   with `--mmproj` and accepts image content arrays.
+   * - `'embedding'` — backend loads an embedding model (e.g. bge-m3,
+   *   qwen3-embedding-0.6b) and serves /v1/embeddings. Selected by
+   *   `qwen_embed`.
+   * - `'rerank'` — backend loads a reranker model (e.g. qwen3-reranker,
+   *   bge-reranker) and serves /v1/rerank. Selected by `qwen_rerank`.
+   *
+   * Vision callers should pin via `opts.backend`. Embed/rerank callers
+   * are auto-routed to the first healthy backend with matching modality.
+   * The tokenizer is colocated with any loaded model — `qwen_tokenize`
+   * accepts any text/multimodal backend.
    */
-  modality?: "text" | "multimodal";
+  modality?: "text" | "multimodal" | "embedding" | "rerank";
 }
 
 /**
@@ -316,12 +323,12 @@ export interface BackendInfo {
   capacity: Backend["capacity"];
   healthy: boolean | null;
   /**
-   * Mirrors `Backend.modality` — `'text'` (default when unset on the
-   * config) or `'multimodal'` (backend has `--mmproj` loaded).
-   * Informational; lets callers route vision requests upfront rather
-   * than discovering `backend_no_mmproj` at dispatch time.
+   * Mirrors `Backend.modality`. Values: `'text'` (default when unset),
+   * `'multimodal'`, `'embedding'`, `'rerank'`. Lets callers see which
+   * roles each configured backend serves without trial-and-error
+   * dispatch (no `backend_no_mmproj` / `wrong_modality` at request time).
    */
-  modality?: "text" | "multimodal";
+  modality?: "text" | "multimodal" | "embedding" | "rerank";
   /**
    * Number of sessions currently in the supervisor's pool for this
    * backend (includes `complete`/`error` sessions that have not yet

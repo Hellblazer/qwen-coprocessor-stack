@@ -507,3 +507,37 @@ export async function chooseBackend(
 
   return null;
 }
+
+/**
+ * Select a backend by declared modality. Used by `qwen_embed`,
+ * `qwen_rerank`, and `qwen_tokenize` — none of which go through the
+ * SDK / chat-completions path, so tier+capacity routing doesn't apply.
+ *
+ * - If `pinned_id` is supplied, return that backend iff it exists; the
+ *   caller validates the modality match and surfaces `wrong_modality`.
+ * - Otherwise filter by `wanted` (treating unset modality as `'text'`),
+ *   then round-robin across healthy candidates. `null` → no match.
+ */
+export async function chooseBackendByModality(
+  pool: Backend[],
+  wanted: NonNullable<Backend["modality"]>,
+  pinned_id?: string,
+  healthy_lookup: (b: Backend) => Promise<boolean | null> = getCachedHealth,
+): Promise<Backend | null> {
+  if (pool.length === 0) return null;
+
+  if (pinned_id !== undefined) {
+    return pool.find((b) => b.id === pinned_id) ?? null;
+  }
+
+  const candidates = pool.filter((b) => (b.modality ?? "text") === wanted);
+  if (candidates.length === 0) return null;
+
+  const healthChecks = await Promise.all(
+    candidates.map(async (b) => ({ b, healthy: await healthy_lookup(b) })),
+  );
+  const live = healthChecks.filter((h) => h.healthy !== false).map((h) => h.b);
+  if (live.length === 0) return null;
+
+  return roundRobin(`modality:${wanted}`, live);
+}
