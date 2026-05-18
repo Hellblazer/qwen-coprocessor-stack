@@ -33,11 +33,11 @@ disk.
 cd "$(git rev-parse --show-toplevel)"
 
 # Embeddings — bge-m3, multilingual, 1024-dim, ~1.1GB at Q8
-huggingface-cli download gpustack/bge-m3-GGUF \
+hf download gpustack/bge-m3-GGUF \
   bge-m3-Q8_0.gguf --local-dir models
 
 # Reranking — bge-reranker-v2-m3, cross-encoder, ~600MB at Q8
-huggingface-cli download gpustack/bge-reranker-v2-m3-GGUF \
+hf download gpustack/bge-reranker-v2-m3-GGUF \
   bge-reranker-v2-m3-Q8_0.gguf --local-dir models
 ```
 

@@ -31,7 +31,7 @@ EMBED_PORT="${EMBED_PORT:-8081}"
 [ -f "$EMBED_PATH" ] || {
   echo "[!] Embedding model not present at $EMBED_PATH."
   echo "    Fetch with:"
-  echo "      huggingface-cli download gpustack/bge-m3-GGUF $EMBED_FILE --local-dir $ROOT/models"
+  echo "      hf download gpustack/bge-m3-GGUF $EMBED_FILE --local-dir $ROOT/models"
   echo "    Or override EMBED_FILE=… to point at another GGUF you already have."
   exit 1
 }

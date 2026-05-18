@@ -30,7 +30,7 @@ RERANK_PORT="${RERANK_PORT:-8082}"
 [ -f "$RERANK_PATH" ] || {
   echo "[!] Reranker model not present at $RERANK_PATH."
   echo "    Fetch with:"
-  echo "      huggingface-cli download gpustack/bge-reranker-v2-m3-GGUF $RERANK_FILE --local-dir $ROOT/models"
+  echo "      hf download gpustack/bge-reranker-v2-m3-GGUF $RERANK_FILE --local-dir $ROOT/models"
   echo "    Or override RERANK_FILE=… to point at another reranker GGUF."
   exit 1
 }
