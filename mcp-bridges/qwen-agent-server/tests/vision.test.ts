@@ -242,6 +242,22 @@ describe("dispatchVisionOneshot", () => {
     expect(body.grammar).toBeUndefined();
   });
 
+  it("treats grammar='' as unset (falsy guard, no body field)", async () => {
+    // Empty string is not a valid GBNF grammar and would be rejected
+    // by llama-server anyway; the supervisor's falsy guard short-
+    // circuits before that.
+    mockFetch(200, { choices: [{ message: { content: "ok" } }] });
+    await dispatchVisionOneshot(
+      BACKEND,
+      "?",
+      [{ url: "data:image/png;base64,X" }],
+      { grammar: "" },
+    );
+    const call = fetchSpy.mock.calls[0];
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    expect(body.grammar).toBeUndefined();
+  });
+
   it("passes grammar through to the HTTP body when opts.grammar is set", async () => {
     mockFetch(200, { choices: [{ message: { content: '"red"' } }] });
     const gbnf = 'root ::= "\\"" ("red" | "green" | "blue") "\\""';
@@ -257,8 +273,10 @@ describe("dispatchVisionOneshot", () => {
   });
 
   it("sends both grammar and response_format when both are set", async () => {
-    // The supervisor emits both; the backend decides precedence
-    // (llama-server typically lets grammar win).
+    // The supervisor's contract is "emit both; precedence is
+    // backend-determined." This test verifies the emission contract
+    // only — it does NOT verify precedence (the mock returns whatever
+    // content is set regardless of body shape).
     mockFetch(200, { choices: [{ message: { content: '{"color":"red"}' } }] });
     await dispatchVisionOneshot(
       BACKEND,

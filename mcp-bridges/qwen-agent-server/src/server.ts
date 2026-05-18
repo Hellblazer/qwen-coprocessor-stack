@@ -820,7 +820,7 @@ async function main(): Promise<void> {
         temperature: z.number().min(0).max(2).optional().describe("Sampling temperature; default 0.3."),
         system: z.string().optional().describe("Optional system-role prefix."),
         no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen thinking-mode reasoning; default true."),
-        grammar: z.string().optional().describe("GBNF grammar string for token-by-token output enforcement (llama-server `grammar` field). Strictly stronger than json_schema (which is post-hoc validated). Use for non-JSON constrained output or when json_schema validation has been observed to fail."),
+        grammar: z.string().optional().describe("GBNF grammar string for token-by-token output enforcement (llama-server `grammar` field). Strictly stronger than json_schema (which is post-hoc validated). Use for non-JSON constrained output or when json_schema validation has been observed to fail. Vision-only — qwen_oneshot's SDK path cannot accept GBNF; this is an architectural constraint, not a gap."),
         backend: z.string().optional().describe("Pin to a specific backend by id; defaults to chooseBackend selection."),
       }).optional(),
     },

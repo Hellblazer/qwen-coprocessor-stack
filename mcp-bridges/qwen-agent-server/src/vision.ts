@@ -79,6 +79,11 @@ export interface VisionOneshotOpts {
    * grammar docs. No supervisor-side validation; malformed grammars
    * are rejected by the backend at request time and surface as
    * `error.code='backend_error'`.
+   *
+   * **Vision-only.** Not available on `qwen_oneshot`: the text
+   * dispatch path goes through `@qwen-code/sdk` → Qwen CLI
+   * subprocess, which does not surface llama.cpp's `grammar`
+   * parameter. Architectural constraint, not a gap.
    */
   grammar?: string;
 }
