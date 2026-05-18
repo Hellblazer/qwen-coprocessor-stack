@@ -62,6 +62,25 @@ export interface VisionOneshotOpts {
    *  message. Default true (multimodal dispatch is typically
    *  task-shaped, not chain-of-thought). */
   no_think?: boolean;
+  /**
+   * GBNF grammar string passed through to llama-server's `grammar`
+   * request field. Forces token-by-token output conformance at
+   * decode time — strictly stronger than the post-hoc validation
+   * `json_schema` performs. Use when the caller needs guaranteed
+   * conformance to a non-JSON pattern, or when JSON-schema
+   * validation has been observed to fail under thinking-mode
+   * reasoning (the model emits prose that doesn't parse).
+   *
+   * When BOTH `grammar` and `json_schema` are set, the supervisor
+   * emits both fields; llama-server picks one (typically grammar
+   * takes precedence). Most callers will use one or the other.
+   *
+   * The string must be a valid GBNF grammar — see llama.cpp
+   * grammar docs. No supervisor-side validation; malformed grammars
+   * are rejected by the backend at request time and surface as
+   * `error.code='backend_error'`.
+   */
+  grammar?: string;
 }
 
 /** Result shape. Mirrors `OneshotResult` for caller parity. */
@@ -192,6 +211,11 @@ export async function dispatchVisionOneshot(
       type: "json_schema",
       json_schema: { name: "output", strict: true, schema: opts.json_schema },
     };
+  }
+  if (opts.grammar) {
+    // GBNF passthrough. llama-server reads this from the top-level
+    // `grammar` field on the chat-completions request body.
+    body.grammar = opts.grammar;
   }
 
   const controller = new AbortController();
