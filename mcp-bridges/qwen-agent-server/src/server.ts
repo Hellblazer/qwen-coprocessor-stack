@@ -344,6 +344,15 @@ export function createToolHandlers(
     // Hot-reload from env / config file so operator edits surface in
     // the next list call without restarting the supervisor.
     refreshPoolBackends(pool);
+    // One pass over the live session map to count routed sessions
+    // per backend — load visibility for operator dashboards. O(n)
+    // in pool.sessions; cheap relative to the per-backend health
+    // probes below.
+    const sessionsByBackend = new Map<string, number>();
+    for (const pooled of pool.sessions.values()) {
+      const id = pooled.backend.id;
+      sessionsByBackend.set(id, (sessionsByBackend.get(id) ?? 0) + 1);
+    }
     const results = await Promise.all(
       pool.backends.map(async (b) => {
         const healthy = await getCachedHealth(b);
@@ -354,6 +363,8 @@ export function createToolHandlers(
           tier: b.tier,
           capacity: b.capacity,
           healthy,
+          active_sessions: sessionsByBackend.get(b.id) ?? 0,
+          ...(b.modality !== undefined ? { modality: b.modality } : {}),
         };
         return info;
       }),
@@ -393,6 +404,7 @@ export function createToolHandlers(
   const ONESHOT_POLL_INTERVAL_MS = 250;
 
   const qwen_oneshot: ToolHandlers["qwen_oneshot"] = async ({ task, opts }) => {
+    const oneshot_start = Date.now();
     const timeout_ms = opts?.timeout_ms ?? 300_000;
     const max_attempts = Math.max(1, opts?.max_attempts ?? 1);
     // Strip the oneshot-specific fields before forwarding to qwen_spawn.
@@ -417,7 +429,9 @@ export function createToolHandlers(
       }
       last_task_id = spawn.task_id;
 
-      const start = Date.now();
+      // Per-attempt timeout origin. NOT to be confused with
+      // `oneshot_start` (function-scope, total wall-clock for elapsed_ms).
+      const attempt_start = Date.now();
       // Poll until idle/complete/error/timeout.
       let polled: PollResult;
       // eslint-disable-next-line no-constant-condition
@@ -437,7 +451,7 @@ export function createToolHandlers(
           };
           break;
         }
-        if (Date.now() - start > timeout_ms) {
+        if (Date.now() - attempt_start > timeout_ms) {
           last_error = {
             code: "timeout",
             message: `oneshot timed out after ${timeout_ms}ms (state=${polled.state})`,
@@ -470,6 +484,7 @@ export function createToolHandlers(
           state: last_state,
           result: last_result,
           ...(last_budget !== undefined ? { budget: last_budget } : {}),
+          elapsed_ms: Date.now() - oneshot_start,
         };
       }
       // Defensive: Qwen3.6 frequently wraps schema-conforming JSON in
@@ -487,6 +502,7 @@ export function createToolHandlers(
           result: last_result,
           parsed,
           ...(last_budget !== undefined ? { budget: last_budget } : {}),
+          elapsed_ms: Date.now() - oneshot_start,
         };
       } catch (err) {
         last_error = {
@@ -506,6 +522,7 @@ export function createToolHandlers(
       ...(last_result !== undefined ? { result: last_result } : {}),
       ...(last_error !== undefined ? { error: last_error } : {}),
       ...(last_budget !== undefined ? { budget: last_budget } : {}),
+      elapsed_ms: Date.now() - oneshot_start,
     };
   };
 
@@ -771,7 +788,7 @@ async function main(): Promise<void> {
     {
       task: z.string().describe("Prompt for the inner Qwen"),
       opts: qwenSpawnOptsSchema.unwrap().extend({
-        timeout_ms: z.number().int().positive().optional().describe("Hard limit per attempt; default 300000"),
+        timeout_ms: z.number().int().positive().optional().describe("Per-attempt hard limit in ms; default 300000. Note: with max_attempts > 1 the returned OneshotResult.elapsed_ms (total wall-clock across all attempts) can exceed this; do not use elapsed_ms > timeout_ms as a timeout signal."),
         max_attempts: z.number().int().positive().optional().describe("Retry on JSON-parse failure; default 1"),
       }).optional(),
     },
