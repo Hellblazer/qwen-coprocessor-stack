@@ -429,7 +429,9 @@ export function createToolHandlers(
       }
       last_task_id = spawn.task_id;
 
-      const start = Date.now();
+      // Per-attempt timeout origin. NOT to be confused with
+      // `oneshot_start` (function-scope, total wall-clock for elapsed_ms).
+      const attempt_start = Date.now();
       // Poll until idle/complete/error/timeout.
       let polled: PollResult;
       // eslint-disable-next-line no-constant-condition
@@ -449,7 +451,7 @@ export function createToolHandlers(
           };
           break;
         }
-        if (Date.now() - start > timeout_ms) {
+        if (Date.now() - attempt_start > timeout_ms) {
           last_error = {
             code: "timeout",
             message: `oneshot timed out after ${timeout_ms}ms (state=${polled.state})`,
@@ -786,7 +788,7 @@ async function main(): Promise<void> {
     {
       task: z.string().describe("Prompt for the inner Qwen"),
       opts: qwenSpawnOptsSchema.unwrap().extend({
-        timeout_ms: z.number().int().positive().optional().describe("Hard limit per attempt; default 300000"),
+        timeout_ms: z.number().int().positive().optional().describe("Per-attempt hard limit in ms; default 300000. Note: with max_attempts > 1 the returned OneshotResult.elapsed_ms (total wall-clock across all attempts) can exceed this; do not use elapsed_ms > timeout_ms as a timeout signal."),
         max_attempts: z.number().int().positive().optional().describe("Retry on JSON-parse failure; default 1"),
       }).optional(),
     },

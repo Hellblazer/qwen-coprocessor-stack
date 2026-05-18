@@ -323,9 +323,16 @@ export interface BackendInfo {
    */
   modality?: "text" | "multimodal";
   /**
-   * Number of sessions currently routed to this backend in the
-   * supervisor's pool. Live count; useful for operator dashboards
-   * and load visibility. Read-only.
+   * Number of sessions currently in the supervisor's pool for this
+   * backend (includes `complete`/`error` sessions that have not yet
+   * been reaped). Read-only.
+   *
+   * Semantic note: the supervisor removes sessions from the pool on
+   * explicit `qwen_stop`, LRU eviction at cap, or the 5-minute reap
+   * sweep (which skips `running` state). For `qwen_oneshot` callers
+   * this is accurate — `qwen_stop` runs before return. For long-lived
+   * multi-turn sessions that completed but were never explicitly
+   * stopped, the count remains until the next reap.
    */
   active_sessions: number;
 }
