@@ -32,6 +32,17 @@ export interface Backend {
    * declares.
    */
   ctx_size?: number;
+  /**
+   * Operator-declared modality of the loaded model on this backend.
+   * `'text'` (default when unset) — text-only completion. `'multimodal'`
+   * — backend is running with a vision projector (`--mmproj`) loaded
+   * and accepts image content arrays on `/v1/chat/completions`. This
+   * is informational only — the supervisor does not auto-route based
+   * on modality today; callers that need vision should pin a
+   * multimodal backend via `opts.backend` and check the
+   * `BackendInfo.modality` field on `qwen_backends`.
+   */
+  modality?: "text" | "multimodal";
 }
 
 /**
@@ -304,6 +315,19 @@ export interface BackendInfo {
   tier: Backend["tier"];
   capacity: Backend["capacity"];
   healthy: boolean | null;
+  /**
+   * Mirrors `Backend.modality` — `'text'` (default when unset on the
+   * config) or `'multimodal'` (backend has `--mmproj` loaded).
+   * Informational; lets callers route vision requests upfront rather
+   * than discovering `backend_no_mmproj` at dispatch time.
+   */
+  modality?: "text" | "multimodal";
+  /**
+   * Number of sessions currently routed to this backend in the
+   * supervisor's pool. Live count; useful for operator dashboards
+   * and load visibility. Read-only.
+   */
+  active_sessions: number;
 }
 
 /**
@@ -334,6 +358,14 @@ export interface OneshotResult {
   };
   /** Live budget at the time of return. */
   budget?: SessionBudgetStats;
+  /**
+   * Wall-clock elapsed in milliseconds, measured from the start of
+   * `qwen_oneshot`'s first spawn through the final return (across
+   * all retry attempts). Parity with `VisionOneshotResult.elapsed_ms`.
+   * Lets callers do latency telemetry on the text-dispatch path
+   * without having to time the call themselves.
+   */
+  elapsed_ms: number;
 }
 
 /**

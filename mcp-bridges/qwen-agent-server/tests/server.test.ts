@@ -512,6 +512,31 @@ describe("MCP tool handlers", () => {
       const result = await callTool(handlers, "qwen_backends", {}) as BackendInfo[];
       expect(result[0]!.healthy).toBeNull();
     });
+
+    it("active_sessions defaults to 0 when no sessions are routed", async () => {
+      const result = await callTool(handlers, "qwen_backends", {}) as BackendInfo[];
+      expect(result[0]!.active_sessions).toBe(0);
+    });
+
+    it("active_sessions counts sessions routed to the backend in the pool", async () => {
+      // Spawn two sessions; both route to MOCK_BACKEND per mockChooseBackend.
+      await callTool(handlers, "qwen_spawn", { task: "alpha" });
+      await callTool(handlers, "qwen_spawn", { task: "beta" });
+      const result = await callTool(handlers, "qwen_backends", {}) as BackendInfo[];
+      expect(result[0]!.active_sessions).toBe(2);
+    });
+
+    it("modality is omitted when backend config doesn't declare it", async () => {
+      const result = await callTool(handlers, "qwen_backends", {}) as BackendInfo[];
+      expect(result[0]!.modality).toBeUndefined();
+    });
+
+    it("modality surfaces when declared on the backend", async () => {
+      mockLoadBackends.mockReturnValue([{ ...MOCK_BACKEND, modality: "multimodal" }]);
+      const localHandlers = createToolHandlers();
+      const result = await callTool(localHandlers, "qwen_backends", {}) as BackendInfo[];
+      expect(result[0]!.modality).toBe("multimodal");
+    });
   });
 
   // ── qwen_sessions (RDR-002 v0.7 amendment) ──────────────────
@@ -627,11 +652,40 @@ describe("MCP tool handlers", () => {
         last_message: "the answer",
         budget: { est_tokens: 100, max_tokens: 1000, tool_calls: 1, max_tool_calls: 0 },
       });
-      const result = await oneshotPromise as { ok: boolean; result?: string; parsed?: unknown; attempts: number; error?: { code: string } };
+      const result = await oneshotPromise as { ok: boolean; result?: string; parsed?: unknown; attempts: number; error?: { code: string }; elapsed_ms: number };
       expect(result.ok).toBe(true);
       expect(result.result).toBe("the answer");
       expect(result.parsed).toBeUndefined();
       expect(result.attempts).toBe(1);
+      // elapsed_ms is wall-clock around the oneshot dispatch — must be a
+      // finite non-negative number. We don't assert tight bounds because
+      // CI machine timing varies, but absence/NaN/negative would be a bug.
+      expect(typeof result.elapsed_ms).toBe("number");
+      expect(Number.isFinite(result.elapsed_ms)).toBe(true);
+      expect(result.elapsed_ms).toBeGreaterThanOrEqual(0);
+    });
+
+    it("returns elapsed_ms on the failure path too", async () => {
+      const oneshotPromise = callTool(handlers, "qwen_oneshot", {
+        task: "x",
+        opts: { timeout_ms: 50 },
+      });
+      await new Promise((r) => setTimeout(r, 10));
+      const inst = mockInstances[0]!;
+      // Leave the session in 'running' so the poll loop hits the
+      // timeout branch quickly.
+      inst.setState("running");
+      inst.poll.mockReturnValue({
+        state: "running",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "",
+        budget: { est_tokens: 0, max_tokens: 0, tool_calls: 0, max_tool_calls: 0 },
+      });
+      const result = await oneshotPromise as { ok: boolean; elapsed_ms: number; error?: { code: string } };
+      expect(result.ok).toBe(false);
+      expect(typeof result.elapsed_ms).toBe("number");
+      expect(result.elapsed_ms).toBeGreaterThanOrEqual(0);
     });
 
     it("parses JSON when json_schema is set and result is valid JSON", async () => {
