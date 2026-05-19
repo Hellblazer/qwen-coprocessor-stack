@@ -59,6 +59,11 @@ import {
   type VisionOneshotOpts,
   type VisionOneshotResult,
 } from "./vision.js";
+import {
+  formatChatPrelude,
+  formatTextPrelude,
+  ThreadStore,
+} from "./threads.js";
 import { dispatchEmbed, type EmbedOpts, type EmbedResult } from "./embed.js";
 import { dispatchRerank, type RerankOpts, type RerankResult } from "./rerank.js";
 import {
@@ -197,7 +202,11 @@ export type ToolHandlers = {
   qwen_oneshot: (
     args: {
       task: string;
-      opts?: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number };
+      opts?: Partial<SpawnOpts> & {
+        timeout_ms?: number;
+        max_attempts?: number;
+        continuation_id?: string;
+      };
     },
     progress?: ProgressEmitter,
   ) => Promise<OneshotResult>;
@@ -218,7 +227,7 @@ export type ToolHandlers = {
     args: {
       task: string;
       images: VisionImageInput[];
-      opts?: VisionOneshotOpts & { backend?: string };
+      opts?: VisionOneshotOpts & { backend?: string; continuation_id?: string };
     },
     progress?: ProgressEmitter,
   ) => Promise<VisionOneshotResult>;
@@ -277,8 +286,12 @@ export type ToolHandlers = {
 export function createToolHandlers(
   existingPool?: SessionPool,
   installedExtensionsCache?: InstalledExtensionsCache,
+  threadStore?: ThreadStore,
 ): ToolHandlers {
   const pool = existingPool ?? createPool();
+  // One thread store per handler set. In production main() one is wired
+  // explicitly; tests omit the arg to get a default (no-reaper) instance.
+  const threads = threadStore ?? new ThreadStore({ reap_interval_ms: 0 });
   let shuttingDown = false;
 
   // ── qwen_spawn ─────────────────────────────────────────────
@@ -478,6 +491,15 @@ export function createToolHandlers(
     const spawnOpts: Partial<SpawnOpts> = { ...opts };
     delete (spawnOpts as Record<string, unknown>)["timeout_ms"];
     delete (spawnOpts as Record<string, unknown>)["max_attempts"];
+    delete (spawnOpts as Record<string, unknown>)["continuation_id"];
+
+    // Thread resolution. If continuation_id is supplied, fetch prior
+    // turns and prepend as a text prelude to the task. Always allocate
+    // a thread id (new or existing) so the caller can chain on success.
+    const thread = threads.resolve(opts?.continuation_id);
+    const prelude = formatTextPrelude(thread.turns);
+    const effective_task = prelude.length > 0 ? `${prelude}${task}` : task;
+    const continuation_id = thread.id;
 
     let attempts = 0;
     let last_task_id = "";
@@ -494,7 +516,7 @@ export function createToolHandlers(
         message: `attempt ${attempts}/${max_attempts}: spawning`,
       });
 
-      const spawn = await qwen_spawn({ task, opts: spawnOpts });
+      const spawn = await qwen_spawn({ task: effective_task, opts: spawnOpts });
       if ("error" in spawn) {
         last_error = { code: "session_error", message: spawn.error.message };
         break;
@@ -549,6 +571,8 @@ export function createToolHandlers(
       }
       if (spawnOpts.json_schema === undefined) {
         // No schema requested → success on first reach.
+        threads.append(continuation_id, { role: "user", content: task });
+        threads.append(continuation_id, { role: "assistant", content: last_result });
         return {
           ok: true,
           task_id: last_task_id,
@@ -557,6 +581,7 @@ export function createToolHandlers(
           result: last_result,
           ...(last_budget !== undefined ? { budget: last_budget } : {}),
           elapsed_ms: Date.now() - oneshot_start,
+          continuation_id,
         };
       }
       // Defensive: Qwen3.6 frequently wraps schema-conforming JSON in
@@ -566,6 +591,8 @@ export function createToolHandlers(
       const stripped = stripCodeFences(last_result);
       try {
         const parsed = JSON.parse(stripped);
+        threads.append(continuation_id, { role: "user", content: task });
+        threads.append(continuation_id, { role: "assistant", content: last_result });
         return {
           ok: true,
           task_id: last_task_id,
@@ -575,6 +602,7 @@ export function createToolHandlers(
           parsed,
           ...(last_budget !== undefined ? { budget: last_budget } : {}),
           elapsed_ms: Date.now() - oneshot_start,
+          continuation_id,
         };
       } catch (err) {
         last_error = {
@@ -585,7 +613,10 @@ export function createToolHandlers(
       }
     }
 
-    // Exhausted attempts or hit a terminal error.
+    // Exhausted attempts or hit a terminal error. We do NOT append
+    // failed turns to the thread — there's no useful "assistant" turn
+    // to carry forward — but we still emit the continuation_id so the
+    // caller can chain another attempt or recover the thread.
     return {
       ok: false,
       task_id: last_task_id,
@@ -595,6 +626,7 @@ export function createToolHandlers(
       ...(last_error !== undefined ? { error: last_error } : {}),
       ...(last_budget !== undefined ? { budget: last_budget } : {}),
       elapsed_ms: Date.now() - oneshot_start,
+      continuation_id,
     };
   };
 
@@ -652,14 +684,40 @@ export function createToolHandlers(
 
     const dispatchOpts: VisionOneshotOpts = { ...opts };
     delete (dispatchOpts as { backend?: unknown }).backend;
+    delete (dispatchOpts as { continuation_id?: unknown }).continuation_id;
+
+    // Thread resolution. continuation_id is optional; either way we
+    // allocate one and return it on success.
+    const thread = threads.resolve(opts?.continuation_id);
+    const prior_messages = formatChatPrelude(thread.turns);
+    const continuation_id = thread.id;
+
     progress({ progress: 0, total: 1, message: `dispatching to ${backend.id}` });
-    const result = await dispatchVisionOneshot(backend, task, images, dispatchOpts);
+    const result = await dispatchVisionOneshot(
+      backend,
+      task,
+      images,
+      dispatchOpts,
+      prior_messages,
+    );
     progress({
       progress: 1,
       total: 1,
       message: result.ok ? "done" : `error: ${result.error?.code}`,
     });
-    return result;
+
+    if (result.ok && typeof result.result === "string") {
+      threads.append(continuation_id, {
+        role: "user",
+        content: task,
+        had_images: true,
+      });
+      threads.append(continuation_id, {
+        role: "assistant",
+        content: result.result,
+      });
+    }
+    return { ...result, continuation_id };
   };
 
   // ── qwen_embed / qwen_rerank / qwen_tokenize ────────────────
@@ -1063,13 +1121,15 @@ async function main(): Promise<void> {
       opts: qwenSpawnOptsSchema.unwrap().extend({
         timeout_ms: z.number().int().positive().optional().describe("Per-attempt hard limit in ms; default 300000. Note: with max_attempts > 1 the returned OneshotResult.elapsed_ms (total wall-clock across all attempts) can exceed this; do not use elapsed_ms > timeout_ms as a timeout signal."),
         max_attempts: z.number().int().positive().optional().describe("Retry on JSON-parse failure; default 1"),
+        continuation_id: z.string().optional().describe("Thread id returned by a prior call's OneshotResult.continuation_id; the supervisor prepends prior turns to this task. Omit for a fresh thread. Threads live in-process only (3h TTL, 20-turn cap, no cross-process persistence). The returned continuation_id is always present so callers can chain — even on failure."),
       }).optional(),
     },
     async (args, extra) => {
       const baseOpts = buildSpawnOptsFromRaw(args.opts);
-      const oneshotOpts: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number } = { ...baseOpts };
+      const oneshotOpts: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number; continuation_id?: string } = { ...baseOpts };
       if (args.opts?.timeout_ms !== undefined) oneshotOpts.timeout_ms = args.opts.timeout_ms;
       if (args.opts?.max_attempts !== undefined) oneshotOpts.max_attempts = args.opts.max_attempts;
+      if (args.opts?.continuation_id !== undefined) oneshotOpts.continuation_id = args.opts.continuation_id;
       const progress = makeProgressEmitter(extra);
       const result = await handlers.qwen_oneshot(
         { task: args.task, opts: oneshotOpts },
@@ -1116,6 +1176,7 @@ async function main(): Promise<void> {
         no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen thinking-mode reasoning; default true."),
         grammar: z.string().optional().describe("GBNF grammar string for token-by-token output enforcement (llama-server `grammar` field). Strictly stronger than json_schema (which is post-hoc validated). Use for non-JSON constrained output or when json_schema validation has been observed to fail. Vision-only — qwen_oneshot's SDK path cannot accept GBNF; this is an architectural constraint, not a gap."),
         backend: z.string().optional().describe("Pin to a specific backend by id; defaults to chooseBackend selection."),
+        continuation_id: z.string().optional().describe("Thread id from a prior qwen_oneshot or qwen_oneshot_vision call. Prior turns are injected as messages[] entries before the current user turn; images from prior turns are NOT carried forward in v1 (a `[image attached]` placeholder is emitted). Same thread store as qwen_oneshot — cross-tool threading works."),
       }).optional(),
     },
     async (args, extra) => {
@@ -1124,7 +1185,7 @@ async function main(): Promise<void> {
         {
           task: args.task,
           images: args.images as VisionImageInput[],
-          ...(args.opts !== undefined ? { opts: args.opts as VisionOneshotOpts & { backend?: string } } : {}),
+          ...(args.opts !== undefined ? { opts: args.opts as VisionOneshotOpts & { backend?: string; continuation_id?: string } } : {}),
         },
         progress,
       );
