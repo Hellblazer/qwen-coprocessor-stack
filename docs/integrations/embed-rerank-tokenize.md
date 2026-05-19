@@ -20,6 +20,39 @@ needed when adding or retargeting backends.
 Modality values: `"text"` (default when unset), `"multimodal"`,
 `"embedding"`, `"rerank"`.
 
+### Remote OpenAI-compatible backends
+
+Any backend can also declare auth credentials for remote OpenAI-shape
+endpoints (OpenRouter, Together, Fireworks, vLLM behind a proxy, etc.):
+
+```json
+{
+  "id": "openrouter-claude",
+  "url": "https://openrouter.ai/api/v1",
+  "model": "anthropic/claude-3.7-sonnet",
+  "tier": "remote",
+  "capacity": "heavy",
+  "modality": "multimodal",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "headers": {
+    "HTTP-Referer": "https://github.com/your/repo",
+    "X-Title": "your-app-name"
+  }
+}
+```
+
+Fields:
+
+- `api_key_env` (preferred): name of an env var read at request time.
+  Rotations apply on next call — no supervisor reload.
+- `api_key` (literal, discouraged): kept in the config file. Avoid for
+  production secrets.
+- `headers`: extra request headers, merged after Authorization. Use for
+  provider-required attribution (OpenRouter's `HTTP-Referer` / `X-Title`).
+
+Resolution priority: `api_key` literal > `api_key_env`. Auth values are
+never logged.
+
 ## Minimal end-to-end setup
 
 ### 1. Fetch the GGUFs

@@ -8,6 +8,7 @@
 // each document against the query.
 
 import { createLogger } from "./log.js";
+import { dispatchOpenAIPost } from "./openai-compat.js";
 import type { Backend } from "./types.js";
 
 const log = createLogger("qwen-rerank");
@@ -51,7 +52,6 @@ export async function dispatchRerank(
   documents: string[],
   opts: RerankOpts = {},
 ): Promise<RerankResult> {
-  const start = Date.now();
   const timeout_ms = opts.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
   const body: Record<string, unknown> = {
@@ -64,52 +64,26 @@ export async function dispatchRerank(
     body.return_documents = opts.return_documents;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout_ms);
+  const outcome = await dispatchOpenAIPost(backend, "/v1/rerank", body, {
+    timeout_ms,
+  });
 
-  let resp: Response;
-  try {
-    resp = await fetch(`${backend.url.replace(/\/$/, "")}/rerank`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    const aborted = (err as { name?: string })?.name === "AbortError";
+  if (!outcome.ok) {
+    if (outcome.status !== undefined) {
+      log.warn(
+        {
+          backend_id: backend.id,
+          status: outcome.status,
+          body_excerpt: outcome.body_text?.slice(0, 200),
+        },
+        "rerank dispatch HTTP failure",
+      );
+    }
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
-      error: aborted
-        ? { code: "timeout", message: `request aborted after ${timeout_ms}ms` }
-        : {
-            code: "backend_error",
-            message: err instanceof Error ? err.message : String(err),
-          },
-    };
-  }
-  clearTimeout(timer);
-
-  const text = await resp.text();
-  if (!resp.ok) {
-    log.warn(
-      {
-        backend_id: backend.id,
-        status: resp.status,
-        body_excerpt: text.slice(0, 200),
-      },
-      "rerank dispatch HTTP failure",
-    );
-    return {
-      ok: false,
-      elapsed_ms: Date.now() - start,
-      backend_id: backend.id,
-      error: {
-        code: "backend_error",
-        message: `HTTP ${resp.status}: ${text.slice(0, 300)}`,
-      },
+      error: outcome.error,
     };
   }
 
@@ -123,11 +97,11 @@ export async function dispatchRerank(
     usage?: { prompt_tokens?: number; total_tokens?: number };
   };
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(outcome.body_text);
   } catch (err) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: {
         code: "backend_error",
@@ -139,7 +113,7 @@ export async function dispatchRerank(
   if (!Array.isArray(parsed.results) || parsed.results.length === 0) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: { code: "no_results", message: "backend returned empty results" },
     };
@@ -171,7 +145,7 @@ export async function dispatchRerank(
     results,
     ...(parsed.usage !== undefined ? { usage: parsed.usage } : {}),
     ...(parsed.model !== undefined ? { model: parsed.model } : {}),
-    elapsed_ms: Date.now() - start,
+    elapsed_ms: outcome.elapsed_ms,
     backend_id: backend.id,
   };
 }

@@ -5,9 +5,10 @@
 // llama-server exposes /v1/embeddings (OpenAI-compat) when started with
 // `--embedding` and an embedding-capable model (e.g. bge-m3,
 // qwen3-embedding-0.6b). The SDK is text-chat only and doesn't surface
-// this endpoint; we POST directly, mirroring the vision.ts shape.
+// this endpoint; we POST directly via the shared OpenAI-compat helper.
 
 import { createLogger } from "./log.js";
+import { dispatchOpenAIPost } from "./openai-compat.js";
 import type { Backend } from "./types.js";
 
 const log = createLogger("qwen-embed");
@@ -60,7 +61,6 @@ export async function dispatchEmbed(
   texts: string[],
   opts: EmbedOpts = {},
 ): Promise<EmbedResult> {
-  const start = Date.now();
   const timeout_ms = opts.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
   const body: Record<string, unknown> = {
@@ -71,52 +71,26 @@ export async function dispatchEmbed(
     body.encoding_format = opts.encoding_format;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout_ms);
+  const outcome = await dispatchOpenAIPost(backend, "/v1/embeddings", body, {
+    timeout_ms,
+  });
 
-  let resp: Response;
-  try {
-    resp = await fetch(`${backend.url.replace(/\/$/, "")}/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    const aborted = (err as { name?: string })?.name === "AbortError";
+  if (!outcome.ok) {
+    if (outcome.status !== undefined) {
+      log.warn(
+        {
+          backend_id: backend.id,
+          status: outcome.status,
+          body_excerpt: outcome.body_text?.slice(0, 200),
+        },
+        "embed dispatch HTTP failure",
+      );
+    }
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
-      error: aborted
-        ? { code: "timeout", message: `request aborted after ${timeout_ms}ms` }
-        : {
-            code: "backend_error",
-            message: err instanceof Error ? err.message : String(err),
-          },
-    };
-  }
-  clearTimeout(timer);
-
-  const text = await resp.text();
-  if (!resp.ok) {
-    log.warn(
-      {
-        backend_id: backend.id,
-        status: resp.status,
-        body_excerpt: text.slice(0, 200),
-      },
-      "embed dispatch HTTP failure",
-    );
-    return {
-      ok: false,
-      elapsed_ms: Date.now() - start,
-      backend_id: backend.id,
-      error: {
-        code: "backend_error",
-        message: `HTTP ${resp.status}: ${text.slice(0, 300)}`,
-      },
+      error: outcome.error,
     };
   }
 
@@ -126,11 +100,11 @@ export async function dispatchEmbed(
     usage?: { prompt_tokens?: number; total_tokens?: number };
   };
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(outcome.body_text);
   } catch (err) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: {
         code: "backend_error",
@@ -142,7 +116,7 @@ export async function dispatchEmbed(
   if (!Array.isArray(parsed.data) || parsed.data.length === 0) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: { code: "no_data", message: "backend returned empty data array" },
     };
@@ -159,7 +133,7 @@ export async function dispatchEmbed(
   if (embeddings.length !== texts.length) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: {
         code: "no_data",
@@ -173,7 +147,7 @@ export async function dispatchEmbed(
     embeddings,
     ...(parsed.usage !== undefined ? { usage: parsed.usage } : {}),
     ...(parsed.model !== undefined ? { model: parsed.model } : {}),
-    elapsed_ms: Date.now() - start,
+    elapsed_ms: outcome.elapsed_ms,
     backend_id: backend.id,
   };
 }
