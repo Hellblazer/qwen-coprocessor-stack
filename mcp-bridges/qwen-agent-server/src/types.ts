@@ -407,6 +407,17 @@ export interface OneshotResult {
    * without having to time the call themselves.
    */
   elapsed_ms: number;
+  /**
+   * Thread id for cross-call context continuity. Present when the
+   * caller passed `opts.continuation_id` OR when the supervisor minted
+   * a new id (always emitted so the caller can chain). Pass this back
+   * as `opts.continuation_id` on the next `qwen_oneshot` or
+   * `qwen_oneshot_vision` call to prepend prior turns.
+   *
+   * Threads live in-process only (3h TTL, 20-turn cap). Restart-safe is
+   * not v1.
+   */
+  continuation_id?: string;
 }
 
 /**

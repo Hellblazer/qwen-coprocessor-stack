@@ -99,6 +99,8 @@ export interface VisionOneshotResult {
   elapsed_ms: number;
   /** Backend that served the request. */
   backend_id: string;
+  /** Thread id for cross-call context continuity; see OneshotResult. */
+  continuation_id?: string;
   error?: {
     code:
       | "timeout"
@@ -166,6 +168,7 @@ export async function dispatchVisionOneshot(
   task: string,
   images: VisionImageInput[],
   opts: VisionOneshotOpts = {},
+  prior_messages: ReadonlyArray<{ role: "user" | "assistant"; content: string }> = [],
 ): Promise<VisionOneshotResult> {
   const start = Date.now();
   const timeout_ms = opts.timeout_ms ?? DEFAULT_TIMEOUT_MS;
@@ -192,6 +195,12 @@ export async function dispatchVisionOneshot(
   const messages: Array<Record<string, unknown>> = [];
   if (opts.system) {
     messages.push({ role: "system", content: opts.system });
+  }
+  // Prior turns from a continuation thread, oldest-first. v1 carries
+  // only text; images from prior vision turns get a placeholder in the
+  // formatter.
+  for (const m of prior_messages) {
+    messages.push({ role: m.role, content: m.content });
   }
   messages.push({
     role: "user",
