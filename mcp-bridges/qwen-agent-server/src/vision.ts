@@ -19,6 +19,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createLogger } from "./log.js";
+import { dispatchOpenAIPost } from "./openai-compat.js";
 import type { Backend } from "./types.js";
 
 const log = createLogger("qwen-vision");
@@ -63,17 +64,10 @@ export interface VisionOneshotOpts {
    *  task-shaped, not chain-of-thought). */
   no_think?: boolean;
   /**
-   * GBNF grammar string passed through to llama-server's `grammar`
-   * request field. Forces token-by-token output conformance at
-   * decode time — strictly stronger than the post-hoc validation
-   * `json_schema` performs. Use when the caller needs guaranteed
-   * conformance to a non-JSON pattern, or when JSON-schema
-   * validation has been observed to fail under thinking-mode
-   * reasoning (the model emits prose that doesn't parse).
-   *
-   * When BOTH `grammar` and `json_schema` are set, the supervisor
-   * emits both fields; llama-server picks one (typically grammar
-   * takes precedence). Most callers will use one or the other.
+   * GBNF grammar string for token-by-token output enforcement (llama-server
+   * `grammar` field). Strictly stronger than json_schema (which is
+   * post-hoc validated). Use for non-JSON constrained output or when
+   * json_schema validation has been observed to fail.
    *
    * The string must be a valid GBNF grammar — see llama.cpp
    * grammar docs. No supervisor-side validation; malformed grammars
@@ -217,63 +211,42 @@ export async function dispatchVisionOneshot(
       json_schema: { name: "output", strict: true, schema: opts.json_schema },
     };
   }
-  if (opts.grammar) {
-    // GBNF passthrough. llama-server reads this from the top-level
-    // `grammar` field on the chat-completions request body.
+  if (opts.grammar !== undefined && opts.grammar !== "") {
     body.grammar = opts.grammar;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout_ms);
+  const outcome = await dispatchOpenAIPost(backend, "/v1/chat/completions", body, {
+    timeout_ms,
+  });
 
-  let resp: Response;
-  try {
-    resp = await fetch(`${backend.url.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    const aborted = (err as { name?: string })?.name === "AbortError";
-    return {
-      ok: false,
-      elapsed_ms: Date.now() - start,
-      backend_id: backend.id,
-      error: aborted
-        ? { code: "timeout", message: `request aborted after ${timeout_ms}ms` }
-        : {
-            code: "backend_error",
-            message: err instanceof Error ? err.message : String(err),
-          },
-    };
-  }
-  clearTimeout(timer);
-
-  const text = await resp.text();
-  if (!resp.ok) {
+  if (!outcome.ok) {
     // llama-server returns the "image input is not supported" hint with
     // HTTP 500; classify that case specifically so callers can route.
     const noMmproj =
-      resp.status === 500 && /image input is not supported/i.test(text);
-    log.warn(
-      {
-        backend_id: backend.id,
-        status: resp.status,
-        no_mmproj: noMmproj,
-        body_excerpt: text.slice(0, 200),
-      },
-      "vision dispatch HTTP failure",
-    );
+      outcome.status === 500 &&
+      typeof outcome.body_text === "string" &&
+      /image input is not supported/i.test(outcome.body_text);
+    if (outcome.status !== undefined) {
+      log.warn(
+        {
+          backend_id: backend.id,
+          status: outcome.status,
+          no_mmproj: noMmproj,
+          body_excerpt: outcome.body_text?.slice(0, 200),
+        },
+        "vision dispatch HTTP failure",
+      );
+    }
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
-      error: {
-        code: noMmproj ? "backend_no_mmproj" : "backend_error",
-        message: `HTTP ${resp.status}: ${text.slice(0, 300)}`,
-      },
+      error: noMmproj
+        ? {
+            code: "backend_no_mmproj",
+            message: outcome.error.message,
+          }
+        : outcome.error,
     };
   }
 
@@ -285,11 +258,11 @@ export async function dispatchVisionOneshot(
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   };
   try {
-    body_parsed = JSON.parse(text);
+    body_parsed = JSON.parse(outcome.body_text);
   } catch (err) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: {
         code: "backend_error",
@@ -303,7 +276,7 @@ export async function dispatchVisionOneshot(
   if (typeof content !== "string") {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       ...(body_parsed.usage !== undefined ? { usage: body_parsed.usage } : {}),
       error: {
@@ -321,7 +294,7 @@ export async function dispatchVisionOneshot(
       return {
         ok: false,
         result: content,
-        elapsed_ms: Date.now() - start,
+        elapsed_ms: outcome.elapsed_ms,
         backend_id: backend.id,
         ...(body_parsed.usage !== undefined ? { usage: body_parsed.usage } : {}),
         error: {
@@ -337,7 +310,7 @@ export async function dispatchVisionOneshot(
     result: content,
     ...(parsed !== undefined ? { parsed } : {}),
     ...(body_parsed.usage !== undefined ? { usage: body_parsed.usage } : {}),
-    elapsed_ms: Date.now() - start,
+    elapsed_ms: outcome.elapsed_ms,
     backend_id: backend.id,
   };
 }

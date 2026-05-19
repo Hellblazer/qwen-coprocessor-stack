@@ -50,6 +50,33 @@ export interface Backend {
    * accepts any text/multimodal backend.
    */
   modality?: "text" | "multimodal" | "embedding" | "rerank";
+  /**
+   * Optional bearer-token credential for remote OpenAI-compatible
+   * endpoints (OpenRouter, Together, Fireworks, etc.). The supervisor
+   * sends `Authorization: Bearer <key>` on every request to this backend.
+   *
+   * Resolution priority: `api_key` literal > `api_key_env` (read from
+   * process env at request time, NOT at config-load time, so rotations
+   * apply on next request).
+   *
+   * Prefer `api_key_env` over `api_key`. Literal keys in the config file
+   * make accidental commits more likely; env-var indirection keeps the
+   * secret out of any tree the supervisor reads.
+   *
+   * Auth values are never logged. Failure messages from this backend
+   * are excerpted to ≤300 chars and may still leak short-lived
+   * provider-side error text, but never the request Authorization header.
+   */
+  api_key?: string;
+  api_key_env?: string;
+  /**
+   * Additional headers to send on every request to this backend. Useful
+   * for provider-required attribution headers (OpenRouter's
+   * `HTTP-Referer` / `X-Title`) or custom routing tags. Merged after the
+   * supervisor's built-in headers (Content-Type, Authorization), so
+   * caller-supplied entries can override defaults.
+   */
+  headers?: Record<string, string>;
 }
 
 /**

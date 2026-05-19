@@ -11,6 +11,7 @@
 // text or multimodal backend can serve this call. No new modality.
 
 import { createLogger } from "./log.js";
+import { dispatchOpenAIPost } from "./openai-compat.js";
 import type { Backend } from "./types.js";
 
 const log = createLogger("qwen-tokenize");
@@ -52,64 +53,35 @@ export async function dispatchTokenize(
   content: string,
   opts: TokenizeOpts = {},
 ): Promise<TokenizeResult> {
-  const start = Date.now();
   const timeout_ms = opts.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
   const body: Record<string, unknown> = { content };
   if (opts.add_special !== undefined) body.add_special = opts.add_special;
   if (opts.with_pieces !== undefined) body.with_pieces = opts.with_pieces;
 
-  // /tokenize sits at the root, not under /v1. Strip the /v1 suffix
-  // if the configured backend URL includes it (most do — it's the
-  // OpenAI-compat base used by chat-completions).
-  const base = backend.url.replace(/\/$/, "").replace(/\/v1$/, "");
+  // `/tokenize` sits at server root, not under /v1. The shared
+  // buildRequestUrl helper strips `/v1` from backend.url when the
+  // endpoint is non-/v1 root-relative.
+  const outcome = await dispatchOpenAIPost(backend, "/tokenize", body, {
+    timeout_ms,
+  });
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout_ms);
-
-  let resp: Response;
-  try {
-    resp = await fetch(`${base}/tokenize`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    const aborted = (err as { name?: string })?.name === "AbortError";
+  if (!outcome.ok) {
+    if (outcome.status !== undefined) {
+      log.warn(
+        {
+          backend_id: backend.id,
+          status: outcome.status,
+          body_excerpt: outcome.body_text?.slice(0, 200),
+        },
+        "tokenize dispatch HTTP failure",
+      );
+    }
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
-      error: aborted
-        ? { code: "timeout", message: `request aborted after ${timeout_ms}ms` }
-        : {
-            code: "backend_error",
-            message: err instanceof Error ? err.message : String(err),
-          },
-    };
-  }
-  clearTimeout(timer);
-
-  const text = await resp.text();
-  if (!resp.ok) {
-    log.warn(
-      {
-        backend_id: backend.id,
-        status: resp.status,
-        body_excerpt: text.slice(0, 200),
-      },
-      "tokenize dispatch HTTP failure",
-    );
-    return {
-      ok: false,
-      elapsed_ms: Date.now() - start,
-      backend_id: backend.id,
-      error: {
-        code: "backend_error",
-        message: `HTTP ${resp.status}: ${text.slice(0, 300)}`,
-      },
+      error: outcome.error,
     };
   }
 
@@ -117,11 +89,11 @@ export async function dispatchTokenize(
     tokens?: Array<number | { id?: number; piece?: string }>;
   };
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(outcome.body_text);
   } catch (err) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: {
         code: "backend_error",
@@ -133,7 +105,7 @@ export async function dispatchTokenize(
   if (!Array.isArray(parsed.tokens)) {
     return {
       ok: false,
-      elapsed_ms: Date.now() - start,
+      elapsed_ms: outcome.elapsed_ms,
       backend_id: backend.id,
       error: { code: "no_tokens", message: "backend returned no tokens field" },
     };
@@ -157,7 +129,7 @@ export async function dispatchTokenize(
     tokens: ids,
     count: ids.length,
     ...(pieces.length > 0 ? { pieces } : {}),
-    elapsed_ms: Date.now() - start,
+    elapsed_ms: outcome.elapsed_ms,
     backend_id: backend.id,
   };
 }
