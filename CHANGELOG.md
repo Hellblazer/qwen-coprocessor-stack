@@ -12,6 +12,67 @@ the **supervisor binary** (built via `npm run build` in
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-21
+
+A consolidated minor release covering everything since 0.10.0. The
+intermediate `0.10.1` in `plugin.json` was an in-tree bump that never
+shipped as a git tag — its sole fix (`61j`) is folded in below.
+
+### Added
+
+- **`qwen_embed`, `qwen_rerank`, `qwen_tokenize` MCP tools** with
+  progress notifications (`515ece0`, bead `q42`). Routed by declared
+  backend modality (`embedding` / `rerank` / `text`) via
+  `chooseBackendByModality`; bypass the SDK/Qwen-CLI pipeline and POST
+  to backend `/v1/...` directly.
+- **`continuation_id` threading** across `qwen_oneshot` and
+  `qwen_oneshot_vision` (`63fe8fc`, bead `25f`). 3 h TTL, 20-turn cap,
+  in-process only. Cross-tool threading supported — vision can
+  continue an oneshot thread (prior images replaced with
+  `[image attached in prior turn]` placeholders, v1 limitation).
+- **GBNF grammar passthrough** on `qwen_oneshot_vision`
+  (`974ed32`) via `opts.grammar`. Strictly stronger than
+  `json_schema`; emitted as llama-server's `grammar` field for
+  token-by-token constrained decoding.
+- **Backend `modality` field** plus `active_sessions` count and
+  `qwen_oneshot.elapsed_ms` reporting (`0511afa`). Backends can declare
+  `text` / `multimodal` / `embedding` / `rerank`.
+
+### Changed
+
+- **Shared OpenAI-compat dispatch helper** factored out of the vision
+  and embedding paths (`e6ea649`, bead `zaz`); also adds optional
+  `auth` / `headers` fields to `Backend` for backends that need bearer
+  tokens or custom headers.
+- **README setup uses `hf` rather than the deprecated
+  `huggingface-cli`** (`bfebbd8`, bead `q42`).
+
+### Fixed
+
+- **`chooseBackend` modality filter** (bead `w63`). The chat-dispatch
+  router (`qwen_spawn`, `qwen_oneshot`) ignored `Backend.modality`,
+  letting chat tasks land on embedding/rerank backends — those don't
+  implement `/v1/chat/completions` and the call failed immediately.
+  `qwen_oneshot_vision` shared the bug and would route to embed/rerank
+  backends, then waste a roundtrip before failing with
+  `backend_no_mmproj`. `chooseBackend` now restricts the candidate
+  pool to `modality ∈ {text, multimodal, unset}` after the explicit-
+  pin step (pin still bypasses the filter — caller authority); the
+  local-fallback step uses the same filter.
+  `qwen_oneshot_vision` switched to `chooseBackendByModality("multimodal")`
+  for correct selection and fast-failure when no multimodal backend is
+  configured.
+
+- **Upstream API error detection in `qwen_oneshot`** (bead `61j`,
+  originally bumped `plugin.json` to 0.10.1 but never tagged — folded
+  into 0.11.0). The Qwen CLI surfaces upstream HTTP / streaming / tool
+  failures by writing a bracketed sentinel (`[API Error: ...]`,
+  `[Stream Error: ...]`, `[Tool Error: ...]`) to stdout and exiting 0.
+  The supervisor was treating that as a successful turn.
+  `matchUpstreamCliError()` now detects the sentinels once the session
+  reaches idle/complete and sets `error.code='upstream_api_error'`
+  without retrying.
+
 ## [0.10.0] - 2026-05-17
 
 ### Added
