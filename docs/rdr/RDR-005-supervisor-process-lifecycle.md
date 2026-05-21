@@ -2,16 +2,31 @@
 title: "Supervisor process lifecycle — layered cleanup model"
 id: RDR-005
 type: Architecture
-status: accepted
+status: deferred
 priority: high
 author: hal
 reviewed-by: self
 created: 2026-05-20
 accepted_date: 2026-05-20
+deferred_date: 2026-05-21
 related_issues: [qwen-coprocessor-stack-huy]
 ---
 
 # RDR-005: Supervisor process lifecycle — layered cleanup model
+
+> **Status update 2026-05-21 — DEFERRED.** A1 spike (bead `huy`) refuted
+> the in-session double-spawn premise: two `/reload-plugins` cycles in a
+> live session produced zero new supervisors. A bonus `kill -9` test on a
+> parent claude process also reaped its supervisor child cleanly (stdin
+> EOF closes the child via existing Node stdio handling) — refuting the
+> Gap 2 orphan-accumulation premise as well. The "5 supervisor pile"
+> observed on 2026-05-20 was re-interpreted as 5 active claude sessions
+> with 1 supervisor each (correct 1:1 accounting), not a pile-up. Current
+> behavior handles all tested termination scenarios. Implementation beads
+> deferred. Edge cases not yet tested (`kill -STOP` parent, supervisor
+> busy in tool call when parent dies) could revive the work if they ever
+> reproduce in practice. Findings: T2 entry
+> `qwen-coprocessor-stack_rdr/005-research-02-a1-reload-spike`.
 
 > Revise during planning; lock at implementation.
 > If wrong, abandon code and iterate RDR.
