@@ -3,7 +3,8 @@
 
   "_optional_fields": [
     "default_extensions: array of extension names applied to every spawn (e.g. [\"serena\", \"context7\"]); omit to use CLI defaults. /qwen-stack:defaults manages this.",
-    "session_budget: { max_context_tokens, max_tool_calls } overriding the per-backend default. Omit to let the supervisor derive max_context_tokens from each chosen backend's ctx_size (floor(0.85 * ctx_size); RDR-002 v0.7). 0 at any tier means 'no cap' and is preserved as-is. /qwen-stack:budget manages this."
+    "session_budget: { max_context_tokens, max_tool_calls } overriding the per-backend default. Omit to let the supervisor derive max_context_tokens from each chosen backend's ctx_size (floor(0.85 * ctx_size); RDR-002 v0.7). 0 at any tier means 'no cap' and is preserved as-is. /qwen-stack:budget manages this.",
+    "backend.modality: optional 'text' | 'multimodal' | 'embedding' | 'rerank'. Unset = 'text'. Chat router only picks text/multimodal; qwen_oneshot_vision requires multimodal; qwen_embed/qwen_rerank require their matching modality."
   ],
 
   "backends": [
@@ -23,7 +24,26 @@
       "tier": "remote",
       "capacity": "heavy",
       "weight": 1,
-      "ctx_size": 131072
+      "ctx_size": 131072,
+      "modality": "multimodal"
+    },
+    {
+      "_comment": "Optional embedding backend (e.g. llama-server -m bge-m3.gguf --embeddings). Drop the block if you don't run one.",
+      "id": "embed-local",
+      "url": "http://localhost:8081/v1",
+      "model": "bge-m3",
+      "tier": "local",
+      "capacity": "fast",
+      "modality": "embedding"
+    },
+    {
+      "_comment": "Optional rerank backend (e.g. llama-server -m bge-reranker-v2-m3.gguf --reranking). Drop the block if you don't run one.",
+      "id": "rerank-local",
+      "url": "http://localhost:8082/v1",
+      "model": "bge-reranker-v2-m3",
+      "tier": "local",
+      "capacity": "fast",
+      "modality": "rerank"
     }
   ]
 }

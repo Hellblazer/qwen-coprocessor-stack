@@ -164,8 +164,11 @@ Config-file edits hot-apply on the next spawn — no supervisor restart.
 | `qwen_stop`      | Cancel and remove a session. Idempotent. |
 | `qwen_backends`  | List configured backends and their cached health. |
 | `qwen_sessions`  | Live overview of pooled sessions — task_id, backend, state, last-poll timestamp, turns completed, live budget counters. Read-only. |
-| `qwen_oneshot`   | Stateless single-turn dispatch: spawn → wait → optional JSON parse + retry → stop. Schema-aware where `opts.json_schema` is supplied. Drop-in for `claude -p --json-schema`-style operator dispatch. |
-| `qwen_oneshot_vision` | Stateless **multimodal** dispatch (image+text → text). Bypasses the SDK (which is text-only) and POSTs OpenAI-compat content arrays directly to a backend's `/v1/chat/completions`. Image inputs as `{path}` / `{url}` / `{base64,mime}`. Requires the backend to be running with `--mmproj` loaded — see [Multimodal support](#multimodal-support-vision) below. |
+| `qwen_oneshot`   | Stateless single-turn dispatch: spawn → wait → optional JSON parse + retry → stop. Schema-aware where `opts.json_schema` is supplied. Drop-in for `claude -p --json-schema`-style operator dispatch. Accepts `opts.continuation_id` to thread prior turns (3 h TTL, 20-turn cap, in-process; cross-tool with `qwen_oneshot_vision`). |
+| `qwen_oneshot_vision` | Stateless **multimodal** dispatch (image+text → text). Bypasses the SDK (which is text-only) and POSTs OpenAI-compat content arrays directly to a backend's `/v1/chat/completions`. Image inputs as `{path}` / `{url}` / `{base64,mime}`. Routes to backends with `modality:"multimodal"`; requires `--mmproj` loaded — see [Multimodal support](#multimodal-support-vision). Supports `opts.grammar` (GBNF passthrough) and `opts.continuation_id` (cross-tool threading with `qwen_oneshot`; images from prior turns become `[image attached in prior turn]` placeholders in v1). |
+| `qwen_embed`     | Direct embedding dispatch — POSTs to `/v1/embeddings` on a backend declared `modality:"embedding"` (e.g. bge-m3). Bypasses the SDK; emits progress notifications. Inputs as `{texts:[...]}`. |
+| `qwen_rerank`    | Direct rerank dispatch — POSTs to `/v1/rerank` on a backend declared `modality:"rerank"` (e.g. bge-reranker-v2-m3). Bypasses the SDK; emits progress notifications. Inputs as `{query, documents:[...]}`. |
+| `qwen_tokenize`  | Direct tokenize dispatch — POSTs to llama-server's `/tokenize` (NOT under `/v1`) on a text/multimodal backend; tokenizer is colocated with the loaded model. Returns `{tokens, count}` without consuming a generation slot. Inputs as `{content: "..."}`. |
 
 ## Multimodal support (vision)
 
@@ -235,6 +238,14 @@ copy it, edit the backends to match your llama-server deployment(s),
 and the slash commands (`/qwen-stack:backends`, `/qwen-stack:defaults`,
 `/qwen-stack:budget`) will manage the file from there. Edits hot-apply
 on the next `qwen_spawn` (mtime-cached); no supervisor restart needed.
+
+Backends carry an optional `modality` field — one of `text` (default
+when unset), `multimodal`, `embedding`, or `rerank`. The chat router
+(`qwen_spawn`, `qwen_oneshot`) only considers `text` / `multimodal`
+backends; `qwen_oneshot_vision` requires `multimodal`; `qwen_embed` and
+`qwen_rerank` require their matching modality. Declaring modality
+correctly is what makes a mixed pool (e.g. a chat backend + bge-m3 +
+bge-reranker) safely auto-routable.
 
 Environment variables (`QWEN_BACKENDS`, `QWEN_DEFAULT_EXTENSIONS`,
 `QWEN_MAX_CONTEXT_TOKENS`, `QWEN_MAX_TOOL_CALLS`) are honoured and
