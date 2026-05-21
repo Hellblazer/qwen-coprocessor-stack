@@ -121,6 +121,7 @@ import {
   qwenSpawnOptsSchema,
   buildSpawnOptsFromRaw,
   stripCodeFences,
+  matchUpstreamCliError,
 } from "../src/server.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -621,6 +622,44 @@ describe("MCP tool handlers", () => {
     it("does NOT strip mid-prose fenced blocks", () => {
       const input = 'here is JSON:\n```json\n{"a":1}\n```\nnice';
       expect(stripCodeFences(input)).toBe(input);
+    });
+  });
+
+  // ── matchUpstreamCliError (qwen-coprocessor-stack-61j) ──────
+  //
+  // The Qwen CLI surfaces upstream HTTP / streaming / tool failures by
+  // writing a bracketed sentinel to stdout and exiting 0. Detecting it
+  // is what turns ok:true-with-error-string into a real ok:false.
+  describe("matchUpstreamCliError", () => {
+    it("matches [API Error: ...]", () => {
+      const out = matchUpstreamCliError("[API Error: 500 logits skipped]");
+      expect(out).toBe("API Error: 500 logits skipped");
+    });
+
+    it("matches [Stream Error: ...]", () => {
+      const out = matchUpstreamCliError("[Stream Error: ECONNRESET]");
+      expect(out).toBe("Stream Error: ECONNRESET");
+    });
+
+    it("matches [Tool Error: ...]", () => {
+      const out = matchUpstreamCliError("[Tool Error: missing arg]");
+      expect(out).toBe("Tool Error: missing arg");
+    });
+
+    it("tolerates leading whitespace", () => {
+      const out = matchUpstreamCliError("   [API Error: nope]");
+      expect(out).toBe("API Error: nope");
+    });
+
+    it("returns undefined for ordinary text", () => {
+      expect(matchUpstreamCliError("42")).toBeUndefined();
+      expect(matchUpstreamCliError("Here's an answer.")).toBeUndefined();
+    });
+
+    it("does not match mid-message bracketed quotes", () => {
+      expect(
+        matchUpstreamCliError("The user reported '[API Error: x]' in the log."),
+      ).toBeUndefined();
     });
   });
 

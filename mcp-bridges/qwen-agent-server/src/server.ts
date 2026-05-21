@@ -569,6 +569,17 @@ export function createToolHandlers(
         last_error = { code: "no_result", message: "session ended with no assistant message" };
         break; // retrying won't help if model produced nothing
       }
+      // Qwen CLI passes upstream HTTP failures through to stdout as
+      // "[API Error: ...]" / "[Stream Error: ...]" / "[Tool Error: ...]"
+      // and exits 0. Without detecting these we'd report ok:true with an
+      // error string as the answer. Don't retry — upstream failures
+      // (auth, model not loaded, server-side config) won't self-heal in
+      // the next 30 s and retrying burns tokens.
+      const upstream = matchUpstreamCliError(last_result);
+      if (upstream !== undefined) {
+        last_error = { code: "upstream_api_error", message: upstream };
+        break;
+      }
       if (spawnOpts.json_schema === undefined) {
         // No schema requested → success on first reach.
         threads.append(continuation_id, { role: "user", content: task });
@@ -1340,6 +1351,26 @@ async function main(): Promise<void> {
  * fences, or multiple fenced blocks, or unbalanced fences, returns
  * the original. The retry loop in qwen_oneshot is the safety net.
  */
+// The Qwen CLI surfaces upstream HTTP / streaming / tool failures by
+// writing a bracketed sentinel to stdout and exiting 0. Without
+// recognising the shape, the supervisor would forward the error string
+// as the assistant's answer with ok:true. Match an exact-prefix sentinel
+// at the start of the trimmed message; if a model legitimately wraps
+// its own answer in a `[API Error: ...]` quote it won't be at the head
+// of the message.
+const UPSTREAM_CLI_ERROR_PREFIXES = ["[API Error:", "[Stream Error:", "[Tool Error:"] as const;
+export function matchUpstreamCliError(raw: string): string | undefined {
+  const trimmed = raw.trimStart();
+  for (const prefix of UPSTREAM_CLI_ERROR_PREFIXES) {
+    if (trimmed.startsWith(prefix)) {
+      const end = trimmed.indexOf("]");
+      const inner = end > prefix.length ? trimmed.slice(prefix.length, end).trim() : trimmed;
+      return `${prefix.slice(1, -1)}: ${inner}`.trim();
+    }
+  }
+  return undefined;
+}
+
 export function stripCodeFences(raw: string): string {
   const trimmed = raw.trim();
   // Match: optional language tag, body, closing fence. Anchored at

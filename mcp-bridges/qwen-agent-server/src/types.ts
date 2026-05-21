@@ -394,7 +394,7 @@ export interface OneshotResult {
   /** Parsed result, when json_schema was set and result was valid JSON. */
   parsed?: unknown;
   error?: {
-    code: "timeout" | "validation_failed" | "session_error" | "no_result";
+    code: "timeout" | "validation_failed" | "session_error" | "no_result" | "upstream_api_error";
     message: string;
   };
   /** Live budget at the time of return. */
