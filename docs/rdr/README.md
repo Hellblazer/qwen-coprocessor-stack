@@ -17,3 +17,4 @@ namespace) for cross-session discoverability.
 | 001 | final (implemented) | architecture | [Qwen-as-coprocessor — stateful Node MCP server with multi-backend routing](RDR-001-qwen-coprocessor-mcp-server.md) |
 | 002 | accepted            | architecture | [Extension management — exposing the inner Qwen's tool surface to the operator](RDR-002-extension-management.md) |
 | 004 | draft               | architecture | [Multi-Qwen fleet management — declarative config, tmux-as-lifecycle, mosh-attached operator UX](RDR-004-multi-qwen-fleet-management.md) |
+| 005 | accepted            | architecture | [Supervisor process lifecycle — layered cleanup model](RDR-005-supervisor-process-lifecycle.md) |
