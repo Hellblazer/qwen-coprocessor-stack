@@ -467,15 +467,26 @@ export async function chooseBackend(
 ): Promise<Backend | null> {
   if (pool.length === 0) return null;
 
-  // 1. Explicit pin
+  // 1. Explicit pin — caller knows best, bypass all filters
   if (opts.backend) {
     const pinned = pool.find((b) => b.id === opts.backend);
     return pinned ?? null;
   }
 
+  // 1b. Chat-compatibility filter — qwen_spawn / qwen_oneshot go
+  // through /v1/chat/completions, which embedding/rerank backends
+  // do not implement. Unset modality is treated as 'text'; both
+  // 'text' and 'multimodal' are accepted (multimodal models can
+  // serve text-only chat). See bead qwen-coprocessor-stack-w63.
+  const chatPool = pool.filter((b) => {
+    const m = b.modality ?? "text";
+    return m === "text" || m === "multimodal";
+  });
+  if (chatPool.length === 0) return null;
+
   // 2. Tier filter
-  let candidates = opts.tier ? pool.filter((b) => b.tier === opts.tier) : [...pool];
-  if (candidates.length === 0) candidates = [...pool]; // tier mismatch: fall back
+  let candidates = opts.tier ? chatPool.filter((b) => b.tier === opts.tier) : [...chatPool];
+  if (candidates.length === 0) candidates = [...chatPool]; // tier mismatch: fall back
 
   // 3. Capacity classification + filter
   const capacity = opts.capacity ?? classifyCapacity(prompt);
@@ -497,8 +508,8 @@ export async function chooseBackend(
     return roundRobin(`${opts.tier ?? "any"}:${capacity}`, live);
   }
 
-  // 6. No survivors after health: fall back to local
-  const local = pool.filter((b) => b.tier === "local");
+  // 6. No survivors after health: fall back to local (chat-compatible only)
+  const local = chatPool.filter((b) => b.tier === "local");
   const localHealthy = await Promise.all(
     local.map(async (b) => ({ b, healthy: await healthy_lookup(b) })),
   );

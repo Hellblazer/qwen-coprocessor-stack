@@ -1226,7 +1226,7 @@ describe("MCP tool handlers", () => {
     });
 
     it("vision handler threads prior turns into messages[] and returns continuation_id", async () => {
-      mockChooseBackend.mockResolvedValueOnce({
+      mockChooseBackendByModality.mockResolvedValueOnce({
         ...MOCK_BACKEND,
         modality: "multimodal",
       });
@@ -1249,7 +1249,7 @@ describe("MCP tool handlers", () => {
         // Follow-up vision call with continuation_id — should inject
         // prior messages into the body. Image from prior turn is NOT
         // carried forward (placeholder appended to its content).
-        mockChooseBackend.mockResolvedValueOnce({
+        mockChooseBackendByModality.mockResolvedValueOnce({
           ...MOCK_BACKEND,
           modality: "multimodal",
         });
@@ -1293,7 +1293,7 @@ describe("MCP tool handlers", () => {
       );
       const cid = first.continuation_id!;
 
-      mockChooseBackend.mockResolvedValueOnce({
+      mockChooseBackendByModality.mockResolvedValueOnce({
         ...MOCK_BACKEND,
         modality: "multimodal",
       });

@@ -343,6 +343,76 @@ describe("chooseBackend — routing algorithm", () => {
     const result = await chooseBackend(pool, { tier: "remote" }, "x", lookup);
     expect(result?.tier).toBe("local");
   });
+
+  // Bead qwen-coprocessor-stack-w63: chat dispatch must never land on
+  // an embedding/rerank backend (no /v1/chat/completions support).
+  describe("chat-modality filter", () => {
+    const embedFast: Backend = {
+      id: "embed-local",
+      url: "http://localhost:8081/v1",
+      model: "bge-m3",
+      tier: "local",
+      capacity: "fast",
+      modality: "embedding",
+    };
+    const rerankFast: Backend = {
+      id: "rerank-local",
+      url: "http://localhost:8082/v1",
+      model: "bge-reranker-v2-m3",
+      tier: "local",
+      capacity: "fast",
+      modality: "rerank",
+    };
+
+    it("excludes embedding backends from default selection", async () => {
+      const pool = [embedFast, local27];
+      for (let i = 0; i < 10; i++) {
+        const r = await chooseBackend(pool, {}, "x", allHealthy);
+        expect(r?.id).not.toBe("embed-local");
+        expect(r?.id).toBe("local-27b");
+      }
+    });
+
+    it("excludes rerank backends from default selection", async () => {
+      const pool = [rerankFast, local27];
+      for (let i = 0; i < 10; i++) {
+        const r = await chooseBackend(pool, {}, "x", allHealthy);
+        expect(r?.id).not.toBe("rerank-local");
+      }
+    });
+
+    it("returns null when pool is entirely embed/rerank", async () => {
+      const pool = [embedFast, rerankFast];
+      const r = await chooseBackend(pool, {}, "x", allHealthy);
+      expect(r).toBeNull();
+    });
+
+    it("includes multimodal backends in default selection", async () => {
+      const mm: Backend = { ...local27, id: "mm-local", modality: "multimodal" };
+      const pool = [mm];
+      const r = await chooseBackend(pool, {}, "x", allHealthy);
+      expect(r?.id).toBe("mm-local");
+    });
+
+    it("explicit pin to embedding backend still returns it (caller authority)", async () => {
+      const pool = [embedFast, local27];
+      const r = await chooseBackend(
+        pool,
+        { backend: "embed-local" },
+        "x",
+        allHealthy,
+      );
+      expect(r?.id).toBe("embed-local");
+    });
+
+    it("local-fallback step also respects chat-modality filter", async () => {
+      // Remote chat backend down, local embed up — must NOT fall back to embed.
+      const pool = [remote35, embedFast];
+      const lookup = async (b: Backend): Promise<boolean> => b.id === "embed-local";
+      const r = await chooseBackend(pool, {}, "x", lookup);
+      expect(r).toBeNull();
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────

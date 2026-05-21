@@ -28,7 +28,6 @@ import type {
   SpawnResult,
 } from "./types.js";
 import {
-  chooseBackend,
   chooseBackendByModality,
   getCachedHealth,
   refreshPoolBackends,
@@ -672,13 +671,15 @@ export function createToolHandlers(
       };
     }
 
-    // Use the same backend selection as qwen_spawn — chooseBackend
-    // takes a SpawnOpts; cast to its expected shape with just the
-    // fields that matter (backend pin, tier, capacity).
-    const spawnOptsForRouting = {
-      ...(opts?.backend !== undefined ? { backend: opts.backend } : {}),
-    } as SpawnOpts;
-    const backend = await chooseBackend(pool.backends, spawnOptsForRouting, task);
+    // Vision requires a backend whose loaded model can accept image
+    // inputs (llama-server with --mmproj). Route by modality directly
+    // rather than through chooseBackend (which targets text chat).
+    // See bead qwen-coprocessor-stack-w63.
+    const backend = await chooseBackendByModality(
+      pool.backends,
+      "multimodal",
+      opts?.backend,
+    );
     if (!backend) {
       return {
         ok: false,
@@ -688,7 +689,7 @@ export function createToolHandlers(
           code: "backend_error",
           message: opts?.backend
             ? `no backend matches pin "${opts.backend}"`
-            : "no eligible backends in pool",
+            : "no multimodal backends configured (need modality:'multimodal')",
         },
       };
     }
