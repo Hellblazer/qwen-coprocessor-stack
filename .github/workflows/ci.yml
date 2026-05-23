@@ -1,0 +1,43 @@
+# MCP supervisor build + unit-test gate. Triggered on every push to main
+# and every PR targeting main. Integration tests under tests/integration/
+# require a live llama-server backend and are excluded by the supervisor's
+# `npm test` script (see package.json:scripts.test).
+#
+# Bead: qwen-coprocessor-stack-rg6. Motivated by the gbi poll-cursor
+# regression — a numeric/lexicographic boundary bug that the test suite
+# already had hooks to catch, but no automated gate ever ran the suite
+# on a PR.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  supervisor:
+    name: supervisor build + unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-bridges/qwen-agent-server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mcp-bridges/qwen-agent-server/package-lock.json
+
+      - name: install
+        run: npm ci
+
+      - name: typecheck + build
+        run: npm run build
+
+      - name: unit tests
+        run: npm test
