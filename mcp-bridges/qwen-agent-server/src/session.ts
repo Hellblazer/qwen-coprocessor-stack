@@ -350,12 +350,15 @@ export class QwenSession {
     const maxEvents = opts.max_events ?? DEFAULT_MAX_EVENTS;
     const since = opts.since;
 
-    // Find events after the cursor.
+    // Find events after the cursor. Event IDs are numeric strings
+    // (String(++_eventSeq)) — compare numerically to avoid the lexicographic
+    // 9→10 boundary trap where "10" < "9" silently breaks incremental polling.
+    const sinceNum = since !== undefined ? Number(since) : undefined;
     let slice: Event[];
-    if (since === undefined) {
+    if (sinceNum === undefined) {
       slice = this._events.slice(-maxEvents);
     } else {
-      const startIdx = this._events.findIndex((e) => e.id > since);
+      const startIdx = this._events.findIndex((e) => Number(e.id) > sinceNum);
       if (startIdx === -1) {
         slice = [];
       } else {
@@ -365,9 +368,9 @@ export class QwenSession {
     }
 
     const hasMore =
-      since !== undefined
+      sinceNum !== undefined
         ? (() => {
-            const startIdx = this._events.findIndex((e) => e.id > since);
+            const startIdx = this._events.findIndex((e) => Number(e.id) > sinceNum);
             return startIdx !== -1 && this._events.slice(startIdx).length > maxEvents;
           })()
         : this._events.length > maxEvents;

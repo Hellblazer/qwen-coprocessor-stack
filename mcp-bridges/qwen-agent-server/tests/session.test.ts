@@ -702,6 +702,47 @@ describe("QwenSession", () => {
       expect(polled.recent_events.length).toBe(2);
       expect(polled.more_events_available).toBe(true);
     });
+
+    it("since cursor advances correctly across the 9→10 numeric boundary", async () => {
+      // Event IDs are minted as String(++_eventSeq). Lexicographic compare
+      // would make "10" < "9", silently terminating incremental poll once
+      // the sequence crossed ten. Generate 12 events and walk the cursor
+      // one-at-a-time across the boundary; every step must yield exactly
+      // one new event.
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      const canUseTool = capturedOptions?.canUseTool!;
+
+      for (let i = 0; i < 12; i++) {
+        await canUseTool("write_file", { idx: i }, { signal: new AbortController().signal });
+      }
+
+      const all = session.poll({ max_events: 100 });
+      expect(all.recent_events.length).toBe(12);
+      const ids = all.recent_events.map((e) => e.id);
+      expect(ids).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]);
+
+      // Walk the cursor: at each step we should pick up exactly the next ID.
+      let cursor = "8";
+      for (const expected of ["9", "10", "11", "12"]) {
+        const step = session.poll({ since: cursor, max_events: 1 });
+        expect(step.recent_events.length).toBe(1);
+        expect(step.recent_events[0]!.id).toBe(expected);
+        cursor = step.recent_events[0]!.id;
+      }
+
+      // After consuming ID 12, no more events remain.
+      const tail = session.poll({ since: "12", max_events: 10 });
+      expect(tail.recent_events.length).toBe(0);
+      expect(tail.more_events_available).toBe(false);
+
+      // And from cursor "9" with a wide window, ids 10–12 must all surface.
+      const wide = session.poll({ since: "9", max_events: 100 });
+      expect(wide.recent_events.map((e) => e.id)).toEqual(["10", "11", "12"]);
+      expect(wide.more_events_available).toBe(false);
+    });
   });
 
   // ── stop() ──────────────────────────────────────────────────
