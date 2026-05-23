@@ -13,6 +13,7 @@
 //   qwen_backends — list backend health
 
 import { createLogger } from "./log.js";
+import { SUPERVISOR_VERSION } from "./version.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
@@ -1015,7 +1016,7 @@ async function main(): Promise<void> {
 
   const mcpServer = new McpServer({
     name: "qwen-agent-server",
-    version: "0.0.1",
+    version: SUPERVISOR_VERSION,
   });
 
   // ── Register tools with Zod schemas ───────────────────────
