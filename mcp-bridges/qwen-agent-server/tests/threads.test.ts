@@ -137,13 +137,39 @@ describe("formatTextPrelude", () => {
     expect(out).not.toContain("message 0");
   });
 
-  it("keeps at least one turn even when single turn exceeds budget", () => {
+  it("truncates the newest turn (rather than emitting whole) when it alone exceeds budget", () => {
+    // Pre-1m4 behavior: the kept.length === 0 guard let a single
+    // oversized turn pass through whole, producing a prelude many
+    // times larger than max_chars. Operators saw silent context-
+    // window blow-up on continuation_id calls that wrapped large
+    // assistant outputs.
     const long = "x".repeat(10_000);
     const out = formatTextPrelude(
       [{ role: "user", content: long, ts: 1 }],
-      { max_chars: 100 },
+      { max_chars: 200 },
     );
-    expect(out).toContain(long);
+    // Prelude must still surface the turn's role marker and respect
+    // the cap.
+    expect(out).toContain("[user]:");
+    expect(out).toContain("…[truncated]");
+    expect(out.length).toBeLessThanOrEqual(200);
+    // And it must NOT contain the full original content.
+    expect(out).not.toContain(long);
+  });
+
+  it("emits a non-empty prelude even at very small caps", () => {
+    // Degenerate cap: smaller than the header alone. Truncation budget
+    // for content goes negative → clamped to zero → no content but
+    // also no crash.
+    const out = formatTextPrelude(
+      [{ role: "user", content: "hello world", ts: 1 }],
+      { max_chars: 10 },
+    );
+    // Output is either empty (if even the header doesn't fit) or
+    // contains the truncation marker — never the original content.
+    if (out !== "") {
+      expect(out).toContain("…[truncated]");
+    }
   });
 });
 

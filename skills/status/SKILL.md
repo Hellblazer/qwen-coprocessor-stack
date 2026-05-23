@@ -13,7 +13,8 @@ Single-screen sanity check for the whole stack. Read-only — never writes anyth
 
 ### 1. Plugin version + repo state
 
-- `cat /path/to/repo/.claude-plugin/plugin.json` — read `name`, `version`. Repo path is `/Users/hal.hildebrand/git/qwen-coprocessor-stack` for this operator; if you don't know it, infer from `pgrep -f qwen-agent-server/dist/server.js | head -1 | xargs -I{} ps -p {} -o args=` and back out the repo root from the `dist/server.js` path.
+- Resolve the repo root: `pgrep -f qwen-agent-server/dist/server.js | head -1 | xargs -I{} ps -p {} -o args=` and back out the repo root from the `dist/server.js` path (strip the `mcp-bridges/qwen-agent-server/dist/server.js` suffix). If the supervisor isn't running, fall back to `git rev-parse --show-toplevel` from the user's current cwd (only useful when they're inside the repo).
+- `cat <repo>/.claude-plugin/plugin.json` — read `name`, `version`.
 - `git -C <repo> log -1 --format='%h %s (%cr)'` for the current commit.
 - Optional: `git -C <repo> status --short | head -3` if dirty (note as "uncommitted local changes").
 

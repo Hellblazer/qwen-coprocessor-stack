@@ -333,7 +333,17 @@ export class QwenSession {
     this._inputClosed = true;
     this._abortController.abort();
     if (this._sdkIter) {
-      void this._sdkIter.return?.();
+      // AbortController.abort() is the real cancel signal; this
+      // return() is belt-and-suspenders. If the SDK ever makes it
+      // async-and-failable, surface the rejection in the structured
+      // log instead of letting it bubble to unhandledRejection (which
+      // can terminate the process in newer Node versions).
+      this._sdkIter.return?.().catch((err: unknown) => {
+        log.warn(
+          { task_id: this.task_id, err: err instanceof Error ? err.message : String(err) },
+          "sdkIter.return() rejected during stop()",
+        );
+      });
     }
     this._wakeInput();
     if (this._state !== "error") {
@@ -440,6 +450,14 @@ export class QwenSession {
     };
   }
 
+  // Single-slot resolver. The current send() → _wakeInput() →
+  // _inputGenerator-resumes chain is race-free because JS micro-task
+  // ordering guarantees the generator awakens (and drops the resolver
+  // back to null) before any second send() can fire-and-set it.
+  // If send() ever becomes async, or a message-batch API is added, this
+  // single-slot design must become a queue of resolvers or a proper
+  // semaphore — otherwise back-to-back wakes between yields silently
+  // collapse to one.
   private _wakeInput(): void {
     if (this._inputResolver) {
       const resolve = this._inputResolver;

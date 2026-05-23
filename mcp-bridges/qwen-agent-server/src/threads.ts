@@ -199,16 +199,36 @@ export function formatTextPrelude(
   let total = 0;
   const header = "Prior conversation:\n";
   const footer = "\n\nCurrent task:\n";
+  // Char budget reserved for the actual prior-turn content, excluding
+  // the header and footer scaffold. Truncation marker accounts for the
+  // "…[truncated]" tail we append when shortening the single newest
+  // turn so the overall prelude still respects the cap.
+  const TRUNCATION_MARKER = "…[truncated]";
+  const contentBudget = Math.max(
+    0,
+    max - header.length - footer.length,
+  );
 
   for (let i = turns.length - 1; i >= 0; i--) {
     const turn = turns[i]!;
     const tag = turn.role === "user" ? "[user]" : "[assistant]";
     const attach = turn.had_images ? " [image attached]" : "";
     const block = `${tag}${attach}: ${turn.content}\n`;
-    if (total + block.length > max && kept.length > 0) {
-      // Budget exceeded; stop including older turns. Keep at least the
-      // most recent one even when over budget so the prelude is
-      // non-empty.
+    if (total + block.length > contentBudget) {
+      if (kept.length === 0) {
+        // The newest turn alone exceeds the cap. Keep continuity by
+        // truncating it rather than emitting it whole — emitting whole
+        // would silently inflate the next prompt by potentially many
+        // multiples of `max`, and the operator-visible cap would be
+        // a lie. (Round-2 critique bead 1m4.)
+        const prefix = `${tag}${attach}: `;
+        const room = Math.max(0, contentBudget - prefix.length - TRUNCATION_MARKER.length - 1);
+        const truncatedBlock = `${prefix}${turn.content.slice(0, room)}${TRUNCATION_MARKER}\n`;
+        kept.push(truncatedBlock);
+        total += truncatedBlock.length;
+      }
+      // Either we just truncated the newest turn, or we already had at
+      // least one turn kept — stop including older turns in both cases.
       break;
     }
     kept.push(block);

@@ -41,3 +41,13 @@ jobs:
 
       - name: unit tests
         run: npm test
+
+      # Integration tests skip gracefully when llama-server isn't
+      # reachable on :8080 (see backendAvailable guard in
+      # tests/integration/*). Pin 4 of sdk-behavior (the wrapper
+      # bridge) runs unconditionally — that's the load-bearing CI
+      # signal here: it catches regressions in QueryOptions.env
+      # threading and pathToQwenExecutable handling that the unit
+      # mock can't model. (Bead 1m4.)
+      - name: integration tests (wrapper bridge always runs, llama tests skip)
+        run: npm run test:integration

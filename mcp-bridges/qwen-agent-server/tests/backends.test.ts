@@ -203,6 +203,27 @@ describe("approxTokens / classifyCapacity", () => {
     expect(approxTokens("   ")).toBe(0);
   });
 
+  it("applies a chars/4 floor on whitespace-poor input (dense blob)", () => {
+    // Pre-1m4: trimmed.split(/\s+/).length counted a 10KB base64-style
+    // blob with zero whitespace as 1 word → 1.3 tokens. The dense input
+    // sailed past the heavy threshold and routed to fast.
+    const dense = "x".repeat(10_000);
+    expect(approxTokens(dense)).toBe(2_500); // chars/4 = 10000/4
+  });
+
+  it("classifies a whitespace-poor 10KB blob as heavy via the chars/4 floor", () => {
+    const dense = "x".repeat(10_000);
+    expect(classifyCapacity(dense)).toBe("heavy");
+  });
+
+  it("takes the max of word-count and chars/4 (whichever is larger)", () => {
+    // Verbose English: word-count wins.
+    const verbose = "lots of words separated by single spaces here";
+    const wordEst = Math.round(verbose.split(/\s+/).length * 1.3);
+    const charEst = Math.round(verbose.length / 4);
+    expect(approxTokens(verbose)).toBe(Math.max(wordEst, charEst));
+  });
+
   it("classifies short prompts as fast", () => {
     expect(classifyCapacity("fix this typo")).toBe("fast");
   });

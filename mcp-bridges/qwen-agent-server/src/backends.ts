@@ -282,13 +282,20 @@ export function loadBackends(): Backend[] {
 // Capacity classification
 
 /**
- * Approx token count via a 1.3× word-count heuristic. NOT tiktoken —
- * the threshold is a routing hint, not a billing number.
+ * Approx token count via a 1.3× word-count heuristic, floored by a
+ * chars/4 estimate so whitespace-poor inputs (base64 blobs, minified
+ * code, packed JSON) don't silently classify as fast when they're
+ * actually heavy. The chars/4 floor matches the budget enforcer's
+ * estimate so routing and budgeting agree on input size.
+ * NOT tiktoken — the threshold is a routing hint, not a billing
+ * number. (Round-2 critique bead 1m4.)
  */
 export function approxTokens(text: string): number {
   const trimmed = text?.trim() ?? "";
   if (trimmed === "") return 0;
-  return Math.round(trimmed.split(/\s+/).length * 1.3);
+  const wordEstimate = trimmed.split(/\s+/).length * 1.3;
+  const charEstimate = trimmed.length / 4;
+  return Math.round(Math.max(wordEstimate, charEstimate));
 }
 
 /**
