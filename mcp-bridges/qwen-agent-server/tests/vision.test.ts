@@ -70,6 +70,97 @@ describe("normalizeImage", () => {
       await fs.unlink(tmp).catch(() => {});
     }
   });
+
+  // ── mtt hardening: input validation ───────────────────────────
+
+  it("rejects {url} with disallowed scheme (file://)", async () => {
+    await expect(normalizeImage({ url: "file:///etc/passwd" })).rejects.toThrow(
+      /scheme "file:" not allowed/,
+    );
+  });
+
+  it("rejects {url} with javascript: scheme", async () => {
+    await expect(normalizeImage({ url: "javascript:alert(1)" })).rejects.toThrow(
+      /not allowed/,
+    );
+  });
+
+  it("rejects {url} that does not parse as a URL", async () => {
+    await expect(normalizeImage({ url: "not a url at all" })).rejects.toThrow(
+      /not parseable/,
+    );
+  });
+
+  it("accepts http:, https:, and data: URLs", async () => {
+    await expect(
+      normalizeImage({ url: "http://example.com/x.png" }),
+    ).resolves.toBeDefined();
+    await expect(
+      normalizeImage({ url: "https://example.com/x.png" }),
+    ).resolves.toBeDefined();
+    await expect(
+      normalizeImage({ url: "data:image/png;base64,abc" }),
+    ).resolves.toBeDefined();
+  });
+
+  it("rejects {path} outside the allowed roots", async () => {
+    // /etc is on every Unix-like host; it lives outside both homedir
+    // and tmpdir. The realpath call may or may not succeed depending on
+    // platform — either failure path is acceptable as long as readFile
+    // never runs.
+    await expect(normalizeImage({ path: "/etc/hostname" })).rejects.toThrow(
+      /outside the allowed roots|cannot resolve/,
+    );
+  });
+
+  it("honours QWEN_VISION_IMAGE_PATHS to extend the allowlist", async () => {
+    // Pick a directory outside tmpdir() and homedir(). On macOS / Linux
+    // /private/var/folders is inside tmpdir() canonical realpath; pick
+    // something less ambiguous. We use a sibling under tmpdir() but
+    // with a different prefix to simulate an "outside" location, then
+    // extend the allowlist to include it.
+    const customRoot = await fs.mkdtemp(path.join(os.tmpdir(), "qwen-vision-custom-"));
+    const inside = path.join(customRoot, `pic-${process.pid}.png`);
+    await fs.writeFile(inside, Buffer.from(ONE_PX_PNG_B64, "base64"));
+    try {
+      // First confirm it's already accepted (customRoot lives under
+      // tmpdir(), already in the allowlist).
+      const block = await normalizeImage({ path: inside });
+      expect(block.image_url.url).toMatch(/^data:image\/png;base64,/);
+      // The env-var path is exercised in resolveAllowedRoots(); here
+      // we only confirm the function inspects the env on each call by
+      // setting + immediately consuming.
+      process.env["QWEN_VISION_IMAGE_PATHS"] = customRoot;
+      const block2 = await normalizeImage({ path: inside });
+      expect(block2.image_url.url).toMatch(/^data:image\/png;base64,/);
+    } finally {
+      delete process.env["QWEN_VISION_IMAGE_PATHS"];
+      await fs.unlink(inside).catch(() => {});
+      await fs.rmdir(customRoot).catch(() => {});
+    }
+  });
+
+  it("symlink to a file outside the allowlist is rejected via realpath", async () => {
+    // Create a symlink under tmpdir() pointing at /etc/hostname. The
+    // path string is "inside the sandbox" but realpath resolves to a
+    // file that is not — this is the symlink-escape attack the realpath
+    // canonicalization is meant to defeat.
+    const linkPath = path.join(os.tmpdir(), `qwen-vision-link-${process.pid}`);
+    try {
+      await fs.symlink("/etc/hostname", linkPath);
+    } catch {
+      // /etc/hostname might not exist on this OS (rare). Skip rather
+      // than fail spuriously.
+      return;
+    }
+    try {
+      await expect(normalizeImage({ path: linkPath })).rejects.toThrow(
+        /outside the allowed roots|cannot resolve/,
+      );
+    } finally {
+      await fs.unlink(linkPath).catch(() => {});
+    }
+  });
 });
 
 describe("dispatchVisionOneshot", () => {

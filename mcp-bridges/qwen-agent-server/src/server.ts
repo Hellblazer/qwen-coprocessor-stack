@@ -694,6 +694,23 @@ export function createToolHandlers(
         },
       };
     }
+    // Pin bypasses the modality filter in chooseBackendByModality so the
+    // caller's authority is respected — but for vision the upstream will
+    // fail with the misleading "image input is not supported" hint
+    // (surfaced as backend_no_mmproj after a roundtrip). Reject the
+    // mismatch upfront with a specific code. Matches the
+    // qwen_embed/qwen_rerank pattern at the equivalent sites below.
+    if (opts?.backend !== undefined && (backend.modality ?? "text") !== "multimodal") {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: backend.id,
+        error: {
+          code: "wrong_modality",
+          message: `backend "${backend.id}" has modality=${backend.modality ?? "text"}, not 'multimodal'`,
+        },
+      };
+    }
 
     const dispatchOpts: VisionOneshotOpts = { ...opts };
     delete (dispatchOpts as { backend?: unknown }).backend;

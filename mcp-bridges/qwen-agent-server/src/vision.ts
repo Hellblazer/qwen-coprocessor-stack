@@ -16,13 +16,73 @@
 // at HTTP 500. The supervisor surfaces this as `error.code="backend_no_mmproj"`
 // so callers can route around or fail cleanly.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createLogger } from "./log.js";
 import { dispatchOpenAIPost } from "./openai-compat.js";
 import type { Backend } from "./types.js";
 
 const log = createLogger("qwen-vision");
+
+// ─────────────────────────────────────────────────────────────────
+// Input validation (bead qwen-coprocessor-stack-mtt)
+//
+// Pre-mtt: normalizeImage did fs.readFile(input.path) on caller-
+// supplied paths with zero sandboxing, and forwarded {url} inputs
+// to the backend with zero scheme validation. Single-operator local
+// use is self-harm only, but the moment the plugin runs in a shared
+// or non-trusting MCP-client setting, both surfaces become arbitrary
+// file read / SSRF assist. This module enforces an allowlist on both.
+
+/** Schemes acceptable for {url} inputs. http(s) and data: are what
+ *  llama-server's mmproj path is actually known to accept; file:,
+ *  javascript:, etc. should never reach the backend. */
+const ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "data:"]);
+
+/** Default path roots for {path} inputs. Operators can extend this set
+ *  via the QWEN_VISION_IMAGE_PATHS env var (colon-separated absolute
+ *  paths). The defaults cover the two common drop-zones — the user's
+ *  home directory (screenshots, downloads, image collections) and
+ *  os.tmpdir() (clipboard / pasted-image pipelines). */
+function resolveAllowedRoots(): string[] {
+  const roots = new Set<string>();
+  const tmp = fs_realpathSync(os.tmpdir());
+  const home = fs_realpathSync(os.homedir());
+  if (tmp) roots.add(tmp);
+  if (home) roots.add(home);
+
+  const extra = process.env["QWEN_VISION_IMAGE_PATHS"];
+  if (extra && extra.trim() !== "") {
+    for (const p of extra.split(":")) {
+      const trimmed = p.trim();
+      if (trimmed === "") continue;
+      const real = fs_realpathSync(trimmed);
+      if (real) roots.add(real);
+    }
+  }
+  return [...roots];
+}
+
+/** Synchronously realpath a directory, returning undefined on any
+ *  error (path doesn't exist, permission denied, etc.). Used at root-
+ *  resolution time so we never include a non-canonicalized prefix in
+ *  the allowlist (which would let symlink trickery escape the sandbox). */
+function fs_realpathSync(p: string): string | undefined {
+  try {
+    return realpathSync(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/** True if `child` (already realpath'd) is inside `parent` (already
+ *  realpath'd). Uses path.relative so we get cross-platform separator
+ *  handling without manual slicing. */
+function isInside(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
 
 /**
  * One image input. Discriminated union over the three normal shapes a
@@ -108,7 +168,8 @@ export interface VisionOneshotResult {
       | "backend_no_mmproj"
       | "backend_error"
       | "no_choices"
-      | "image_read_failed";
+      | "image_read_failed"
+      | "wrong_modality";
     message: string;
   };
 }
@@ -143,6 +204,22 @@ export async function normalizeImage(
   input: VisionImageInput,
 ): Promise<{ type: "image_url"; image_url: { url: string } }> {
   if ("url" in input) {
+    // Reject anything outside the http(s)/data: allowlist. Past `file:`,
+    // `javascript:`, custom schemes etc. would be forwarded to llama-
+    // server, which might not handle them cleanly — and `file:` in
+    // particular invites local-file disclosure if the backend ever
+    // implements remote-fetch.
+    let scheme: string;
+    try {
+      scheme = new URL(input.url).protocol;
+    } catch {
+      throw new Error(`invalid image URL (not parseable): ${input.url.slice(0, 80)}`);
+    }
+    if (!ALLOWED_URL_SCHEMES.has(scheme)) {
+      throw new Error(
+        `image URL scheme "${scheme}" not allowed (permitted: http, https, data)`,
+      );
+    }
     return { type: "image_url", image_url: { url: input.url } };
   }
   if ("base64" in input) {
@@ -151,9 +228,26 @@ export async function normalizeImage(
       image_url: { url: `data:${input.mime};base64,${input.base64}` },
     };
   }
-  // path
-  const buf = await fs.readFile(input.path);
-  const mime = input.mime ?? inferMimeFromPath(input.path);
+  // {path}: resolve via realpath (defeats symlink escape) then verify
+  // the canonical path lives under at least one allowlisted root.
+  // Operators can extend the root set via QWEN_VISION_IMAGE_PATHS;
+  // anything outside is rejected before fs.readFile runs.
+  let realPath: string;
+  try {
+    realPath = await fs.realpath(input.path);
+  } catch (err) {
+    throw new Error(
+      `cannot resolve image path "${input.path}": ${(err as Error).message}`,
+    );
+  }
+  const roots = resolveAllowedRoots();
+  if (!roots.some((r) => isInside(realPath, r))) {
+    throw new Error(
+      `image path "${input.path}" resolves to "${realPath}" which is outside the allowed roots (${roots.join(", ") || "<none configured>"}); set QWEN_VISION_IMAGE_PATHS to extend`,
+    );
+  }
+  const buf = await fs.readFile(realPath);
+  const mime = input.mime ?? inferMimeFromPath(realPath);
   const b64 = buf.toString("base64");
   return { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } };
 }

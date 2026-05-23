@@ -1322,5 +1322,31 @@ describe("MCP tool handlers", () => {
         fetchSpy.mockRestore();
       }
     });
+
+    it("vision wrong_modality: pin to text backend fails fast without HTTP roundtrip", async () => {
+      // Bead mtt: chooseBackendByModality honours the explicit pin and
+      // returns whatever backend has that id. For vision, a text-only
+      // backend would then fail at the backend with the misleading
+      // "image input is not supported" hint (surfaced as
+      // backend_no_mmproj). The handler intercepts the mismatch upfront.
+      mockChooseBackendByModality.mockResolvedValueOnce({
+        ...MOCK_BACKEND,
+        modality: "text",
+      });
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      try {
+        const result = (await handlers.qwen_oneshot_vision({
+          task: "describe",
+          images: [{ url: "data:image/png;base64,X" }],
+          opts: { backend: MOCK_BACKEND.id },
+        })) as { ok: boolean; error?: { code: string; message: string } };
+        expect(result.ok).toBe(false);
+        expect(result.error?.code).toBe("wrong_modality");
+        expect(result.error?.message).toMatch(/modality=text.*not 'multimodal'/);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
   });
 });

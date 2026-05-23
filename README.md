@@ -202,6 +202,18 @@ Note: `llama-server` silently disables `cache-reuse` in multimodal
 mode (upstream behaviour). The flag stays set in the launch
 scripts; the downgrade is logged at model-load time.
 
+**Image-input safety** (bead `mtt`). `{path}` inputs are realpath'd
+and rejected if the canonical path escapes the allowed roots —
+`os.homedir()` and `os.tmpdir()` by default. Extend with
+`QWEN_VISION_IMAGE_PATHS=path1:path2` if you store images elsewhere.
+Symlink escapes (`/tmp/link -> /etc/hostname`) fail because realpath
+runs before the allowlist check. `{url}` inputs are restricted to
+`http://`, `https://`, and `data:` schemes; `file:` and others are
+rejected at the supervisor. Pinning a non-multimodal backend via
+`opts.backend` now returns `error.code = 'wrong_modality'` upfront
+instead of round-tripping to fail with the misleading
+`backend_no_mmproj`.
+
 ## Architecture
 
 ```
