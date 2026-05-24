@@ -1,10 +1,14 @@
 # qwen-agent-server
 
-Stateful MCP supervisor that exposes a local Qwen Code inference stack as
-a set of three MCP tools (`qwen_spawn`, `qwen_poll`, `qwen_send`, `qwen_stop`,
-`qwen_backends`). The server routes tasks to one or more `@qwen-code/sdk`
-backends, maintains per-session state machines, and surfaces async results via
-a polling interface suitable for use inside Claude Code.
+Stateful MCP supervisor that exposes a local Qwen Code inference stack as a
+set of MCP tools. Stateful chat surface — `qwen_spawn`, `qwen_poll`,
+`qwen_send`, `qwen_stop`, `qwen_sessions` — manages long-lived `@qwen-code/sdk`
+sessions per task. Stateless single-turn — `qwen_oneshot`,
+`qwen_oneshot_vision` — for operator-dispatch shapes. Non-chat —
+`qwen_embed`, `qwen_rerank`, `qwen_tokenize` — POST direct to backend
+endpoints (bypass the SDK pipeline which is text-only). Lifecycle / introspection —
+`qwen_backends`, `qwen_extensions`, `qwen_reload_extensions`. See the top-level
+[README's MCP tools table](../../README.md#mcp-tools) for full per-tool detail.
 
 The server is intentionally minimal: it is a thin supervisor layer, not a
 framework. All inference happens inside Qwen Code via the SDK; the server's
@@ -136,15 +140,17 @@ list at startup by parsing `qwen extensions list` output. Drain semantics
 apply: in-flight sessions retain whatever set was resolved at their spawn
 time; cache reloads only affect future spawns. Operators who install or
 uninstall extensions while the supervisor is running can pick up the
-change via the admin tool `qwen_reload_extensions` (registered only when
-`QWEN_ADMIN_TOOLS=1` in env). See RDR-002 §Resolution-algorithm and
+change via the `qwen_reload_extensions` MCP tool. (Pre-v0.3 this was
+gated behind `QWEN_ADMIN_TOOLS=1`; the gate was removed when the slash-
+command surface took over operator-facing privileged ops — the tool is
+now registered unconditionally whenever an extensions cache is wired,
+which is always in `main()`.) See RDR-002 §Resolution-algorithm and
 §Installed-extensions cache for the full design.
 
 | Variable | Default | Description |
 |---|---|---|
 | `QWEN_REAL_BIN` | (resolved via `which qwen`) | Override for the real Qwen Code binary path. Verified at startup. |
 | `QWEN_DEFAULT_EXTENSIONS` | unset (CLI defaults apply) | Comma-list of extension names that the supervisor uses as the session-default base when `opts.extensions.only` is unset. |
-| `QWEN_ADMIN_TOOLS` | unset | Set to `1` to register the admin-only `qwen_reload_extensions` MCP tool. |
 
 ---
 

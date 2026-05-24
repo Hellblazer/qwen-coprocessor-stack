@@ -259,6 +259,16 @@ backends; `qwen_oneshot_vision` requires `multimodal`; `qwen_embed` and
 correctly is what makes a mixed pool (e.g. a chat backend + bge-m3 +
 bge-reranker) safely auto-routable.
 
+Remote OpenAI-compatible backends that need bearer auth (OpenRouter,
+Together, Fireworks, etc.) take an `api_key_env` field naming the env
+var to read at request time — rotations apply on the next request
+without a restart, and the literal key never lands in the config file.
+Use `api_key` only when an env var is impractical. Additional per-
+backend `headers` (provider attribution like OpenRouter's `HTTP-Referer`
+/ `X-Title`) merge after the supervisor's built-ins. Auth values are
+never logged. See [`config.example.json`](config.example.json) for a
+worked example.
+
 Environment variables (`QWEN_BACKENDS`, `QWEN_DEFAULT_EXTENSIONS`,
 `QWEN_MAX_CONTEXT_TOKENS`, `QWEN_MAX_TOOL_CALLS`) are honoured and
 take precedence over the file when set. See

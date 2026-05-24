@@ -4,7 +4,9 @@
   "_optional_fields": [
     "default_extensions: array of extension names applied to every spawn (e.g. [\"serena\", \"context7\"]); omit to use CLI defaults. /qwen-stack:defaults manages this.",
     "session_budget: { max_context_tokens, max_tool_calls } overriding the per-backend default. Omit to let the supervisor derive max_context_tokens from each chosen backend's ctx_size (floor(0.85 * ctx_size); RDR-002 v0.7). 0 at any tier means 'no cap' and is preserved as-is. /qwen-stack:budget manages this.",
-    "backend.modality: optional 'text' | 'multimodal' | 'embedding' | 'rerank'. Unset = 'text'. Chat router only picks text/multimodal; qwen_oneshot_vision requires multimodal; qwen_embed/qwen_rerank require their matching modality."
+    "backend.modality: optional 'text' | 'multimodal' | 'embedding' | 'rerank'. Unset = 'text'. Chat router only picks text/multimodal; qwen_oneshot_vision requires multimodal; qwen_embed/qwen_rerank require their matching modality.",
+    "backend.api_key / api_key_env: optional bearer-token credential for remote OpenAI-compat endpoints (OpenRouter, Together, Fireworks, ...). The supervisor sends 'Authorization: Bearer <key>' on every request. Prefer api_key_env (read from process env at request time, so rotations apply on next request) over api_key (literal in the config file invites accidental commits). Auth values are never logged.",
+    "backend.headers: optional Record<string,string> of additional request headers, merged after the supervisor's built-ins (Content-Type, Authorization). Useful for provider-required attribution (OpenRouter's HTTP-Referer / X-Title) or custom routing tags."
   ],
 
   "backends": [
@@ -44,6 +46,19 @@
       "tier": "local",
       "capacity": "fast",
       "modality": "rerank"
+    },
+    {
+      "_comment": "Example remote bearer-gated backend (OpenRouter / Together / Fireworks shape). Drop the block if you don't use one — shown here only to document the api_key_env + headers fields.",
+      "id": "openrouter-example",
+      "url": "https://openrouter.ai/api/v1",
+      "model": "qwen/qwen-2.5-72b-instruct",
+      "tier": "remote",
+      "capacity": "heavy",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "headers": {
+        "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
+        "X-Title": "qwen-coprocessor-stack"
+      }
     }
   ]
 }
