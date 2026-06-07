@@ -23,6 +23,7 @@
 //   the original deny-with-message path; see RDR-001 §Q1).
 //   /tmp/qwen-bridge-spike/spike.mjs (wrapper bridge proof; RDR-002).
 
+import "./epipe-guard"; // swallow benign SDK-teardown EPIPE (see module)
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { query } from "@qwen-code/sdk";
 import type { SDKMessage } from "@qwen-code/sdk";
@@ -52,28 +53,11 @@ async function isBackendReachable(): Promise<boolean> {
 
 let backendAvailable = false;
 
-// ─────────────────────────────────────────────────────────────────
-// Benign-EPIPE guard (file-scoped)
-//
-// Pin 4 deliberately spawns a wrapper that exits 42 immediately. When the
-// SDK's lazy initialize() writes its control request to the subprocess
-// stdin AFTER the wrapper has already exited, the write hits a closed pipe
-// and Node emits `write EPIPE`. That surfaces on the socket's async error
-// path as an UNCAUGHT exception — NOT as the iterator rejection Pin 4's
-// try/catch handles — so vitest records it as an unhandled error and fails
-// the run. The race is timing-dependent: fast machines see the iterator's
-// exit-42 first and never EPIPE; slower CI runners lose the race and fail
-// intermittently. The EPIPE may also land a tick after the test body
-// resolves, so the guard is file-scoped (installed for the whole file, not
-// just Pin 4's lifecycle) to catch it whenever it fires. It swallows ONLY
-// EPIPE and re-throws everything else, so real faults still fail the run.
-const epipeGuard = (err: NodeJS.ErrnoException): void => {
-  if (err?.code === "EPIPE") return; // benign: SDK wrote to a dead subprocess stdin
-  throw err;
-};
+// The benign SDK-teardown EPIPE guard now lives in ./epipe-guard (imported at
+// the top of this file) so it also covers round-trip.test.ts and any future
+// integration file that spawns the SDK.
 
 beforeAll(async () => {
-  process.on("uncaughtException", epipeGuard);
   backendAvailable = await isBackendReachable();
   if (!backendAvailable) {
     console.warn(
@@ -84,10 +68,6 @@ beforeAll(async () => {
     );
   }
 }, 10_000);
-
-afterAll(() => {
-  process.off("uncaughtException", epipeGuard);
-});
 
 // ─────────────────────────────────────────────────────────────────
 // Common query options factory
