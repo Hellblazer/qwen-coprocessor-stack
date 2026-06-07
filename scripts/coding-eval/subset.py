@@ -52,9 +52,15 @@ class Instance:
         )
 
 
-def _rank(seed: int, instance_id: str) -> str:
-    """Version-stable seeded rank key for an instance_id."""
+def rank_key(seed: int, instance_id: str) -> str:
+    """Version-stable seeded rank key for an instance_id (public; reused by the
+    variance probe). sha256("<seed>:<instance_id>") — stable across Python
+    versions and platforms."""
     return hashlib.sha256(f"{seed}:{instance_id}".encode()).hexdigest()
+
+
+# Back-compat private alias (existing internal callers / tests).
+_rank = rank_key
 
 
 def allocate(repo_counts: dict[str, int], size: int) -> dict[str, int]:
