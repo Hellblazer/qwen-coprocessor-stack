@@ -31,12 +31,38 @@ import enum
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# ── Shared clean-HOME fixture (spine infrastructure). ──────────────────────
+# The pinned clean qwen config used as $HOME so ~/.qwen has no nx extension and
+# a fixed settings.json baseline. BOTH qwen arms use it (Arm B as the CLI's
+# HOME; Arm A as the inner qwen's HOME via the supervisor's `home` spawn opt),
+# so the A/B config baseline is identical. Lives on the spine (not a peer arm)
+# so neither arm depends on the other for it.
+_HERE = Path(__file__).resolve().parent
+CLEAN_HOME = _HERE / "fixtures" / "qwen-clean"
+
+
+def ephemeral_home(clean_home: Path = CLEAN_HOME) -> Path:
+    """Copy the clean-HOME fixture into a fresh temp dir for one run.
+
+    qwen-code mutates ``$HOME/.qwen`` at runtime (rewrites settings.json, writes
+    installation_id, debug logs, .rustup). Pointing HOME straight at the
+    committed fixture pollutes it every run — and a rewritten settings.json
+    could change the tool surface mid-eval. Each run gets its own throwaway copy
+    instead; the committed fixture stays pristine and concurrent runs can't race
+    on it. Caller removes the returned dir."""
+    dest = Path(tempfile.mkdtemp(prefix="qwen-home-"))
+    shutil.copytree(clean_home, dest, dirs_exist_ok=True)
+    return dest
+
 
 # ── Shared per-arm controls (iso-config). Same for every arm. ──────────────
 MAX_TURNS = 40

@@ -235,6 +235,13 @@ export class QwenSession {
     if (opts.max_output_tokens !== undefined && opts.max_output_tokens > 0) {
       env["QWEN_CODE_MAX_OUTPUT_TOKENS"] = String(opts.max_output_tokens);
     }
+    // RDR-006 40v.13: isolate the INNER qwen's HOME (clean throwaway config)
+    // without touching the supervisor's own HOME, which resolves its backend
+    // registry. The SDK merges this env over process.env, so setting HOME here
+    // overrides the inherited one for the inner process only.
+    if (opts.home !== undefined && opts.home !== "") {
+      env["HOME"] = opts.home;
+    }
     // RDR-002 step 8: render the resolved extension set into the env
     // var the wrapper reads. envValue===null means "leave-defaults"
     // (wrapper drops --extensions). Setting QWEN_AGENT_EXTENSIONS only

@@ -80,7 +80,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import tempfile
 from pathlib import Path
 
 import materialize
@@ -94,24 +93,12 @@ DEFAULT_PREDICTIONS_PATH = Path("predictions.B.jsonl")
 OPENAI_BASE_URL = "http://qwentescence:1234/v1"
 OPENAI_API_KEY = "sk-local"
 
-# Pinned clean qwen config fixture used as $HOME so ~/.qwen/extensions is empty
-# (nx extension OFF). Committed under scripts/coding-eval/fixtures/qwen-clean/.
+# Clean-HOME fixture + per-run copy live on the spine (run_arm) so both qwen
+# arms share one definition. Re-exported here for back-compat with callers/tests
+# that reference arm_b.CLEAN_HOME / arm_b.ephemeral_home.
 HERE = Path(__file__).resolve().parent
-CLEAN_HOME = HERE / "fixtures" / "qwen-clean"
-
-
-def ephemeral_home(clean_home: Path = CLEAN_HOME) -> Path:
-    """Copy the clean-HOME fixture into a fresh temp dir for one run.
-
-    qwen-code mutates ``$HOME/.qwen`` at runtime (rewrites settings.json, writes
-    installation_id, debug logs, .rustup, etc.). Pointing HOME straight at the
-    committed fixture pollutes it on every run — and a rewritten settings.json
-    could even change Arm B's tool surface mid-eval. Each run gets its own
-    throwaway copy instead; the committed fixture stays pristine, and concurrent
-    runs can't race on it. Caller removes the returned dir."""
-    dest = Path(tempfile.mkdtemp(prefix="armb-home-"))
-    shutil.copytree(clean_home, dest, dirs_exist_ok=True)
-    return dest
+CLEAN_HOME = run_arm.CLEAN_HOME
+ephemeral_home = run_arm.ephemeral_home
 
 
 def build_argv(prompt: str) -> list[str]:

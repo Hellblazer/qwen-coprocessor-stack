@@ -211,7 +211,7 @@ def test_clean_config_home_is_applied_and_lacks_nx_extension(fake_env, tmp_path)
     # HOME is a throwaway copy under the temp dir, NOT the committed fixture.
     home = Path(env["HOME"])
     assert home != arm_b.CLEAN_HOME
-    assert "armb-home-" in home.name
+    assert "qwen-home-" in home.name
 
 
 def test_ephemeral_home_copies_fixture_and_isolates_writes(tmp_path):

@@ -39,7 +39,10 @@ supervisor-returned patch), write_prediction. Worktrees via materialize.
 from __future__ import annotations
 
 import json
+import os
 import select
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -76,7 +79,7 @@ POLL_INTERVAL_SECONDS = 2.0
 # ── qwen_spawn opts (the load-bearing dict) ─────────────────────────────────
 
 
-def build_spawn_opts(worktree: Path) -> dict[str, Any]:
+def build_spawn_opts(worktree: Path, *, home: Path | str | None = None) -> dict[str, Any]:
     """The exact opts dict sent to qwen_spawn for an Arm-A instance.
 
     * ``write_authority: true``  → supervisor sets permissionMode='yolo'
@@ -99,13 +102,24 @@ def build_spawn_opts(worktree: Path) -> dict[str, Any]:
       (default ~111000); we deliberately leave it at the default (pinning it to
       16K would prematurely abort multi-turn sessions). NOT a per-turn cap.
     """
-    return {
+    opts: dict[str, Any] = {
         "write_authority": True,
         "cwd": str(worktree),
         "extensions": {"only": []},
         "max_output_tokens": run_arm.MIN_COMPLETION_TOKENS,  # 4yx: per-turn floor parity w/ Arm B
         "max_tool_calls": 0,  # unlimited; turn budget is governed by MAX_TURNS
     }
+    # 40v.13: inner-qwen HOME isolation (clean throwaway config), forwarded by
+    # the supervisor as env.HOME on the SDK query — NOT the supervisor's own
+    # HOME (which resolves the backend registry). Gives A/B config-baseline
+    # parity (same settings.json) and stops the inner qwen polluting the
+    # operator's real ~/.qwen. Extension-disable stays belt-and-suspenders: the
+    # PRIMARY mechanism is extensions:{only:[]} (-> QWEN_AGENT_EXTENSIONS=none
+    # via the wrapper argv); the clean HOME's empty extensions dir is a redundant
+    # second guarantee, not the primary one.
+    if home is not None:
+        opts["home"] = str(home)
+    return opts
 
 
 # ── Injectable supervisor seam ──────────────────────────────────────────────
@@ -163,8 +177,6 @@ class SpawnedSupervisor:
                 f"supervisor dist not built: {dist_path} "
                 "(run `npm run build` in mcp-bridges/qwen-agent-server)"
             )
-        import os
-
         full_env = {**os.environ, **(env or {})}
         self._proc = subprocess.Popen(
             [node_bin, str(dist_path)],
@@ -175,6 +187,11 @@ class SpawnedSupervisor:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            # Own process group so close() can reap the WHOLE tree — the SDK
+            # spawns the inner qwen as a grandchild; killing only the node PID
+            # would orphan it (it keeps writing to the ephemeral HOME we are
+            # about to delete, and contends on the backend). 40v.13.
+            start_new_session=True,
         )
         self._next_id = 0
         self._initialize(startup_timeout)
@@ -293,6 +310,15 @@ class SpawnedSupervisor:
                 pass
         except ProcessLookupError:
             pass
+        # Final reap of the whole process group (the inner qwen grandchild). The
+        # supervisor's own qwen_stop should already have ended the session, but
+        # SIGKILL the group as insurance so no orphan survives close() to write
+        # into the ephemeral HOME or hold a backend slot. start_new_session=True
+        # at spawn makes the supervisor PID the group leader.
+        try:
+            os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 # ── Poll-to-terminal loop ───────────────────────────────────────────────────
@@ -374,13 +400,20 @@ def run_instance(
 
     owns_supervisor = supervisor is None
     worktree: Path | None = None
+    home: Path | None = None
     start = time.monotonic()
     try:
         worktree = materialize.materialize(instance_id, repo, base_commit)
         if supervisor is None:
             supervisor = SpawnedSupervisor()
+            # Clean throwaway HOME for the INNER qwen only — the SAME spine
+            # fixture Arm B uses (A/B config-baseline parity; stops the inner
+            # qwen reading/mutating the operator's real ~/.qwen). Passed via the
+            # spawn opt so the supervisor's OWN HOME (backend registry) is
+            # untouched.
+            home = run_arm.ephemeral_home()
 
-        opts = build_spawn_opts(worktree)
+        opts = build_spawn_opts(worktree, home=home)
         spawn_result = supervisor.spawn(prompt, opts)
         if "error" in spawn_result:
             raise SupervisorError(f"qwen_spawn error: {spawn_result['error']}")
@@ -439,10 +472,21 @@ def run_instance(
             },
         )
     finally:
+        # Each cleanup is independent: one raising must not skip the others
+        # (a flat finally would skip the temp-HOME rmtree if close() raised).
         if owns_supervisor and supervisor is not None:
-            supervisor.close()
+            try:
+                supervisor.close()
+            except Exception:  # noqa: BLE001 — best-effort reap
+                pass
         if worktree is not None:
-            materialize.cleanup(instance_id, repo)
+            try:
+                materialize.cleanup(instance_id, repo)
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                pass
+        # Remove the ephemeral HOME we created (only when we own the supervisor).
+        if home is not None:
+            shutil.rmtree(home, ignore_errors=True)
 
 
 def main() -> None:

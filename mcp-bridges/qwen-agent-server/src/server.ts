@@ -135,6 +135,10 @@ export const qwenSpawnOptsSchema = z.object({
   // the session.ts `> 0` guard (else 0 passes validation then is silently
   // dropped).
   max_output_tokens: z.number().int().positive().optional(),
+  // Inner-Qwen HOME override (40v.13). Absolute path; isolates the inner
+  // model's config from the operator's real ~/.qwen without touching the
+  // supervisor's own HOME (which resolves the backend registry).
+  home: z.string().refine(isAbsolute, { message: "home must be an absolute path" }).optional(),
   extensions: z.object({
     enable: z.array(z.string()).optional(),
     disable: z.array(z.string()).optional(),
@@ -179,6 +183,7 @@ export function buildSpawnOptsFromRaw(rawOpts: RawSpawnOpts): Partial<SpawnOpts>
     spawnOpts.extensions = ext;
   }
   if (rawOpts.cwd !== undefined) spawnOpts.cwd = rawOpts.cwd;
+  if (rawOpts.home !== undefined) spawnOpts.home = rawOpts.home;
   if (rawOpts.max_output_tokens !== undefined) spawnOpts.max_output_tokens = rawOpts.max_output_tokens;
   if (rawOpts.max_context_tokens !== undefined) spawnOpts.max_context_tokens = rawOpts.max_context_tokens;
   if (rawOpts.max_tool_calls !== undefined) spawnOpts.max_tool_calls = rawOpts.max_tool_calls;

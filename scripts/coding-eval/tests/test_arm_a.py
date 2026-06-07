@@ -161,6 +161,55 @@ def test_spawn_opts_shape():
     assert "max_context_tokens" not in opts
 
 
+def test_owns_supervisor_points_inner_qwen_at_clean_ephemeral_home(
+    monkeypatch, worktree, tmp_path
+):
+    # When run_instance owns the supervisor (no injection), it must spawn it with
+    # HOME pointed at a clean ephemeral copy (so the inner qwen doesn't read/
+    # mutate the dev's real ~/.qwen and shares Arm B's config baseline), then
+    # remove that HOME afterwards. (40v.13)
+    _patch_materialize(monkeypatch, worktree)
+    fake_home = tmp_path / "clean-home"
+    fake_home.mkdir()
+    monkeypatch.setattr(arm_a.run_arm, "ephemeral_home", lambda *a, **k: fake_home)
+    fake = FakeSupervisor(states=["complete"])
+    monkeypatch.setattr(arm_a, "SpawnedSupervisor", lambda *a, **k: fake)
+    arm_a.run_instance(
+        "psf__requests-1963",
+        rows=_rows_for("psf__requests-1963", worktree),
+        predictions_path=tmp_path / "p.jsonl",
+    )
+    # HOME is passed via the spawn opt (supervisor's own HOME untouched), so the
+    # inner qwen gets the clean config without breaking backend resolution.
+    assert fake.spawn_calls[0]["opts"]["home"] == str(fake_home)
+    assert not fake_home.exists(), "ephemeral HOME leaked"
+
+
+def test_ephemeral_home_removed_even_when_supervisor_close_raises(
+    monkeypatch, worktree, tmp_path
+):
+    # The finally must remove the temp HOME even if supervisor.close() blows up.
+    _patch_materialize(monkeypatch, worktree)
+    fake_home = tmp_path / "clean-home"
+    fake_home.mkdir()
+    monkeypatch.setattr(arm_a.run_arm, "ephemeral_home", lambda *a, **k: fake_home)
+
+    class BadCloseSup(FakeSupervisor):
+        def close(self):
+            raise RuntimeError("close blew up")
+
+    fake = BadCloseSup(states=["complete"])
+    monkeypatch.setattr(arm_a, "SpawnedSupervisor", lambda *a, **k: fake)
+    # close() failure is a best-effort-reap issue: it is swallowed (the instance
+    # result is already computed) and must NOT skip the temp-HOME cleanup.
+    arm_a.run_instance(
+        "psf__requests-1963",
+        rows=_rows_for("psf__requests-1963", worktree),
+        predictions_path=tmp_path / "p.jsonl",
+    )
+    assert not fake_home.exists(), "temp HOME leaked when close() raised"
+
+
 # ── run_instance offline (fake supervisor) ──────────────────────────────────
 
 

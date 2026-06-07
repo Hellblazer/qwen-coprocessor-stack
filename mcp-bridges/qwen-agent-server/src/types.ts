@@ -138,6 +138,16 @@ export interface SpawnOpts {
    * ignored.
    */
   max_output_tokens?: number;
+  /**
+   * HOME for the inner Qwen Code process only (forwarded as `env.HOME` on the
+   * SDK query). Lets a caller point the inner model at a clean, throwaway
+   * config home so it neither reads nor mutates the operator's real `~/.qwen`,
+   * and shares a fixed config baseline across runs — Arm A/Arm B config parity
+   * in the RDR-006 eval (40v.13). Distinct from the SUPERVISOR's own HOME,
+   * which must stay intact (the supervisor resolves its backend registry from
+   * it). Must be an absolute path. Omit to inherit the supervisor's HOME.
+   */
+  home?: string;
   /** Override or augment the inner Qwen's system prompt. */
   system?: string;
   /**

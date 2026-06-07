@@ -345,6 +345,26 @@ describe("QwenSession", () => {
       ctrl.end();
     });
 
+    it("forwards opts.home as env.HOME for the inner qwen (40v.13)", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ home: "/tmp/clean-home" }));
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["HOME"]).toBe("/tmp/clean-home");
+      ctrl.end();
+    });
+
+    it("does NOT set env.HOME when opts.home is omitted (inherits supervisor HOME)", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["HOME"]).toBeUndefined();
+      ctrl.end();
+    });
+
     it("preserves existing OPENAI_BASE_URL/OPENAI_API_KEY/QWEN_MODEL env entries", () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;
