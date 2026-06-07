@@ -79,6 +79,8 @@ git-extracted patch remains the source of truth regardless.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 import materialize
@@ -96,6 +98,20 @@ OPENAI_API_KEY = "sk-local"
 # (nx extension OFF). Committed under scripts/coding-eval/fixtures/qwen-clean/.
 HERE = Path(__file__).resolve().parent
 CLEAN_HOME = HERE / "fixtures" / "qwen-clean"
+
+
+def ephemeral_home(clean_home: Path = CLEAN_HOME) -> Path:
+    """Copy the clean-HOME fixture into a fresh temp dir for one run.
+
+    qwen-code mutates ``$HOME/.qwen`` at runtime (rewrites settings.json, writes
+    installation_id, debug logs, .rustup, etc.). Pointing HOME straight at the
+    committed fixture pollutes it on every run — and a rewritten settings.json
+    could even change Arm B's tool surface mid-eval. Each run gets its own
+    throwaway copy instead; the committed fixture stays pristine, and concurrent
+    runs can't race on it. Caller removes the returned dir."""
+    dest = Path(tempfile.mkdtemp(prefix="armb-home-"))
+    shutil.copytree(clean_home, dest, dirs_exist_ok=True)
+    return dest
 
 
 def build_argv(prompt: str) -> list[str]:
@@ -258,51 +274,61 @@ def run_instance(
     extra_test_paths = run_arm.gold_test_globs(row["test_patch"])
     prompt = run_arm.build_prompt(row["problem_statement"], repo)
     argv = build_argv(prompt)
-    env = build_env()
+    # Per-run throwaway HOME copy so qwen's runtime writes never pollute the
+    # committed clean-HOME fixture (tool surface stays fixed across the eval).
+    home = ephemeral_home()
+    env = build_env(clean_home=home)
 
-    worktree = materialize.materialize(instance_id, repo, base_commit)
+    # Nested finally: rmtree(home) ALWAYS runs — even if materialize() raises
+    # before the worktree exists, or if materialize.cleanup() raises (its
+    # `git worktree prune` is outside cleanup's own except guard). Otherwise the
+    # temp HOME leaks under /tmp across the 40-instance run.
     try:
-        outcome, returncode, stdout, _stderr, duration = runner(
-            argv,
-            timeout_seconds=run_arm.WALL_CLOCK_SECONDS,
-            cwd=worktree,
-            env=env,
-        )
-
-        telemetry = parse_telemetry(stdout)
-
-        # model_patch comes from the arm-uniform git extraction off the
-        # worktree (against base_commit) — NOT from the json envelope.
-        model_patch, contaminated = run_arm.extract_source_patch(
-            worktree,
-            extra_test_paths=extra_test_paths,
-            base=base_commit,
-        )
-
-        # The spine's runner owns TIMEOUT. For any non-timeout terminal state,
-        # funnel through the shared classify_outcome with qwen's num_turns.
-        if outcome is not run_arm.Outcome.TIMEOUT:
-            outcome = run_arm.classify_outcome(
-                returncode,
-                turns_used=telemetry.get("num_turns"),
+        worktree = materialize.materialize(instance_id, repo, base_commit)
+        try:
+            outcome, returncode, stdout, _stderr, duration = runner(
+                argv,
+                timeout_seconds=run_arm.WALL_CLOCK_SECONDS,
+                cwd=worktree,
+                env=env,
             )
 
-        run_arm.write_prediction(
-            predictions_path, instance_id, model_name, model_patch
-        )
+            telemetry = parse_telemetry(stdout)
 
-        return run_arm.RunResult(
-            instance_id=instance_id,
-            arm=ARM,
-            outcome=outcome,
-            model_patch=model_patch,
-            test_edit_contamination=contaminated,
-            duration_seconds=duration,
-            returncode=returncode,
-            telemetry=telemetry,
-        )
+            # model_patch comes from the arm-uniform git extraction off the
+            # worktree (against base_commit) — NOT from the json envelope.
+            model_patch, contaminated = run_arm.extract_source_patch(
+                worktree,
+                extra_test_paths=extra_test_paths,
+                base=base_commit,
+            )
+
+            # The spine's runner owns TIMEOUT. For any non-timeout terminal
+            # state, funnel through classify_outcome with qwen's num_turns.
+            if outcome is not run_arm.Outcome.TIMEOUT:
+                outcome = run_arm.classify_outcome(
+                    returncode,
+                    turns_used=telemetry.get("num_turns"),
+                )
+
+            run_arm.write_prediction(
+                predictions_path, instance_id, model_name, model_patch
+            )
+
+            return run_arm.RunResult(
+                instance_id=instance_id,
+                arm=ARM,
+                outcome=outcome,
+                model_patch=model_patch,
+                test_edit_contamination=contaminated,
+                duration_seconds=duration,
+                returncode=returncode,
+                telemetry=telemetry,
+            )
+        finally:
+            materialize.cleanup(instance_id, repo)
     finally:
-        materialize.cleanup(instance_id, repo)
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def main() -> None:

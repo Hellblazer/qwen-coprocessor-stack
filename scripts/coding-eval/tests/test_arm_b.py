@@ -198,8 +198,9 @@ def test_argv_requests_structured_json_and_turn_cap(fake_env, tmp_path):
 
 
 def test_clean_config_home_is_applied_and_lacks_nx_extension(fake_env, tmp_path):
-    """The pinned clean-config mechanism: HOME points at the committed fixture,
-    and that fixture genuinely lacks the nx extension (empty extensions dir)."""
+    """The pinned clean-config mechanism: HOME points at an EPHEMERAL COPY of the
+    committed fixture (so qwen's runtime writes don't pollute it), and that copy
+    genuinely lacks the nx extension (empty extensions dir)."""
     instance_id, rows, wt, _base = fake_env
     runner = _make_runner(wt, envelope=_canned_envelope())
     arm_b.run_instance(
@@ -207,18 +208,31 @@ def test_clean_config_home_is_applied_and_lacks_nx_extension(fake_env, tmp_path)
     )
     env = runner.captured["env"]
     assert env is not None
-    # HOME override points at the committed clean fixture.
+    # HOME is a throwaway copy under the temp dir, NOT the committed fixture.
     home = Path(env["HOME"])
-    assert home == arm_b.CLEAN_HOME
-    # The fixture exists and its extensions dir is empty (no nx extension dir),
-    # so qwen resolves an empty user-extensions set -> nx MCP server OFF.
-    ext_dir = home / ".qwen" / "extensions"
-    assert ext_dir.is_dir(), f"clean-config extensions dir missing: {ext_dir}"
-    ext_children = [
-        p.name for p in ext_dir.iterdir() if p.name not in {".gitkeep"}
-    ]
-    assert ext_children == [], f"clean config must have NO extensions, found {ext_children}"
-    assert not (ext_dir / "nx").exists(), "nx extension must NOT be present in clean config"
+    assert home != arm_b.CLEAN_HOME
+    assert "armb-home-" in home.name
+
+
+def test_ephemeral_home_copies_fixture_and_isolates_writes(tmp_path):
+    """ephemeral_home gives a throwaway HOME with the nx-off structure intact,
+    and writes into it never touch the committed fixture."""
+    home = arm_b.ephemeral_home()
+    try:
+        assert home != arm_b.CLEAN_HOME
+        # Same nx-off structure: pinned settings.json + empty extensions dir.
+        assert (home / ".qwen" / "settings.json").is_file()
+        ext_dir = home / ".qwen" / "extensions"
+        assert ext_dir.is_dir()
+        ext_children = [p.name for p in ext_dir.iterdir() if p.name != ".gitkeep"]
+        assert ext_children == [], f"clean config must have NO extensions, found {ext_children}"
+        assert not (ext_dir / "nx").exists()
+        # A runtime write into the copy does not mutate the committed fixture.
+        (home / ".qwen" / "installation_id").write_text("pollution")
+        assert not (arm_b.CLEAN_HOME / ".qwen" / "installation_id").exists()
+    finally:
+        import shutil
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def test_env_sets_completion_budget_at_or_above_floor(fake_env, tmp_path):
@@ -392,6 +406,70 @@ def test_cleanup_called_even_on_failure(worktree, monkeypatch, tmp_path):
             instance_id, rows=rows, runner=boom, predictions_path=tmp_path / "p.jsonl"
         )
     assert calls["cleanup"] == 1
+
+
+def _capture_ephemeral_home(monkeypatch):
+    """Wrap arm_b.ephemeral_home to record the temp HOME it hands out, so a test
+    can assert it was removed afterwards (no leak)."""
+    holder: dict = {}
+    real = arm_b.ephemeral_home
+
+    def wrapped(*a, **k):
+        h = real(*a, **k)
+        holder["home"] = h
+        return h
+
+    monkeypatch.setattr(arm_b, "ephemeral_home", wrapped)
+    return holder
+
+
+def _rows_one(base):
+    return {
+        "psf__requests-1963": {
+            "repo": "psf/requests", "base_commit": base,
+            "problem_statement": "x", "test_patch": "",
+        }
+    }
+
+
+def test_ephemeral_home_removed_when_materialize_raises(worktree, monkeypatch, tmp_path):
+    # materialize() raises BEFORE the inner try — the outer finally must still
+    # remove the temp HOME (no /tmp leak).
+    base = _base_commit(worktree)
+    holder = _capture_ephemeral_home(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("clone failed")
+
+    monkeypatch.setattr(arm_b.materialize, "materialize", boom)
+    with pytest.raises(RuntimeError):
+        arm_b.run_instance(
+            "psf__requests-1963", rows=_rows_one(base),
+            runner=_make_runner(worktree, envelope=_canned_envelope()),
+            predictions_path=tmp_path / "p.jsonl",
+        )
+    assert holder["home"] is not None
+    assert not holder["home"].exists(), "temp HOME leaked when materialize raised"
+
+
+def test_ephemeral_home_removed_when_cleanup_raises(worktree, monkeypatch, tmp_path):
+    # cleanup() raises in the inner finally (its git-prune is unguarded) — the
+    # outer finally must STILL remove the temp HOME.
+    base = _base_commit(worktree)
+    holder = _capture_ephemeral_home(monkeypatch)
+    monkeypatch.setattr(arm_b.materialize, "materialize", lambda *a, **k: worktree)
+
+    def boom_cleanup(*a, **k):
+        raise RuntimeError("git worktree prune failed")
+
+    monkeypatch.setattr(arm_b.materialize, "cleanup", boom_cleanup)
+    with pytest.raises(RuntimeError):
+        arm_b.run_instance(
+            "psf__requests-1963", rows=_rows_one(base),
+            runner=_make_runner(worktree, envelope=_canned_envelope()),
+            predictions_path=tmp_path / "p.jsonl",
+        )
+    assert not holder["home"].exists(), "temp HOME leaked when cleanup raised"
 
 
 def test_telemetry_parser_handles_object_shape():
