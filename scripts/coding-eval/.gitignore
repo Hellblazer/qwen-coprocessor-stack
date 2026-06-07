@@ -1,0 +1,9 @@
+# Transient eval artifacts — not source.
+.venv/
+work/
+*.jsonl
+*.json
+*.log
+*.err
+problem.txt
+logs/
