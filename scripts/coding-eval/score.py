@@ -241,30 +241,35 @@ def parse_report(
     }
 
 
-# Generous outer bound on a whole scoring subprocess: the one-time base-image
-# build can take ~8 min and a batch of instances adds up, but a hung Docker
-# build must not wedge the run forever.
-DEFAULT_HARNESS_TIMEOUT_SECONDS = 7200
+# Outer bound on ONE arm's whole scoring subprocess. The first cold scoring of
+# the 40-instance subset builds ~37 per-(repo,version) env images on the host
+# (no published arm64 images) AND evaluates 40 instances at --max_workers 1 —
+# empirically ~2h40m cold on an M-series Mac. The old 2h cap killed it mid-eval
+# (exit 124, no report). 6h gives cold scoring ample headroom; warm re-scores
+# (cached images) finish in well under an hour. Override per call via
+# score_predictions(harness_timeout=...).
+DEFAULT_HARNESS_TIMEOUT_SECONDS = 21600
 
 
-def _default_runner(argv: Sequence[str], cwd: Path) -> int:
-    """Production runner: execute the harness as a subprocess in ``cwd``.
-
-    The harness writes its report relative to the process cwd, so we run it in
-    the directory where we expect the report. Streams the harness output through
-    (Docker builds are long; the operator wants to watch progress). A hung build
-    is bounded by DEFAULT_HARNESS_TIMEOUT_SECONDS rather than hanging forever.
-    """
+def _make_default_runner(timeout_seconds: float) -> "Runner":
+    """Build the production runner: execute the harness as a subprocess in
+    ``cwd`` (where it writes its report), streaming output, bounded by
+    ``timeout_seconds`` so a hung Docker build can't wedge the run forever."""
     import subprocess
 
-    try:
-        proc = subprocess.run(
-            list(argv), cwd=str(cwd), timeout=DEFAULT_HARNESS_TIMEOUT_SECONDS
-        )
-        return proc.returncode
-    except subprocess.TimeoutExpired:
-        # Surface as a distinct nonzero code so score_predictions warns.
-        return 124
+    def runner(argv: Sequence[str], cwd: Path) -> int:
+        try:
+            proc = subprocess.run(list(argv), cwd=str(cwd), timeout=timeout_seconds)
+            return proc.returncode
+        except subprocess.TimeoutExpired:
+            # Surface as a distinct nonzero code so score_predictions warns.
+            return 124
+
+    return runner
+
+
+# Back-compat default-timeout runner instance (tests may reference it).
+_default_runner = _make_default_runner(DEFAULT_HARNESS_TIMEOUT_SECONDS)
 
 
 def score_predictions(
@@ -272,18 +277,24 @@ def score_predictions(
     run_id: str,
     instance_ids: Sequence[str],
     *,
-    runner: Runner = _default_runner,
+    runner: Runner | None = None,
+    harness_timeout: float = DEFAULT_HARNESS_TIMEOUT_SECONDS,
     dataset: str = DATASET_NAME,
     cwd: Path | None = None,
     report_out: Path | None = None,
 ) -> dict:
     """Score ``predictions_path`` via the official harness; return normalized dict.
 
-    Builds the RF-1 argv, runs it through the injectable ``runner`` (defaults to
-    a real subprocess; tests inject a fake), locates the harness report, parses
-    it, writes the normalized result to ``report_out`` (default
-    ``<cwd>/report.json``), and returns it.
+    Builds the RF-1 argv, runs it through the injectable ``runner`` (default: a
+    real subprocess bounded by ``harness_timeout``; tests inject a fake), locates
+    the harness report, parses it, writes the normalized result to ``report_out``
+    (default ``<cwd>/report.json``), and returns it.
+
+    ``harness_timeout`` applies only to the default runner; an injected ``runner``
+    owns its own bounding.
     """
+    if runner is None:
+        runner = _make_default_runner(harness_timeout)
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     instance_ids = list(instance_ids)
 

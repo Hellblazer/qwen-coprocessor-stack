@@ -233,6 +233,7 @@ def score_one_arm(
     out_dir: Path,
     *,
     score_fn: Callable[..., dict] = score.score_predictions,
+    harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
 ) -> dict:
     """Score one arm's predictions via the official harness wrapper and attach
     the normalized report to the ArmRun."""
@@ -242,6 +243,7 @@ def score_one_arm(
         f"rdr006-arm{arm_run.arm}-{run_id}",
         list(instance_ids),
         report_out=out_dir / f"report.{arm_run.arm}.json",
+        harness_timeout=harness_timeout,
     )
     arm_run.score = rep
     return rep
@@ -287,6 +289,7 @@ def make_run_and_score(
     arm_modules: Mapping[str, Any] = ARM_MODULES,
     score_fn: Callable[..., dict] = score.score_predictions,
     error_retries: int = 1,
+    harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
 ) -> variance.RunAndScore:
     """Build the ``(arm, instance_id, rep) -> resolved bool`` adapter the probe
     consumes. Each rep runs the SAME arm driver + scorer the headline uses (the
@@ -315,6 +318,7 @@ def make_run_and_score(
             f"probe-{arm}-{iid}-{rep}-{run_id}",
             [iid],
             report_out=probe_dir / f"probe.{arm}.{iid}.{rep}.report.json",
+            harness_timeout=harness_timeout,
         )
         return int(rep_dict.get("resolved", 0)) > 0
 
@@ -331,6 +335,7 @@ def run_variance(
     arm_modules: Mapping[str, Any] = ARM_MODULES,
     score_fn: Callable[..., dict] = score.score_predictions,
     error_retries: int = 1,
+    harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
     probe_fn: Callable[..., Mapping[str, "variance.FlipRateRecord"]] = variance.run_probe,
     probe_selector: Callable[[Sequence[str]], Sequence[str]] = variance.select_probe_instances,
 ) -> dict[str, dict]:
@@ -340,7 +345,7 @@ def run_variance(
     probe_ids = probe_selector(instance_ids)
     run_and_score = make_run_and_score(
         rows, out_dir, run_id, arm_modules=arm_modules, score_fn=score_fn,
-        error_retries=error_retries,
+        error_retries=error_retries, harness_timeout=harness_timeout,
     )
     records = probe_fn(
         list(arms), list(probe_ids), run_and_score, full_size=len(instance_ids)
@@ -363,6 +368,7 @@ def orchestrate(
     do_score: bool = True,
     do_variance: bool = False,
     error_retries: int = 1,
+    harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
     flips: Mapping[str, Mapping] | None = None,
     on_progress: Callable[[str, run_arm.RunResult], None] | None = None,
 ) -> dict:
@@ -390,7 +396,8 @@ def orchestrate(
             on_progress=on_progress,
         )
         if do_score:
-            score_one_arm(ar, run_id, instance_ids, out_dir, score_fn=score_fn)
+            score_one_arm(ar, run_id, instance_ids, out_dir, score_fn=score_fn,
+                          harness_timeout=harness_timeout)
         arm_runs.append(ar)
 
     # Variance band: caller-supplied flips win; else compute the v1 probe when
@@ -401,7 +408,7 @@ def orchestrate(
             flips = run_variance(
                 arms, instance_ids, rows, out_dir, run_id,
                 arm_modules=arm_modules, score_fn=score_fn,
-                error_retries=error_retries,
+                error_retries=error_retries, harness_timeout=harness_timeout,
             )
         else:
             print(
@@ -459,6 +466,11 @@ def main() -> None:
                     help="skip the v1 flip-rate ±band probe (faster; report shows no band)")
     ap.add_argument("--error-retries", type=int, default=1,
                     help="extra attempts on a per-instance ERROR (transient instant-fail); default 1")
+    ap.add_argument("--harness-timeout", type=float,
+                    default=score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
+                    help="per-arm swebench scoring timeout in seconds "
+                         f"(default {int(score.DEFAULT_HARNESS_TIMEOUT_SECONDS)}; cold 40-instance "
+                         "scoring builds ~37 env images and needs hours)")
     args = ap.parse_args()
 
     arms = "".join(a for a in args.arms.upper() if a in ARM_MODULES)
@@ -479,6 +491,7 @@ def main() -> None:
         do_score=not args.no_score,
         do_variance=not args.no_variance,
         error_retries=args.error_retries,
+        harness_timeout=args.harness_timeout,
         on_progress=_progress,
     )
     # Loud contamination surfacing — these bias scoring if ignored.

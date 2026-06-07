@@ -340,3 +340,43 @@ def test_parse_apply_status_pass_fail_missing(tmp_path):
 def test_instance_log_dir_shape(tmp_path):
     p = score.instance_log_dir(tmp_path, "rid", "model.arm-a")
     assert p == tmp_path / "logs" / "run_evaluation" / "rid" / "model.arm-a"
+
+
+# ── harness timeout configurability (recovery from the 2h-cap failure) ───────
+
+
+def test_default_harness_timeout_is_generous_for_cold_40_instance_scoring():
+    # The old 2h (7200s) cap killed cold 40-instance scoring mid-eval. The
+    # default must give cold scoring (env-image builds + eval) ample headroom.
+    assert score.DEFAULT_HARNESS_TIMEOUT_SECONDS >= 14400  # >= 4h
+
+
+def test_make_default_runner_returns_callable_per_timeout():
+    r1 = score._make_default_runner(60)
+    r2 = score._make_default_runner(3600)
+    assert callable(r1) and callable(r2) and r1 is not r2
+
+
+def test_score_predictions_threads_harness_timeout_to_built_runner(tmp_path, monkeypatch):
+    # When no runner is injected, score_predictions builds one with the given
+    # harness_timeout; verify the timeout reaches subprocess.run.
+    captured = {}
+
+    class _Done:
+        returncode = 0
+
+    def fake_run(argv, cwd=None, timeout=None):
+        captured["timeout"] = timeout
+        # Write a minimal harness report so parse_report succeeds.
+        rep = score.report_path(tmp_path / "preds.jsonl", "rid", tmp_path)
+        rep.write_text('{"resolved_ids": [], "completed_ids": []}', encoding="utf-8")
+        return _Done()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    preds = tmp_path / "preds.jsonl"
+    _write_preds(preds, "gold", ["x"])
+    score.score_predictions(
+        preds, "rid", ["x"],
+        harness_timeout=12345, cwd=tmp_path, report_out=tmp_path / "out.json",
+    )
+    assert captured["timeout"] == 12345
