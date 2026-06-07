@@ -18,3 +18,4 @@ namespace) for cross-session discoverability.
 | 002 | accepted            | architecture | [Extension management — exposing the inner Qwen's tool surface to the operator](RDR-002-extension-management.md) |
 | 004 | draft               | architecture | [Multi-Qwen fleet management — declarative config, tmux-as-lifecycle, mosh-attached operator UX](RDR-004-multi-qwen-fleet-management.md) |
 | 005 | accepted            | architecture | [Supervisor process lifecycle — layered cleanup model](RDR-005-supervisor-process-lifecycle.md) |
+| 006 | accepted            | research     | [Coding-agent evaluation — Qwen3.6-35B-A3B vs Claude on SWE-bench Lite, three arms](RDR-006-coding-agent-eval.md) |
