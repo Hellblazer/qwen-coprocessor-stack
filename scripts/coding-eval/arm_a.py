@@ -89,22 +89,21 @@ def build_spawn_opts(worktree: Path) -> dict[str, Any]:
       renders as "none"), disabling ALL Qwen Code extensions INCLUDING the
       ~/.qwen nx extension. This is the tool-surface-parity mechanism with
       Arm B (which disables nx via a CLI config fixture).
-    Token-budget note (per stacked review): the supervisor's
-    ``max_context_tokens`` is the ACCUMULATED-context abort ceiling (default
-    ~111000 = 0.85*ctx_size), NOT a per-turn output cap. It is a DIFFERENT axis
-    from Arm B's ``QWEN_CODE_MAX_OUTPUT_TOKENS`` (an explicit per-turn output
-    floor). We therefore leave ``max_context_tokens`` at the supervisor default
-    (pinning it to 16K would prematurely abort multi-turn sessions). The
-    per-turn output floor for the inner qwen under the supervisor is the
-    qwen-code default — achieving exact per-turn parity with Arm B's 16K floor
-    requires the supervisor to forward QWEN_CODE_MAX_OUTPUT_TOKENS to the inner
-    process, tracked as a follow-up. The report MUST state this asymmetry
-    rather than claim an identical floor.
+    Token-budget note: two DISTINCT axes.
+    * ``max_output_tokens`` (RDR-006 4yx) — the per-turn output floor, forwarded
+      by the supervisor as ``QWEN_CODE_MAX_OUTPUT_TOKENS`` to the inner qwen-code
+      so Arm A is not output-starved relative to Arm B (which sets that same env
+      directly). Pinned to the shared >=16K floor. This gives genuine per-turn
+      parity with Arm B.
+    * ``max_context_tokens`` — the supervisor's ACCUMULATED-context abort ceiling
+      (default ~111000); we deliberately leave it at the default (pinning it to
+      16K would prematurely abort multi-turn sessions). NOT a per-turn cap.
     """
     return {
         "write_authority": True,
         "cwd": str(worktree),
         "extensions": {"only": []},
+        "max_output_tokens": run_arm.MIN_COMPLETION_TOKENS,  # 4yx: per-turn floor parity w/ Arm B
         "max_tool_calls": 0,  # unlimited; turn budget is governed by MAX_TURNS
     }
 

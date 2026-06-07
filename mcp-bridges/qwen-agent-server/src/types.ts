@@ -128,6 +128,16 @@ export interface SpawnOpts {
    * relative paths at the boundary (see `qwenSpawnOptsSchema`).
    */
   cwd?: string;
+  /**
+   * Per-turn output-token cap for the inner Qwen Code process, forwarded as
+   * the `QWEN_CODE_MAX_OUTPUT_TOKENS` env var. Distinct from
+   * `max_context_tokens` (the accumulated-context abort ceiling): this bounds
+   * a single turn's generation. Lets a caller pin the reasoning-clearing floor
+   * (>=16K) so the inner model isn't output-starved — Arm A/Arm B parity in
+   * the RDR-006 eval (4yx). Omit to use the qwen-code default. Values <= 0 are
+   * ignored.
+   */
+  max_output_tokens?: number;
   /** Override or augment the inner Qwen's system prompt. */
   system?: string;
   /**

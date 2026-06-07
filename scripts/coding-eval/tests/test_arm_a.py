@@ -152,10 +152,12 @@ def test_spawn_opts_shape():
     # extensions disabled: only=[] -> supervisor renders envValue "none",
     # disabling ALL extensions incl the ~/.qwen nx extension (parity w/ Arm B).
     assert opts["extensions"] == {"only": []}
-    # max_context_tokens is the supervisor's accumulated-context abort ceiling
-    # (default ~111000), NOT the per-turn output floor — so we deliberately do
-    # NOT pin it (16K would prematurely abort multi-turn sessions). Per-turn
-    # output parity with Arm B is a documented follow-up, not this knob.
+    # Per-turn output floor (4yx): forwarded as QWEN_CODE_MAX_OUTPUT_TOKENS to
+    # the inner qwen for Arm A/Arm B parity.
+    assert opts["max_output_tokens"] == run_arm.MIN_COMPLETION_TOKENS
+    # max_context_tokens is the accumulated-context abort ceiling (default
+    # ~111000), a DIFFERENT axis — deliberately NOT pinned (16K would abort
+    # multi-turn sessions early).
     assert "max_context_tokens" not in opts
 
 

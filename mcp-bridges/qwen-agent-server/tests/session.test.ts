@@ -325,6 +325,26 @@ describe("QwenSession", () => {
       ctrl.end();
     });
 
+    it("forwards opts.max_output_tokens as QWEN_CODE_MAX_OUTPUT_TOKENS env", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ max_output_tokens: 16384 }));
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["QWEN_CODE_MAX_OUTPUT_TOKENS"]).toBe("16384");
+      ctrl.end();
+    });
+
+    it("does NOT set QWEN_CODE_MAX_OUTPUT_TOKENS when max_output_tokens is omitted", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["QWEN_CODE_MAX_OUTPUT_TOKENS"]).toBeUndefined();
+      ctrl.end();
+    });
+
     it("preserves existing OPENAI_BASE_URL/OPENAI_API_KEY/QWEN_MODEL env entries", () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;

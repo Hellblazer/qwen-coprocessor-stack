@@ -228,6 +228,13 @@ export class QwenSession {
     if (bridgeActive) {
       env["QWEN_REAL_BIN"] = infra.qwenRealBin;
     }
+    // RDR-006 4yx: forward a per-turn output-token floor to the inner qwen-code
+    // so Arm A (via supervisor) isn't output-starved relative to Arm B (which
+    // sets this env directly). Distinct from max_context_tokens. >0 guard so a
+    // 0/unset never writes a starving cap.
+    if (opts.max_output_tokens !== undefined && opts.max_output_tokens > 0) {
+      env["QWEN_CODE_MAX_OUTPUT_TOKENS"] = String(opts.max_output_tokens);
+    }
     // RDR-002 step 8: render the resolved extension set into the env
     // var the wrapper reads. envValue===null means "leave-defaults"
     // (wrapper drops --extensions). Setting QWEN_AGENT_EXTENSIONS only

@@ -130,6 +130,11 @@ export const qwenSpawnOptsSchema = z.object({
   // run the agent in the wrong tree. Reject at the schema boundary rather
   // than fail opaquely downstream (RDR-006 40v.1 stacked-review hardening).
   cwd: z.string().refine(isAbsolute, { message: "cwd must be an absolute path" }).optional(),
+  // positive (not nonnegative): a per-turn output floor of 0 is meaningless;
+  // "no floor" is expressed by omitting the field. Keeps the schema honest with
+  // the session.ts `> 0` guard (else 0 passes validation then is silently
+  // dropped).
+  max_output_tokens: z.number().int().positive().optional(),
   extensions: z.object({
     enable: z.array(z.string()).optional(),
     disable: z.array(z.string()).optional(),
@@ -174,6 +179,7 @@ export function buildSpawnOptsFromRaw(rawOpts: RawSpawnOpts): Partial<SpawnOpts>
     spawnOpts.extensions = ext;
   }
   if (rawOpts.cwd !== undefined) spawnOpts.cwd = rawOpts.cwd;
+  if (rawOpts.max_output_tokens !== undefined) spawnOpts.max_output_tokens = rawOpts.max_output_tokens;
   if (rawOpts.max_context_tokens !== undefined) spawnOpts.max_context_tokens = rawOpts.max_context_tokens;
   if (rawOpts.max_tool_calls !== undefined) spawnOpts.max_tool_calls = rawOpts.max_tool_calls;
   if (rawOpts.thinking_mode !== undefined) spawnOpts.thinking_mode = rawOpts.thinking_mode;

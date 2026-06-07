@@ -304,6 +304,17 @@ describe("MCP tool handlers", () => {
       expect("cwd" in builtEmpty).toBe(false);
     });
 
+    it("Zod schema accepts opts.max_output_tokens and dispatcher round-trips it", () => {
+      // RDR-006 4yx: per-turn output floor forwarded to the inner qwen for
+      // Arm A/Arm B parity. Same strip-undefined contract as the other opts.
+      const parsed = qwenSpawnOptsSchema.parse({ max_output_tokens: 16384 });
+      expect(parsed!.max_output_tokens).toBe(16384);
+      expect(buildSpawnOptsFromRaw(parsed).max_output_tokens).toBe(16384);
+      expect("max_output_tokens" in buildSpawnOptsFromRaw(qwenSpawnOptsSchema.parse({}))).toBe(false);
+      // 0 is rejected at the boundary (a floor of 0 is meaningless; omit for none).
+      expect(() => qwenSpawnOptsSchema.parse({ max_output_tokens: 0 })).toThrow();
+    });
+
     it("Zod schema rejects a relative cwd at the boundary", () => {
       // RDR-006 40v.1 hardening: a relative cwd would resolve against the
       // supervisor's cwd, not the caller's worktree. Reject at the schema
