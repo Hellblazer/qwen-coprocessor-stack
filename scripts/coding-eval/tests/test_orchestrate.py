@@ -184,6 +184,119 @@ def test_model_name_falls_back_when_arm_lacks_name_attrs(tmp_path):
 # ── score_one_arm ────────────────────────────────────────────────────────────
 
 
+def _stateful_arm(arm, *, error_until, patch="diff --git a/f b/f\n+y\n"):
+    """run_instance returns ERROR for the first ``error_until[iid]`` calls of an
+    instance, then COMPLETED. Records call counts in mod.calls."""
+    mod = types.SimpleNamespace(ARM=arm, MODEL_NAME=f"m.{arm}", calls={})
+
+    def run_instance(instance_id, *, rows=None, predictions_path, model_name=f"m.{arm}"):
+        mod.calls[instance_id] = mod.calls.get(instance_id, 0) + 1
+        if mod.calls[instance_id] <= error_until.get(instance_id, 0):
+            return run_arm.RunResult(
+                instance_id=instance_id, arm=arm,
+                outcome=run_arm.Outcome.ERROR, model_patch="", returncode=1,
+            )
+        run_arm.write_prediction(predictions_path, instance_id, model_name, patch)
+        return run_arm.RunResult(
+            instance_id=instance_id, arm=arm,
+            outcome=run_arm.Outcome.COMPLETED, model_patch=patch, returncode=0,
+        )
+
+    mod.run_instance = run_instance
+    return mod
+
+
+def test_run_one_arm_retries_transient_error_then_succeeds(tmp_path):
+    mod = _stateful_arm("B", error_until={"x": 1})  # fail once, then succeed
+    ar = orchestrate.run_one_arm(
+        "B", ["x"], rows={}, out_dir=tmp_path, arm_modules={"B": mod},
+        error_retries=1,
+    )
+    assert mod.calls["x"] == 2  # one retry
+    assert ar.results[0].outcome is run_arm.Outcome.COMPLETED
+    preds = ar.predictions_path.read_text().splitlines()
+    assert len(preds) == 1  # no duplicate line from the failed attempt
+    assert json.loads(preds[0])["model_patch"]  # final non-empty patch
+    # attempts count actually LANDS in the telemetry JSONL (not just in-memory).
+    rec = orchestrate._read_telemetry(ar.telemetry_path)[0]
+    assert rec["outcome"] == "completed"
+    assert rec["attempts"] == 2
+
+
+def test_first_try_success_records_one_attempt(tmp_path):
+    mod = _stateful_arm("B", error_until={})
+    ar = orchestrate.run_one_arm(
+        "B", ["x"], rows={}, out_dir=tmp_path, arm_modules={"B": mod},
+    )
+    rec = orchestrate._read_telemetry(ar.telemetry_path)[0]
+    assert rec["attempts"] == 1
+
+
+def test_run_one_arm_retries_on_raised_exception(tmp_path):
+    # The exception path (run_instance RAISES) must also retry, then exhaust to
+    # a synthesized ERROR + empty prediction.
+    mod = _fake_arm_module("B", fail_ids={"x"})  # raises every call
+    ar = orchestrate.run_one_arm(
+        "B", ["x"], rows={}, out_dir=tmp_path, arm_modules={"B": mod},
+        error_retries=2,
+    )
+    assert ar.results[0].outcome is run_arm.Outcome.ERROR
+    rec = orchestrate._read_telemetry(ar.telemetry_path)[0]
+    assert rec["attempts"] == 3
+    preds = ar.predictions_path.read_text().splitlines()
+    assert len(preds) == 1 and json.loads(preds[0])["model_patch"] == ""
+
+
+def test_run_one_arm_does_not_retry_timeout_or_turnlimit(tmp_path):
+    for oc in (run_arm.Outcome.TIMEOUT, run_arm.Outcome.TURN_LIMIT):
+        mod = types.SimpleNamespace(ARM="B", MODEL_NAME="m.B", n=0)
+
+        def run_instance(iid, *, rows=None, predictions_path, model_name="m.B", _oc=oc, _m=mod):
+            _m.n += 1
+            return run_arm.RunResult(instance_id=iid, arm="B", outcome=_oc,
+                                     model_patch="", returncode=0)
+
+        mod.run_instance = run_instance
+        orchestrate.run_one_arm(
+            "B", ["x"], rows={}, out_dir=tmp_path / oc.value,
+            arm_modules={"B": mod}, error_retries=3,
+        )
+        assert mod.n == 1, f"{oc} must not be retried"
+
+
+def test_run_one_arm_persistent_error_exhausts_retries(tmp_path):
+    mod = _stateful_arm("B", error_until={"x": 99})  # always ERROR
+    ar = orchestrate.run_one_arm(
+        "B", ["x"], rows={}, out_dir=tmp_path, arm_modules={"B": mod},
+        error_retries=2,
+    )
+    assert mod.calls["x"] == 3  # initial + 2 retries
+    assert ar.results[0].outcome is run_arm.Outcome.ERROR
+    preds = ar.predictions_path.read_text().splitlines()
+    assert len(preds) == 1
+    assert json.loads(preds[0])["model_patch"] == ""  # empty patch recorded once
+
+
+def test_run_one_arm_no_retry_when_disabled(tmp_path):
+    mod = _stateful_arm("B", error_until={"x": 1})
+    ar = orchestrate.run_one_arm(
+        "B", ["x"], rows={}, out_dir=tmp_path, arm_modules={"B": mod},
+        error_retries=0,
+    )
+    assert mod.calls["x"] == 1  # no retry
+    assert ar.results[0].outcome is run_arm.Outcome.ERROR
+
+
+def test_run_one_arm_does_not_retry_nonerror_outcomes(tmp_path):
+    # A COMPLETED-but-unresolved (real model verdict) must NOT be retried.
+    mod = _stateful_arm("B", error_until={})  # always COMPLETED first try
+    ar = orchestrate.run_one_arm(
+        "B", ["x"], rows={}, out_dir=tmp_path, arm_modules={"B": mod},
+        error_retries=3,
+    )
+    assert mod.calls["x"] == 1
+
+
 def test_score_one_arm_attaches_normalized_report(tmp_path):
     mod = _fake_arm_module("C")
     ar = orchestrate.run_one_arm(
@@ -294,6 +407,20 @@ def test_run_variance_serializes_records_to_dicts(tmp_path):
         assert isinstance(rec, dict)  # serialized, not a dataclass
         assert "band_points" in rec and "band_method" in rec
     assert (tmp_path / "flip_rates.json").exists()
+
+
+def test_probe_path_retries_transient_error(tmp_path):
+    # The probe must get the SAME retry as the headline run, else an infra blip
+    # registers as a false flip and inflates the band.
+    mod = _stateful_arm("A", error_until={"x": 1})  # fail once then succeed
+    ras = orchestrate.make_run_and_score(
+        rows={}, out_dir=tmp_path, run_id="t",
+        arm_modules={"A": mod}, score_fn=_fake_score_fn({"x"}),
+        error_retries=1,
+    )
+    resolved = ras("A", "x", 0)
+    assert resolved is True       # retry recovered the transient
+    assert mod.calls["x"] == 2    # one retry in the probe path
 
 
 def test_orchestrate_computes_variance_when_enabled(tmp_path):

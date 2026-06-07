@@ -109,6 +109,66 @@ def select_instance_ids(
     return ids
 
 
+def _run_instance_with_retry(
+    mod: Any,
+    arm: str,
+    iid: str,
+    rows: Mapping[str, Mapping[str, Any]],
+    attempt_dir: Path,
+    *,
+    error_retries: int,
+) -> tuple[run_arm.RunResult, int]:
+    """Run one instance, retrying ONLY on ERROR (infrastructure/invocation
+    failures), up to ``error_retries`` extra attempts. Returns the first
+    non-ERROR result, or the last ERROR if all attempts fail, plus the attempt
+    count.
+
+    Retry distinguishes a transient instant-fail (qwen-code/claude failing to
+    start or briefly losing the inference endpoint — the Arm B smoke-run blip)
+    from a genuine config break: a transient succeeds on a later attempt; a real
+    failure exhausts the budget and is recorded as ERROR. We do NOT retry
+    COMPLETED/TIMEOUT/TURN_LIMIT — those are real model verdicts, not infra
+    failures, and re-running them would bias the eval.
+
+    Scope: this covers the observed Arm B failure (nonzero-exit / immediate
+    crash -> ERROR, duration ~0s) and unhandled exceptions. It does NOT cover an
+    endpoint loss that lets the CLI exit 0 with empty output (classified
+    COMPLETED with an empty patch) — retrying that would risk re-running a
+    legitimate model give-up. Widen the predicate deliberately if such transients
+    appear in the real run, not by reflex.
+
+    Each attempt writes its prediction to a THROWAWAY path so retries never
+    stack duplicate lines on the real predictions file; the caller writes the
+    chosen result's prediction exactly once.
+    """
+    last: run_arm.RunResult | None = None
+    attempts = 0
+    for attempt in range(error_retries + 1):
+        attempts += 1
+        tmp_preds = attempt_dir / f".attempt.{arm}.{iid}.{attempt}.jsonl"
+        if tmp_preds.exists():
+            tmp_preds.unlink()
+        try:
+            res = mod.run_instance(iid, rows=rows, predictions_path=tmp_preds)
+        except Exception as exc:  # noqa: BLE001 — fail-soft is the contract
+            res = run_arm.RunResult(
+                instance_id=iid,
+                arm=arm,
+                outcome=run_arm.Outcome.ERROR,
+                model_patch="",
+                returncode=1,
+                telemetry={"orchestrator_error": repr(exc)},
+            )
+        finally:
+            if tmp_preds.exists():
+                tmp_preds.unlink()
+        last = res
+        if res.outcome is not run_arm.Outcome.ERROR:
+            break
+    assert last is not None  # error_retries >= 0 => at least one attempt
+    return last, attempts
+
+
 def run_one_arm(
     arm: str,
     instance_ids: Sequence[str],
@@ -116,12 +176,17 @@ def run_one_arm(
     out_dir: Path,
     *,
     arm_modules: Mapping[str, Any] = ARM_MODULES,
+    error_retries: int = 1,
     on_progress: Callable[[str, run_arm.RunResult], None] | None = None,
 ) -> ArmRun:
     """Run one arm over every instance. Fresh-run (truncates artifacts first),
-    fail-soft per instance (a driver exception becomes an ERROR RunResult + an
-    empty prediction so scoring still sees the instance), one telemetry line per
-    instance in the unified schema."""
+    fail-soft per instance with a bounded retry on ERROR (a transient instant-
+    fail is retried; a real failure exhausts the budget and is recorded as ERROR
+    + an empty prediction so scoring still sees the instance), one telemetry line
+    per instance in the unified schema.
+
+    The prediction + telemetry are written exactly ONCE per instance from the
+    chosen result, so retries leave no duplicate lines."""
     mod = arm_modules[arm]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -136,20 +201,14 @@ def run_one_arm(
     results: list[run_arm.RunResult] = []
     contaminated: list[str] = []
     for iid in instance_ids:
-        try:
-            res = mod.run_instance(iid, rows=rows, predictions_path=preds_path)
-        except Exception as exc:  # noqa: BLE001 — fail-soft is the contract
-            # Synthesize an ERROR result + empty prediction so the arm's
-            # accounting stays complete and scoring sees every requested id.
-            run_arm.write_prediction(preds_path, iid, _model_name(mod), "")
-            res = run_arm.RunResult(
-                instance_id=iid,
-                arm=arm,
-                outcome=run_arm.Outcome.ERROR,
-                model_patch="",
-                returncode=1,
-                telemetry={"orchestrator_error": repr(exc)},
-            )
+        res, attempts = _run_instance_with_retry(
+            mod, arm, iid, rows, out_dir, error_retries=error_retries
+        )
+        # Write the chosen result's prediction once (the per-attempt temp files
+        # are discarded). model_patch is the arm-uniform git extraction.
+        run_arm.write_prediction(preds_path, iid, _model_name(mod), res.model_patch)
+        if attempts > 1:
+            res.telemetry = {**(res.telemetry or {}), "attempts": attempts}
         rec = telemetry.normalize(res, arm=arm)
         telemetry.write_telemetry(tele_path, rec)
         if res.test_edit_contamination:
@@ -227,12 +286,18 @@ def make_run_and_score(
     *,
     arm_modules: Mapping[str, Any] = ARM_MODULES,
     score_fn: Callable[..., dict] = score.score_predictions,
+    error_retries: int = 1,
 ) -> variance.RunAndScore:
     """Build the ``(arm, instance_id, rep) -> resolved bool`` adapter the probe
     consumes. Each rep runs the SAME arm driver + scorer the headline uses (the
     probe measures the real pipeline's non-determinism), writing isolated
     per-rep prediction/report files under ``out_dir/probe`` so reps never share
-    an appended predictions file."""
+    an appended predictions file.
+
+    The probe gets the SAME transient-ERROR retry as the headline run (via
+    ``_run_instance_with_retry``) — otherwise an infra blip during a probe rep
+    would register as a false flip and inflate the ±band, which is supposed to
+    measure pipeline non-determinism, not infra noise."""
     probe_dir = Path(out_dir) / "probe"
 
     def run_and_score(arm: str, iid: str, rep: int) -> bool:
@@ -241,10 +306,10 @@ def make_run_and_score(
         probe_dir.mkdir(parents=True, exist_ok=True)
         if preds.exists():
             preds.unlink()
-        try:
-            mod.run_instance(iid, rows=rows, predictions_path=preds)
-        except Exception:  # noqa: BLE001 — a crashed rep scores as unresolved
-            run_arm.write_prediction(preds, iid, _model_name(mod), "")
+        res, _attempts = _run_instance_with_retry(
+            mod, arm, iid, rows, probe_dir, error_retries=error_retries
+        )
+        run_arm.write_prediction(preds, iid, _model_name(mod), res.model_patch)
         rep_dict = score_fn(
             preds,
             f"probe-{arm}-{iid}-{rep}-{run_id}",
@@ -265,6 +330,7 @@ def run_variance(
     *,
     arm_modules: Mapping[str, Any] = ARM_MODULES,
     score_fn: Callable[..., dict] = score.score_predictions,
+    error_retries: int = 1,
     probe_fn: Callable[..., Mapping[str, "variance.FlipRateRecord"]] = variance.run_probe,
     probe_selector: Callable[[Sequence[str]], Sequence[str]] = variance.select_probe_instances,
 ) -> dict[str, dict]:
@@ -273,7 +339,8 @@ def run_variance(
     NOT dataclasses, so this serialization is load-bearing)."""
     probe_ids = probe_selector(instance_ids)
     run_and_score = make_run_and_score(
-        rows, out_dir, run_id, arm_modules=arm_modules, score_fn=score_fn
+        rows, out_dir, run_id, arm_modules=arm_modules, score_fn=score_fn,
+        error_retries=error_retries,
     )
     records = probe_fn(
         list(arms), list(probe_ids), run_and_score, full_size=len(instance_ids)
@@ -295,6 +362,7 @@ def orchestrate(
     score_fn: Callable[..., dict] = score.score_predictions,
     do_score: bool = True,
     do_variance: bool = False,
+    error_retries: int = 1,
     flips: Mapping[str, Mapping] | None = None,
     on_progress: Callable[[str, run_arm.RunResult], None] | None = None,
 ) -> dict:
@@ -318,7 +386,8 @@ def orchestrate(
     for arm in arms:
         ar = run_one_arm(
             arm, instance_ids, rows, out_dir,
-            arm_modules=arm_modules, on_progress=on_progress,
+            arm_modules=arm_modules, error_retries=error_retries,
+            on_progress=on_progress,
         )
         if do_score:
             score_one_arm(ar, run_id, instance_ids, out_dir, score_fn=score_fn)
@@ -332,6 +401,7 @@ def orchestrate(
             flips = run_variance(
                 arms, instance_ids, rows, out_dir, run_id,
                 arm_modules=arm_modules, score_fn=score_fn,
+                error_retries=error_retries,
             )
         else:
             print(
@@ -387,6 +457,8 @@ def main() -> None:
                     help="run arms + telemetry only; skip Docker scoring + report")
     ap.add_argument("--no-variance", action="store_true",
                     help="skip the v1 flip-rate ±band probe (faster; report shows no band)")
+    ap.add_argument("--error-retries", type=int, default=1,
+                    help="extra attempts on a per-instance ERROR (transient instant-fail); default 1")
     args = ap.parse_args()
 
     arms = "".join(a for a in args.arms.upper() if a in ARM_MODULES)
@@ -406,6 +478,7 @@ def main() -> None:
         run_id=args.run_id,
         do_score=not args.no_score,
         do_variance=not args.no_variance,
+        error_retries=args.error_retries,
         on_progress=_progress,
     )
     # Loud contamination surfacing — these bias scoring if ignored.

@@ -119,6 +119,10 @@ class TelemetryRecord:
     # the unified record so report.build_taxonomy can count it; sourced from
     # RunResult.test_edit_contamination, never inferred.
     test_edit_contamination: bool = False
+    # how many attempts the orchestrator made for this instance (1 = no retry).
+    # >1 means a transient ERROR was retried; auditable so the report can note
+    # retried-then-resolved instances rather than hiding them.
+    attempts: int = 1
     # counters / cost / tokens — None means N/A (arm could not supply)
     turns: int | None = None
     tool_calls: int | None = None
@@ -145,6 +149,7 @@ SCHEMA_FIELDS: tuple[str, ...] = (
     "diff_removed",
     "diff_files",
     "test_edit_contamination",
+    "attempts",
     "turns",
     "tool_calls",
     "tokens_in",
@@ -229,6 +234,7 @@ def normalize(result: run_arm.RunResult, *, arm: str | None = None) -> Telemetry
         diff_removed=ds["removed"],
         diff_files=ds["files"],
         test_edit_contamination=bool(result.test_edit_contamination),
+        attempts=int((tele.get("attempts") or 1)),
     )
 
     if arm == "C":
