@@ -237,7 +237,7 @@ export class QwenSession {
     }
 
     const queryOptions: import("@qwen-code/sdk").QueryOptions = {
-      cwd: process.cwd(),
+      cwd: opts.cwd ?? process.cwd(),
       model: backend.model,
       env,
       authType: "openai",

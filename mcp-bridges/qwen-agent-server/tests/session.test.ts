@@ -346,6 +346,24 @@ describe("QwenSession", () => {
       ctrl.end();
     });
 
+    it("routes opts.cwd to QueryOptions.cwd when provided", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ cwd: "/tmp/instance-worktree" }));
+      expect(capturedOptions?.cwd).toBe("/tmp/instance-worktree");
+      ctrl.end();
+    });
+
+    it("defaults QueryOptions.cwd to process.cwd() when opts.cwd is omitted", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      expect(capturedOptions?.cwd).toBe(process.cwd());
+      ctrl.end();
+    });
+
     it("does NOT set pathToQwenExecutable when either infra field is empty", () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;

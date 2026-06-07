@@ -286,6 +286,33 @@ describe("MCP tool handlers", () => {
       });
       expect("only" in (built.extensions ?? {})).toBe(false);
     });
+
+    it("Zod schema accepts opts.cwd and dispatcher round-trips it", () => {
+      // RDR-006 40v.1: the qwen_spawn opts schema must accept a cwd string
+      // and buildSpawnOptsFromRaw must forward it into SpawnOpts. Omitted
+      // cwd must be stripped (exactOptionalPropertyTypes contract), leaving
+      // session.ts to fall back to process.cwd().
+      const parsed = qwenSpawnOptsSchema.parse({ cwd: "/tmp/instance-worktree" });
+      expect(parsed).toBeDefined();
+      expect(parsed!.cwd).toBe("/tmp/instance-worktree");
+
+      const built = buildSpawnOptsFromRaw(parsed);
+      expect(built.cwd).toBe("/tmp/instance-worktree");
+
+      // Omitted cwd is stripped, not present as undefined.
+      const builtEmpty = buildSpawnOptsFromRaw(qwenSpawnOptsSchema.parse({}));
+      expect("cwd" in builtEmpty).toBe(false);
+    });
+
+    it("Zod schema rejects a relative cwd at the boundary", () => {
+      // RDR-006 40v.1 hardening: a relative cwd would resolve against the
+      // supervisor's cwd, not the caller's worktree. Reject at the schema
+      // boundary rather than fail opaquely in the spawned subprocess.
+      expect(() => qwenSpawnOptsSchema.parse({ cwd: "relative/path" })).toThrow();
+      expect(() => qwenSpawnOptsSchema.parse({ cwd: "./rel" })).toThrow();
+      // Absolute path still accepted.
+      expect(qwenSpawnOptsSchema.parse({ cwd: "/abs/path" })!.cwd).toBe("/abs/path");
+    });
   });
 
   // ── qwen_poll ──────────────────────────────────────────────

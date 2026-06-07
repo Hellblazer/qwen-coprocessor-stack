@@ -120,6 +120,14 @@ export interface SpawnOpts {
   allow_subagents?: boolean;
   /** Resume context from a prior failed/evicted session. */
   prior_context?: PriorContext;
+  /**
+   * Per-spawn working directory for the inner Qwen Code process. Threaded
+   * to `QueryOptions.cwd`; defaults to `process.cwd()` when unset. Lets a
+   * caller point a session at a per-instance throwaway worktree (RDR-006
+   * Arm A enabler). Must be an absolute path — the MCP schema rejects
+   * relative paths at the boundary (see `qwenSpawnOptsSchema`).
+   */
+  cwd?: string;
   /** Override or augment the inner Qwen's system prompt. */
   system?: string;
   /**
