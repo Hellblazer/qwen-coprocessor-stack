@@ -115,6 +115,10 @@ class TelemetryRecord:
     diff_added: int
     diff_removed: int
     diff_files: int
+    # arm-uniform contamination flag (source patch touched test paths). Lives on
+    # the unified record so report.build_taxonomy can count it; sourced from
+    # RunResult.test_edit_contamination, never inferred.
+    test_edit_contamination: bool = False
     # counters / cost / tokens — None means N/A (arm could not supply)
     turns: int | None = None
     tool_calls: int | None = None
@@ -140,6 +144,7 @@ SCHEMA_FIELDS: tuple[str, ...] = (
     "diff_added",
     "diff_removed",
     "diff_files",
+    "test_edit_contamination",
     "turns",
     "tool_calls",
     "tokens_in",
@@ -223,6 +228,7 @@ def normalize(result: run_arm.RunResult, *, arm: str | None = None) -> Telemetry
         diff_added=ds["added"],
         diff_removed=ds["removed"],
         diff_files=ds["files"],
+        test_edit_contamination=bool(result.test_edit_contamination),
     )
 
     if arm == "C":
