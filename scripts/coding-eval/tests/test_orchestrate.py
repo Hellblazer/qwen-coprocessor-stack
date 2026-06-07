@@ -73,9 +73,12 @@ def _fake_score_fn(resolved_ids):
             "total": len(ids),
             "resolved_ids": resolved,
             "unresolved_ids": [i for i in ids if i not in resolved_ids],
-            "raw": {i: {"patch_exists": True,
-                        "patch_successfully_applied": True,
-                        "resolved": i in resolved_ids} for i in ids},
+            # Mirror score.score_predictions: per-instance apply status + the
+            # summary raw (list memberships). Fake assumes all patches applied.
+            "applied_ids": list(ids),
+            "apply_failed_ids": [],
+            "apply_unknown_ids": [],
+            "raw": {"completed_ids": list(ids), "resolved_ids": resolved},
             "harness_exit_code": 0,
         }
         if report_out is not None:

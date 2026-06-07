@@ -310,3 +310,33 @@ def test_gold_patch_scores_resolved(tmp_path):
         f"got {norm['resolved']} (report: {norm})"
     )
     assert norm["per_instance"][GOLD_SANITY_INSTANCE] == "resolved"
+
+
+# ── per-instance apply status (clean-apply signal) ──────────────────────────
+
+
+def _write_log(base: Path, run_id, model, iid, body):
+    d = base / "logs" / "run_evaluation" / run_id / model / iid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "run_instance.log").write_text(body, encoding="utf-8")
+
+
+def test_parse_apply_status_pass_fail_missing(tmp_path):
+    run_id, model = "rid", "m"
+    log_dir = score.instance_log_dir(tmp_path, run_id, model)
+    _write_log(tmp_path, run_id, model, "passed",
+               f"...\n{score.APPLY_PASS_MARKER}:\n hunk ok\n")
+    _write_log(tmp_path, run_id, model, "failed",
+               f"...\n{score.APPLY_FAIL_MARKER}:\n conflict\n")
+    _write_log(tmp_path, run_id, model, "neither", "ran but no marker\n")
+    status = score.parse_apply_status(
+        log_dir, ["passed", "failed", "neither", "absent"]
+    )
+    assert status == {
+        "passed": True, "failed": False, "neither": None, "absent": None
+    }
+
+
+def test_instance_log_dir_shape(tmp_path):
+    p = score.instance_log_dir(tmp_path, "rid", "model.arm-a")
+    assert p == tmp_path / "logs" / "run_evaluation" / "rid" / "model.arm-a"

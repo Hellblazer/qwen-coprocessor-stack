@@ -67,6 +67,53 @@ import subset
 # canonical published name is the ``princeton-nlp`` mirror used in the spike.
 DATASET_NAME = "princeton-nlp/SWE-bench_Lite"
 
+# Per-instance apply markers the harness writes to run_instance.log
+# (swebench.harness.constants APPLY_PATCH_PASS / APPLY_PATCH_FAIL). This is the
+# TRUE git-apply signal — distinct from the summary report's ``completed_ids``,
+# which additionally requires the test run to finish. A patch that applies but
+# whose test-exec OOMs/times-out is absent from completed_ids yet has
+# APPLY_PATCH_PASS in its log.
+APPLY_PASS_MARKER = ">>>>> Applied Patch"
+APPLY_FAIL_MARKER = ">>>>> Patch Apply Failed"
+
+
+def instance_log_dir(cwd: Path, run_id: str, model_name: str) -> Path:
+    """Where the harness writes per-instance logs for this run."""
+    return Path(cwd) / "logs" / "run_evaluation" / run_id / model_name
+
+
+def parse_apply_status(
+    log_dir: Path, instance_ids: Sequence[str]
+) -> dict[str, bool | None]:
+    """Read each instance's run_instance.log for the apply marker.
+
+    Returns ``{iid: True}`` if the patch applied (``APPLY_PATCH_PASS``),
+    ``False`` if it failed (``APPLY_PATCH_FAIL``), ``None`` if the log is missing
+    or carries neither marker (e.g. empty-patch instances the harness skips, or
+    a harness crash before the apply step). ``None`` is first-class — the caller
+    must not coerce it to a clean-apply verdict.
+
+    Caveat: the harness tries ``git apply`` then a ``patch --fuzz=5`` fallback
+    and logs ``APPLY_PATCH_PASS`` for either. So True means "the harness applied
+    it" (possibly fuzzy), the closest available proxy for the RDR's "git-apply
+    cleanly" — a small overcount vs strict, far better than the completed_ids
+    undercount it replaces.
+    """
+    out: dict[str, bool | None] = {}
+    for iid in instance_ids:
+        log = Path(log_dir) / iid / "run_instance.log"
+        if not log.exists():
+            out[iid] = None
+            continue
+        txt = log.read_text(encoding="utf-8", errors="replace")
+        if APPLY_PASS_MARKER in txt:
+            out[iid] = True
+        elif APPLY_FAIL_MARKER in txt:
+            out[iid] = False
+        else:
+            out[iid] = None
+    return out
+
 # The runner seam: a callable ``(argv, cwd) -> int`` that executes the harness
 # and returns its exit code. The production runner shells out to the swebench
 # module; tests inject a fake that writes a canned report and returns 0 WITHOUT
@@ -265,6 +312,16 @@ def score_predictions(
         rep_file, instance_ids, run_id=run_id, dataset=dataset
     )
     normalized["harness_exit_code"] = rc
+
+    # Per-instance git-apply status from the run logs — the TRUE clean-apply
+    # signal (the summary report has none). report.py prefers applied_ids over
+    # the completed_ids proxy.
+    model_name = model_name_from_predictions(predictions_path)
+    log_dir = instance_log_dir(cwd, run_id, model_name)
+    apply_status = parse_apply_status(log_dir, instance_ids)
+    normalized["applied_ids"] = [i for i, v in apply_status.items() if v is True]
+    normalized["apply_failed_ids"] = [i for i, v in apply_status.items() if v is False]
+    normalized["apply_unknown_ids"] = [i for i, v in apply_status.items() if v is None]
 
     out = Path(report_out) if report_out is not None else cwd / "report.json"
     out.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")

@@ -4,8 +4,10 @@
 artifact.
 
 Consumes, per arm, the artifacts the rest of the pipeline emits:
-  * the normalized score report (score.py): resolved/total + the verbatim
-    harness ``raw`` (per-instance patch_exists / patch_successfully_applied);
+  * the normalized score report (score.py): resolved_ids/total, the verbatim
+    harness summary ``raw`` (schema_version 2 list memberships: completed_ids,
+    resolved_ids, empty_patch_ids, error_ids, incomplete_ids), and
+    ``applied_ids`` (per-instance git-apply status parsed from the run logs);
   * the telemetry records (telemetry.py): per-instance outcome, diffstat,
     tokens/cost (N/A as null), finish_reason, test_edit_contamination;
   * the per-arm flip-rate record (variance.py): the ±band on the headline.
@@ -89,17 +91,44 @@ def _agg_optional_sum(telemetry: Sequence[Mapping], field_name: str):
     return sum(vals) if vals else None
 
 
-def _applied_cleanly(raw: Mapping, iid: str) -> bool:
-    """The harness's view of whether the submitted patch applied."""
-    entry = raw.get(iid) if isinstance(raw, Mapping) else None
-    return bool(entry.get("patch_successfully_applied")) if isinstance(entry, Mapping) else False
+def _applied_cleanly(score: Mapping, iid: str) -> bool:
+    """Whether the (non-empty) submitted patch applied — the RDR clean-apply
+    signal, in source-of-truth precedence:
+
+    1. ``applied_ids`` — per-instance ``APPLY_PATCH_PASS`` parsed from the run
+       logs by ``score.parse_apply_status``. This is the TRUE git-apply signal
+       and the only one matching the RDR definition ("fraction of non-empty
+       patches that git-apply cleanly"). A patch that applies but whose test-exec
+       OOMs/times-out IS counted here (it is not in ``completed_ids``).
+    2. ``completed_ids`` (summary report) — proxy when apply logs are absent.
+       This UNDERCOUNTS: an applied-but-test-crashed instance is excluded. Used
+       only as a fallback (e.g. hand-built score dicts in tests).
+    3. ``resolved_ids`` — last-resort fallback when neither is present; warns,
+       since it undercounts applied-but-unresolved patches.
+    """
+    applied = score.get("applied_ids")
+    if applied is not None:
+        return iid in set(applied)
+    raw = score.get("raw") or {}
+    completed = raw.get("completed_ids") if isinstance(raw, Mapping) else None
+    if completed is not None:
+        return iid in set(completed)
+    import warnings
+
+    warnings.warn(
+        "score report has neither applied_ids nor raw.completed_ids; "
+        "clean-apply falls back to resolved_ids and will undercount "
+        "applied-but-unresolved patches.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return iid in set(score.get("resolved_ids", []))
 
 
 def build_scorecard(inp: ArmInputs) -> ArmScorecard:
     """Compute one arm's scorecard with the three SEPARATE counters."""
     resolved_ids = set(inp.score.get("resolved_ids", []))
     total = int(inp.score.get("total", len(inp.telemetry)))
-    raw = inp.score.get("raw", {}) or {}
 
     empty = 0
     non_empty = 0
@@ -110,7 +139,7 @@ def build_scorecard(inp: ArmInputs) -> ArmScorecard:
             continue
         # Non-empty: it is an apply candidate, distinct from empty and resolved.
         non_empty += 1
-        if _applied_cleanly(raw, rec.get("instance_id", "")):
+        if _applied_cleanly(inp.score, rec.get("instance_id", "")):
             clean_apply += 1
 
     taxonomy = build_taxonomy(inp.telemetry)
