@@ -139,6 +139,20 @@ def load_instances(revision: str = SNAPSHOT_REVISION) -> list[Instance]:
     return [Instance.from_row(row) for row in ds]
 
 
+def load_full_rows(revision: str = SNAPSHOT_REVISION) -> dict[str, dict]:
+    """Full dataset rows keyed by instance_id, at the pinned revision.
+
+    The arm drivers need ``problem_statement`` (for the prompt) and
+    ``test_patch`` (for ``gold_test_globs``) — fields the lightweight
+    ``Instance`` does not carry. One shared loader so every arm reads the
+    same pinned data. Requires network on first fetch (HF-cached after).
+    """
+    from datasets import load_dataset
+
+    ds = load_dataset(DATASET, split=SPLIT, revision=revision)
+    return {row["instance_id"]: dict(row) for row in ds}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="SWE-bench Lite deterministic subset")
     ap.add_argument("--revision", default=SNAPSHOT_REVISION)

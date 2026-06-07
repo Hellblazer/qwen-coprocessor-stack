@@ -1,0 +1,6 @@
+{
+  "//": "Pinned clean qwen-code config for RDR-006 Arm B tool-surface isolation. This dir is used as $HOME for the raw qwen-code CLI so that ~/.qwen/extensions is empty (no nx MCP extension) and Arm B's tool surface matches Arm A. Verified: `HOME=<this>/.. qwen extensions list` -> 'No extensions installed.' and the -o json init event reports \"mcp_servers\":[]. Do not add extensions here.",
+  "telemetry": {
+    "enabled": false
+  }
+}

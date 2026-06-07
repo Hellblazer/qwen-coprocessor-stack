@@ -49,6 +49,13 @@ WALL_CLOCK_SECONDS = 1800
 # report. The drivers consume this; the spine pins the shared floor.
 MIN_COMPLETION_TOKENS = 16_384
 
+# Rail instances shared by every arm's integration tests. RAIL_KNOWN is the
+# Phase-0 spike instance (gold resolves; the raw qwen CLI failed it — RF-2/RF-3);
+# RAIL_CLEAN is a second anchor so the rail is not pinned only to a known
+# failure. Both are full Lite rows via subset.load_full_rows (not the subset).
+RAIL_KNOWN_INSTANCE = "psf__requests-1963"
+RAIL_CLEAN_INSTANCE = "psf__requests-2148"
+
 # Default test-path patterns excluded from every arm's source patch. Refined
 # per-instance from the gold test_patch target paths via test_globs_from_patch.
 TEST_PATTERNS: tuple[str, ...] = (
