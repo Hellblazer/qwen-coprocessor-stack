@@ -300,6 +300,80 @@ def test_run_one_arm_does_not_retry_nonerror_outcomes(tmp_path):
     assert mod.calls["x"] == 1
 
 
+def test_run_one_arm_concurrency_runs_agents_in_parallel(tmp_path):
+    # concurrency>1 must actually overlap agent runs AND keep deterministic
+    # output (predictions in instance order, one line per id).
+    import threading
+    import time
+
+    state = {"active": 0, "max": 0}
+    lk = threading.Lock()
+    mod = types.SimpleNamespace(ARM="C", MODEL_NAME="m.c")
+
+    def run_instance(iid, *, rows=None, predictions_path, model_name="m.c"):
+        with lk:
+            state["active"] += 1
+            state["max"] = max(state["max"], state["active"])
+        time.sleep(0.05)
+        with lk:
+            state["active"] -= 1
+        patch = f"diff --git a/{iid} b/{iid}\n+x\n"
+        run_arm.write_prediction(predictions_path, iid, model_name, patch)
+        return run_arm.RunResult(instance_id=iid, arm="C",
+                                 outcome=run_arm.Outcome.COMPLETED,
+                                 model_patch=patch, returncode=0)
+
+    mod.run_instance = run_instance
+    ids = [f"i{n:02d}" for n in range(8)]
+    ar = orchestrate.run_one_arm(
+        "C", ids, rows={}, out_dir=tmp_path, arm_modules={"C": mod}, concurrency=4,
+    )
+    assert state["max"] >= 2, "agents did not run concurrently"
+    preds = [json.loads(l)["instance_id"]
+             for l in ar.predictions_path.read_text().splitlines()]
+    assert preds == ids                      # deterministic instance order
+    assert len(ar.results) == len(ids)
+    tele = [json.loads(l)["instance_id"]
+            for l in ar.telemetry_path.read_text().splitlines()]
+    assert tele == ids
+
+
+def test_run_one_arm_concurrent_output_matches_serial(tmp_path):
+    # Same predictions content regardless of concurrency (order + patches).
+    def preds_for(conc, out):
+        mod = _fake_arm_module("C")
+        ar = orchestrate.run_one_arm(
+            "C", ["a", "b", "c", "d"], rows={}, out_dir=out,
+            arm_modules={"C": mod}, concurrency=conc,
+        )
+        return ar.predictions_path.read_text()
+
+    assert preds_for(1, tmp_path / "s") == preds_for(4, tmp_path / "p")
+
+
+def test_run_one_arm_concurrency_preserves_retry_and_contamination(tmp_path):
+    mod = _stateful_arm("C", error_until={"b": 1})  # b fails once then succeeds
+    mod_contam = mod  # reuse; add contamination via a wrapper
+    base_run = mod.run_instance
+
+    def run_instance(iid, *, rows=None, predictions_path, model_name="m.C"):
+        res = base_run(iid, rows=rows, predictions_path=predictions_path,
+                       model_name=model_name)
+        if iid == "c":
+            res.test_edit_contamination = True
+        return res
+
+    mod_contam.run_instance = run_instance
+    ar = orchestrate.run_one_arm(
+        "C", ["a", "b", "c"], rows={}, out_dir=tmp_path,
+        arm_modules={"C": mod_contam}, concurrency=3, error_retries=1,
+    )
+    assert mod.calls["b"] == 2            # retry happened under concurrency
+    assert ar.contaminated_ids == ["c"]   # contamination collected, in order
+    preds = ar.predictions_path.read_text().splitlines()
+    assert len(preds) == 3                # no dup lines from the retry
+
+
 def test_score_one_arm_attaches_normalized_report(tmp_path):
     mod = _fake_arm_module("C")
     ar = orchestrate.run_one_arm(

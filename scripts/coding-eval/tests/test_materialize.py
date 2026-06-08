@@ -193,3 +193,101 @@ def test_materialize_injects_ensure(local_mirror, tmp_path):
     dest = materialize("inst-1", "owner/name", c1, work_root=work,
                        cache_root=mirror.parent, ensure=fake_ensure)
     assert (dest / "a.txt").read_text() == "v1\n"
+
+
+# ── per-mirror lock: agent-concurrency safety (P0) ───────────────────────────
+
+import threading  # noqa: E402
+import time  # noqa: E402
+
+import materialize as _m  # noqa: E402
+
+
+def test_mirror_lock_is_per_path():
+    a1 = _m._mirror_lock(Path("/x/a.git"))
+    a2 = _m._mirror_lock(Path("/x/a.git"))
+    b = _m._mirror_lock(Path("/x/b.git"))
+    assert a1 is a2 and a1 is not b
+
+
+def _overlap_probe():
+    state = {"active": 0, "max": 0}
+    lk = threading.Lock()
+
+    def runner(cmd, cwd=None):
+        # Only the worktree-add command holds the mirror lock in the impl.
+        if "add" in cmd:
+            with lk:
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+            time.sleep(0.05)
+            with lk:
+                state["active"] -= 1
+
+    return state, runner
+
+
+def test_materialize_from_mirror_serializes_same_mirror(tmp_path):
+    # Two concurrent adds on the SAME mirror must NOT overlap (lock serializes).
+    state, runner = _overlap_probe()
+    mirror = tmp_path / "repo.git"
+
+    def work(iid):
+        materialize_from_mirror(mirror, iid, "HEAD", work_root=tmp_path / "wt", runner=runner)
+
+    ts = [threading.Thread(target=work, args=(f"i{n}",)) for n in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert state["max"] == 1, "same-mirror worktree adds overlapped (race risk)"
+
+
+def test_materialize_from_mirror_allows_cross_mirror_parallelism(tmp_path):
+    # Adds on DIFFERENT mirrors may overlap (cross-repo concurrency preserved).
+    state, runner = _overlap_probe()
+
+    def work(repo_n):
+        materialize_from_mirror(tmp_path / f"repo{repo_n}.git", "i", "HEAD",
+                                work_root=tmp_path / f"wt{repo_n}", runner=runner)
+
+    ts = [threading.Thread(target=work, args=(n,)) for n in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert state["max"] >= 2, "cross-mirror adds were needlessly serialized"
+
+
+def test_ensure_mirror_concurrent_first_clone_no_tmp_collision(tmp_path):
+    # Two threads cold-cloning the SAME repo (shared pid) must not collide on the
+    # tmp clone dir or corrupt each other: the per-mirror lock serializes so
+    # exactly ONE clone runs and the rest fetch the now-existing mirror.
+    cache = tmp_path / "cache"
+    clones = []
+    fetches = []
+    lk = threading.Lock()
+
+    def runner(cmd, cwd=None):
+        if "clone" in cmd:
+            dest = Path(cmd[-1])
+            with lk:
+                clones.append(dest)
+            time.sleep(0.05)
+            dest.mkdir(parents=True, exist_ok=True)  # simulate a populated bare repo
+            (dest / "HEAD").write_text("ref: refs/heads/main\n")
+        elif "fetch" in cmd:
+            with lk:
+                fetches.append(tuple(cmd))
+
+    threads = [threading.Thread(target=ensure_mirror, args=("psf/requests", cache, runner))
+               for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly one real clone happened; the other three saw the mirror and fetched.
+    assert len(clones) == 1, f"expected 1 clone, got {len(clones)} (tmp race)"
+    assert len(fetches) == 3
+    assert mirror_path("psf/requests", cache).exists()

@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -32,6 +33,26 @@ CACHE_ROOT = WORK_ROOT / ".cache"
 
 # A runner takes an argv and an optional cwd and runs it, raising on failure.
 Runner = Callable[[Sequence[str], "Path | None"], None]
+
+# Per-mirror lock so the agent-concurrency pool (orchestrate P0) can run instances
+# of DIFFERENT repos in parallel while the git operations that mutate ONE mirror's
+# shared worktree registry / refs (fetch, worktree add/remove/prune) are
+# serialized — concurrent `git worktree add` on the same mirror otherwise races on
+# git's internal locks. RLock so a function holding the lock can call a helper
+# that re-acquires it (e.g. materialize_from_mirror -> _remove_worktree). The lock
+# is held only during git subprocesses, never during the agent run.
+_MIRROR_LOCKS: dict[str, threading.RLock] = {}
+_MIRROR_LOCKS_GUARD = threading.Lock()
+
+
+def _mirror_lock(mirror: Path) -> threading.RLock:
+    key = str(mirror)
+    with _MIRROR_LOCKS_GUARD:
+        lk = _MIRROR_LOCKS.get(key)
+        if lk is None:
+            lk = threading.RLock()
+            _MIRROR_LOCKS[key] = lk
+        return lk
 
 
 def _run(cmd: Sequence[str], cwd: "Path | None" = None) -> None:
@@ -63,26 +84,32 @@ def ensure_mirror(
     Clones ``--bare`` on first use; otherwise fetches. Returns the mirror path.
     """
     mirror = mirror_path(repo, cache_root)
-    if mirror.exists():
-        runner(["git", "-C", str(mirror), "fetch", "--all", "--quiet"], None)
-        return mirror
-    cache_root.mkdir(parents=True, exist_ok=True)
-    # Concurrency-safe first clone: the arm runners (40v.3-.6) parallelize over
-    # instances and several django/sympy instances will race to create the same
-    # mirror. Clone into a unique temp dir, then atomically rename into place.
-    # If another worker won the race (destination now exists), discard our temp
-    # and fetch instead. Lock-free; relies on os.replace atomicity + ENOTEMPTY
-    # on rename onto a populated dir.
-    tmp = cache_root / f"{mirror.name}.tmp.{os.getpid()}"
-    if tmp.exists():
-        shutil.rmtree(tmp, ignore_errors=True)
-    runner(["git", "clone", "--bare", "--quiet", repo_url(repo), str(tmp)], None)
-    try:
-        os.replace(tmp, mirror)
-    except OSError:
-        # Lost the race — another worker materialized the mirror first.
-        shutil.rmtree(tmp, ignore_errors=True)
-        runner(["git", "-C", str(mirror), "fetch", "--all", "--quiet"], None)
+    # Hold the per-mirror lock across the WHOLE check-and-clone: under the P0
+    # agent-concurrency pool the threads share one PID, so several instances of
+    # the same repo would otherwise race to first-clone it. Serializing per
+    # mirror means the first thread clones and the rest see it exists and fetch.
+    # Cross-repo first-clones still run in parallel (distinct mirror locks).
+    with _mirror_lock(mirror):
+        if mirror.exists():
+            runner(["git", "-C", str(mirror), "fetch", "--all", "--quiet"], None)
+            return mirror
+        cache_root.mkdir(parents=True, exist_ok=True)
+        # Clone into a unique temp dir, then atomically rename into place. The
+        # tmp name includes the THREAD id (not just the pid) so it is unique even
+        # across threads of one process; os.replace makes the publish atomic, and
+        # losing the race falls back to fetch. Belt-and-suspenders alongside the
+        # lock above (covers a caller that bypasses ensure via the injectable
+        # seam).
+        tmp = cache_root / f"{mirror.name}.tmp.{os.getpid()}.{threading.get_ident()}"
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        runner(["git", "clone", "--bare", "--quiet", repo_url(repo), str(tmp)], None)
+        try:
+            os.replace(tmp, mirror)
+        except OSError:
+            # Lost the race — another worker materialized the mirror first.
+            shutil.rmtree(tmp, ignore_errors=True)
+            runner(["git", "-C", str(mirror), "fetch", "--all", "--quiet"], None)
     return mirror
 
 
@@ -99,14 +126,15 @@ def materialize_from_mirror(
     worktree at the destination is removed first so re-runs are clean.
     """
     dest = worktree_path(instance_id, work_root)
-    if dest.exists():
-        _remove_worktree(mirror, dest, runner)
-    work_root.mkdir(parents=True, exist_ok=True)
-    runner(
-        ["git", "-C", str(mirror), "worktree", "add", "--detach",
-         "--force", str(dest), base_commit],
-        None,
-    )
+    with _mirror_lock(mirror):
+        if dest.exists():
+            _remove_worktree(mirror, dest, runner)
+        work_root.mkdir(parents=True, exist_ok=True)
+        runner(
+            ["git", "-C", str(mirror), "worktree", "add", "--detach",
+             "--force", str(dest), base_commit],
+            None,
+        )
     return dest
 
 
@@ -129,17 +157,21 @@ def materialize(
 
 
 def _remove_worktree(mirror: Path, dest: Path, runner: Runner) -> None:
-    """Remove a worktree via git, falling back to rmtree, then prune."""
-    try:
-        runner(
-            ["git", "-C", str(mirror), "worktree", "remove", "--force", str(dest)],
-            None,
-        )
-    except subprocess.CalledProcessError:
-        # The worktree dir may exist without being registered (partial run).
-        if dest.exists():
-            shutil.rmtree(dest, ignore_errors=True)
-    runner(["git", "-C", str(mirror), "worktree", "prune"], None)
+    """Remove a worktree via git, falling back to rmtree, then prune.
+
+    Serialized per mirror (RLock) so concurrent cleanups don't race on the
+    worktree registry."""
+    with _mirror_lock(mirror):
+        try:
+            runner(
+                ["git", "-C", str(mirror), "worktree", "remove", "--force", str(dest)],
+                None,
+            )
+        except subprocess.CalledProcessError:
+            # The worktree dir may exist without being registered (partial run).
+            if dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+        runner(["git", "-C", str(mirror), "worktree", "prune"], None)
 
 
 def cleanup(

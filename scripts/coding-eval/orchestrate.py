@@ -169,6 +169,64 @@ def _run_instance_with_retry(
     return last, attempts
 
 
+def _run_arm_agents(
+    mod: Any,
+    arm: str,
+    instance_ids: Sequence[str],
+    rows: Mapping[str, Mapping[str, Any]],
+    out_dir: Path,
+    *,
+    error_retries: int,
+    concurrency: int,
+    on_progress: Callable[[str, run_arm.RunResult], None] | None,
+) -> dict[str, tuple[run_arm.RunResult, int]]:
+    """Run every instance's agent (with retry), returning {iid: (result, attempts)}.
+
+    ``concurrency > 1`` runs agents in a bounded thread pool — the agent phase is
+    subprocess-bound (qwen/claude/supervisor inference + git), so threads give
+    real parallelism (P0; agents were ~70% of wall-clock, all serial). Each
+    instance materializes its OWN worktree and (Arm A) its own supervisor + temp
+    HOME; the only shared state is the bare git mirror, which materialize
+    serializes with an internal lock. No predictions/telemetry are written here —
+    the caller writes them once, in deterministic instance order, after the pool
+    drains.
+
+    ``on_progress`` is invoked in the CALLING thread (from the ``as_completed``
+    loop), not from worker threads — so it needs no locking. Note it fires when
+    an agent COMPLETES (live monitoring during the parallel phase), i.e. BEFORE
+    the caller persists predictions/telemetry; the production callback only
+    writes to stderr so timing is immaterial, and progress order follows
+    completion order, not instance order."""
+    outcomes: dict[str, tuple[run_arm.RunResult, int]] = {}
+    if concurrency <= 1:
+        for iid in instance_ids:
+            res, attempts = _run_instance_with_retry(
+                mod, arm, iid, rows, out_dir, error_retries=error_retries
+            )
+            outcomes[iid] = (res, attempts)
+            if on_progress is not None:
+                on_progress(arm, res)
+        return outcomes
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futs = {
+            ex.submit(
+                _run_instance_with_retry,
+                mod, arm, iid, rows, out_dir, error_retries=error_retries,
+            ): iid
+            for iid in instance_ids
+        }
+        for fut in as_completed(futs):
+            iid = futs[fut]
+            res, attempts = fut.result()
+            outcomes[iid] = (res, attempts)
+            if on_progress is not None:
+                on_progress(arm, res)
+    return outcomes
+
+
 def run_one_arm(
     arm: str,
     instance_ids: Sequence[str],
@@ -177,6 +235,7 @@ def run_one_arm(
     *,
     arm_modules: Mapping[str, Any] = ARM_MODULES,
     error_retries: int = 1,
+    concurrency: int = 1,
     on_progress: Callable[[str, run_arm.RunResult], None] | None = None,
 ) -> ArmRun:
     """Run one arm over every instance. Fresh-run (truncates artifacts first),
@@ -185,8 +244,10 @@ def run_one_arm(
     + an empty prediction so scoring still sees the instance), one telemetry line
     per instance in the unified schema.
 
-    The prediction + telemetry are written exactly ONCE per instance from the
-    chosen result, so retries leave no duplicate lines."""
+    ``concurrency > 1`` runs the agents in parallel (P0); predictions + telemetry
+    are still written exactly ONCE per instance, in deterministic instance order,
+    AFTER all agents finish — so output is identical regardless of completion
+    order and retries leave no duplicate lines."""
     mod = arm_modules[arm]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -198,12 +259,16 @@ def run_one_arm(
         if p.exists():
             p.unlink()
 
+    outcomes = _run_arm_agents(
+        mod, arm, instance_ids, rows, out_dir,
+        error_retries=error_retries, concurrency=concurrency, on_progress=on_progress,
+    )
+
+    # Write artifacts in deterministic instance order (NOT completion order).
     results: list[run_arm.RunResult] = []
     contaminated: list[str] = []
     for iid in instance_ids:
-        res, attempts = _run_instance_with_retry(
-            mod, arm, iid, rows, out_dir, error_retries=error_retries
-        )
+        res, attempts = outcomes[iid]
         # Write the chosen result's prediction once (the per-attempt temp files
         # are discarded). model_patch is the arm-uniform git extraction.
         run_arm.write_prediction(preds_path, iid, _model_name(mod), res.model_patch)
@@ -214,8 +279,6 @@ def run_one_arm(
         if res.test_edit_contamination:
             contaminated.append(iid)
         results.append(res)
-        if on_progress is not None:
-            on_progress(arm, res)
 
     return ArmRun(
         arm=arm,
@@ -308,6 +371,7 @@ def run_variance(
     reps: int = variance.PROBE_REPS,
     max_workers: int = PROBE_MAX_WORKERS,
     full_size: int = variance.SUBSET_FULL_SIZE,
+    concurrency: int = 1,
     probe_selector: Callable[[Sequence[str]], Sequence[str]] = variance.select_probe_instances,
 ) -> dict[str, dict]:
     """Run the v1 flip-rate probe and return per-arm band dicts ready for the
@@ -332,9 +396,11 @@ def run_variance(
     size, default ``variance.SUBSET_FULL_SIZE``) — NOT the probe size — so a
     trimmed ``instance_ids`` cannot miscalibrate the band.
 
-    Agents still run sequentially with the SAME transient-ERROR retry as the
-    headline (``_run_instance_with_retry``) so an infra blip during a probe rep
-    doesn't register as a false flip and inflate the band.
+    Agents run with the SAME transient-ERROR retry as the headline
+    (``_run_instance_with_retry``) so an infra blip during a probe rep doesn't
+    register as a false flip and inflate the band. ``concurrency > 1`` runs a
+    rep's agents in parallel (P0); predictions are written in deterministic
+    instance order afterward.
     """
     probe_ids = list(probe_selector(instance_ids))
     probe_dir = Path(out_dir) / "probe"
@@ -348,12 +414,16 @@ def run_variance(
             preds = probe_dir / f"probe.{arm}.rep{rep}.jsonl"
             if preds.exists():
                 preds.unlink()
-            # Run every probe instance's agent for this (arm, rep), appending all
-            # patches to ONE predictions file (one line per distinct instance).
+            # Run every probe instance's agent for this (arm, rep) — possibly in
+            # parallel — then write all patches to ONE predictions file in
+            # deterministic instance order (one line per distinct instance).
+            outcomes = _run_arm_agents(
+                mod, arm, probe_ids, rows, probe_dir,
+                error_retries=error_retries, concurrency=concurrency,
+                on_progress=None,
+            )
             for iid in probe_ids:
-                res, _attempts = _run_instance_with_retry(
-                    mod, arm, iid, rows, probe_dir, error_retries=error_retries
-                )
+                res, _attempts = outcomes[iid]
                 run_arm.write_prediction(preds, iid, _model_name(mod), res.model_patch)
             # Score all probe instances for this (arm, rep) in ONE batched call.
             rep_report = score_fn(
@@ -391,6 +461,7 @@ def orchestrate(
     error_retries: int = 1,
     harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
     probe_max_workers: int = PROBE_MAX_WORKERS,
+    agent_concurrency: int = 1,
     flips: Mapping[str, Mapping] | None = None,
     on_progress: Callable[[str, run_arm.RunResult], None] | None = None,
 ) -> dict:
@@ -415,7 +486,7 @@ def orchestrate(
         ar = run_one_arm(
             arm, instance_ids, rows, out_dir,
             arm_modules=arm_modules, error_retries=error_retries,
-            on_progress=on_progress,
+            concurrency=agent_concurrency, on_progress=on_progress,
         )
         if do_score:
             score_one_arm(ar, run_id, instance_ids, out_dir, score_fn=score_fn,
@@ -431,7 +502,7 @@ def orchestrate(
                 arms, instance_ids, rows, out_dir, run_id,
                 arm_modules=arm_modules, score_fn=score_fn,
                 error_retries=error_retries, harness_timeout=harness_timeout,
-                max_workers=probe_max_workers,
+                max_workers=probe_max_workers, concurrency=agent_concurrency,
             )
         else:
             print(
@@ -498,6 +569,13 @@ def main() -> None:
                     help=f"parallel Docker workers for variance-probe scoring (default "
                          f"{PROBE_MAX_WORKERS}=serial, matches headline conditions; >1 is faster "
                          "but changes scoring conditions and may bias the flip-rate band)")
+    ap.add_argument("--agent-concurrency", type=int, default=1,
+                    help="parallel agent runs per arm (P0; default 1=serial). The agent phase is "
+                         "inference-bound and was ~70%% of wall-clock — concurrency is the big "
+                         "speedup. Bounded by backend capacity: qwen arms (A/B) are limited by "
+                         "qwentescence throughput (try 2-3); claude (C) tolerates more. Run arms "
+                         "separately with different values if needed (e.g. --arms C "
+                         "--agent-concurrency 8).")
     args = ap.parse_args()
 
     arms = "".join(a for a in args.arms.upper() if a in ARM_MODULES)
@@ -520,6 +598,7 @@ def main() -> None:
         error_retries=args.error_retries,
         harness_timeout=args.harness_timeout,
         probe_max_workers=args.probe_max_workers,
+        agent_concurrency=args.agent_concurrency,
         on_progress=_progress,
     )
     # Loud contamination surfacing — these bias scoring if ignored.
