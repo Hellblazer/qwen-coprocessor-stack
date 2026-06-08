@@ -120,6 +120,34 @@ export interface SpawnOpts {
   allow_subagents?: boolean;
   /** Resume context from a prior failed/evicted session. */
   prior_context?: PriorContext;
+  /**
+   * Per-spawn working directory for the inner Qwen Code process. Threaded
+   * to `QueryOptions.cwd`; defaults to `process.cwd()` when unset. Lets a
+   * caller point a session at a per-instance throwaway worktree (RDR-006
+   * Arm A enabler). Must be an absolute path — the MCP schema rejects
+   * relative paths at the boundary (see `qwenSpawnOptsSchema`).
+   */
+  cwd?: string;
+  /**
+   * Per-turn output-token cap for the inner Qwen Code process, forwarded as
+   * the `QWEN_CODE_MAX_OUTPUT_TOKENS` env var. Distinct from
+   * `max_context_tokens` (the accumulated-context abort ceiling): this bounds
+   * a single turn's generation. Lets a caller pin the reasoning-clearing floor
+   * (>=16K) so the inner model isn't output-starved — Arm A/Arm B parity in
+   * the RDR-006 eval (4yx). Omit to use the qwen-code default. Values <= 0 are
+   * ignored.
+   */
+  max_output_tokens?: number;
+  /**
+   * HOME for the inner Qwen Code process only (forwarded as `env.HOME` on the
+   * SDK query). Lets a caller point the inner model at a clean, throwaway
+   * config home so it neither reads nor mutates the operator's real `~/.qwen`,
+   * and shares a fixed config baseline across runs — Arm A/Arm B config parity
+   * in the RDR-006 eval (40v.13). Distinct from the SUPERVISOR's own HOME,
+   * which must stay intact (the supervisor resolves its backend registry from
+   * it). Must be an absolute path. Omit to inherit the supervisor's HOME.
+   */
+  home?: string;
   /** Override or augment the inner Qwen's system prompt. */
   system?: string;
   /**

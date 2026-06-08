@@ -7,6 +7,7 @@
 //
 // REQUIRES: llama-server on localhost:8080. Skips otherwise.
 
+import "./epipe-guard"; // swallow benign SDK-teardown EPIPE (see module)
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   chmodSync,

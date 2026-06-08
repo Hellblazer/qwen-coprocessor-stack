@@ -23,6 +23,7 @@
 //   the original deny-with-message path; see RDR-001 §Q1).
 //   /tmp/qwen-bridge-spike/spike.mjs (wrapper bridge proof; RDR-002).
 
+import "./epipe-guard"; // swallow benign SDK-teardown EPIPE (see module)
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { query } from "@qwen-code/sdk";
 import type { SDKMessage } from "@qwen-code/sdk";
@@ -51,6 +52,10 @@ async function isBackendReachable(): Promise<boolean> {
 }
 
 let backendAvailable = false;
+
+// The benign SDK-teardown EPIPE guard now lives in ./epipe-guard (imported at
+// the top of this file) so it also covers round-trip.test.ts and any future
+// integration file that spawns the SDK.
 
 beforeAll(async () => {
   backendAvailable = await isBackendReachable();

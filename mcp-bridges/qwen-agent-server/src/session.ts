@@ -228,6 +228,20 @@ export class QwenSession {
     if (bridgeActive) {
       env["QWEN_REAL_BIN"] = infra.qwenRealBin;
     }
+    // RDR-006 4yx: forward a per-turn output-token floor to the inner qwen-code
+    // so Arm A (via supervisor) isn't output-starved relative to Arm B (which
+    // sets this env directly). Distinct from max_context_tokens. >0 guard so a
+    // 0/unset never writes a starving cap.
+    if (opts.max_output_tokens !== undefined && opts.max_output_tokens > 0) {
+      env["QWEN_CODE_MAX_OUTPUT_TOKENS"] = String(opts.max_output_tokens);
+    }
+    // RDR-006 40v.13: isolate the INNER qwen's HOME (clean throwaway config)
+    // without touching the supervisor's own HOME, which resolves its backend
+    // registry. The SDK merges this env over process.env, so setting HOME here
+    // overrides the inherited one for the inner process only.
+    if (opts.home !== undefined && opts.home !== "") {
+      env["HOME"] = opts.home;
+    }
     // RDR-002 step 8: render the resolved extension set into the env
     // var the wrapper reads. envValue===null means "leave-defaults"
     // (wrapper drops --extensions). Setting QWEN_AGENT_EXTENSIONS only
@@ -237,7 +251,7 @@ export class QwenSession {
     }
 
     const queryOptions: import("@qwen-code/sdk").QueryOptions = {
-      cwd: process.cwd(),
+      cwd: opts.cwd ?? process.cwd(),
       model: backend.model,
       env,
       authType: "openai",

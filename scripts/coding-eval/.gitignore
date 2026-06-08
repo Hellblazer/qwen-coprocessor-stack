@@ -1,0 +1,24 @@
+# Transient eval artifacts — not source.
+.venv/
+work/
+*.jsonl
+*.json
+*.log
+*.err
+problem.txt
+logs/
+
+# Defense-in-depth: qwen-code writes into $HOME/.qwen at runtime. Arm B now runs
+# against an ephemeral copy (arm_b.ephemeral_home), so these should never appear
+# — but ignore them so a stray direct-HOME run can't dirty the committed
+# fixture. The tracked settings.json + extensions/.gitkeep stay.
+fixtures/qwen-clean/.qwen/debug/
+fixtures/qwen-clean/.qwen/tmp/
+fixtures/qwen-clean/.qwen/projects/
+fixtures/qwen-clean/.qwen/todos/
+fixtures/qwen-clean/.qwen/installation_id
+fixtures/qwen-clean/.qwen/output-language.md
+fixtures/qwen-clean/.qwen/*.orig
+fixtures/qwen-clean/.rustup/
+fixtures/qwen-clean/.cache/
+fixtures/qwen-clean/.astropy/
