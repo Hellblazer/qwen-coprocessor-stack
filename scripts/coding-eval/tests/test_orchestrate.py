@@ -383,26 +383,12 @@ def test_orchestrate_renders_band_when_flips_supplied(tmp_path):
 
 def test_run_variance_serializes_records_to_dicts(tmp_path):
     # run_variance must return PLAIN DICTS (report.py calls .get on them), not
-    # FlipRateRecord dataclasses. Inject a fake probe_fn + selector to stay
-    # offline; assert the band dict survives the to_dict() serialization.
-    calls = []
-
-    def fake_run_and_score_probe(arms, ids, run_and_score, *, full_size):
-        # Drive run_and_score so the adapter (and its score_fn) is exercised.
-        for a in arms:
-            for i in ids:
-                run_and_score(a, i, 0)
-        return {
-            a: variance.summarize_arm(a, {i: [True, False, True] for i in ids},
-                                      full_size=full_size)
-            for a in arms
-        }
-
+    # FlipRateRecord dataclasses. Offline via fake arm modules + fake score_fn.
     flips = orchestrate.run_variance(
         "AB", ["a", "b", "c"], rows={}, out_dir=tmp_path, run_id="t",
         arm_modules={a: _fake_arm_module(a) for a in "AB"},
         score_fn=_fake_score_fn({"a"}),
-        probe_fn=fake_run_and_score_probe,
+        reps=2,
         probe_selector=lambda ids: list(ids),
     )
     assert set(flips) == {"A", "B"}
@@ -412,18 +398,55 @@ def test_run_variance_serializes_records_to_dicts(tmp_path):
     assert (tmp_path / "flip_rates.json").exists()
 
 
-def test_probe_path_retries_transient_error(tmp_path):
-    # The probe must get the SAME retry as the headline run, else an infra blip
-    # registers as a false flip and inflates the band.
-    mod = _stateful_arm("A", error_until={"x": 1})  # fail once then succeed
-    ras = orchestrate.make_run_and_score(
-        rows={}, out_dir=tmp_path, run_id="t",
-        arm_modules={"A": mod}, score_fn=_fake_score_fn({"x"}),
-        error_retries=1,
+def test_run_variance_batches_scoring_per_arm_rep(tmp_path):
+    # BATCHED scoring: ONE score_fn call per (arm, rep) covering ALL probe
+    # instances (distinct ids) — not one call per (arm, instance, rep).
+    score_calls = []
+
+    def recording_score_fn(predictions_path, run_id, instance_ids, *, report_out=None, **kw):
+        # Capture the predictions file CONTENT at call time (freshness check).
+        lines = [json.loads(l) for l in Path(predictions_path).read_text().splitlines()]
+        score_calls.append({"run_id": run_id, "ids": list(instance_ids),
+                            "max_workers": kw.get("max_workers"),
+                            "pred_ids": [p["instance_id"] for p in lines]})
+        return _fake_score_fn(set())(predictions_path, run_id, instance_ids,
+                                     report_out=report_out, **kw)
+
+    ids = ["a", "b", "c"]
+    orchestrate.run_variance(
+        "A", ids, rows={}, out_dir=tmp_path, run_id="t",
+        arm_modules={"A": _fake_arm_module("A")},
+        score_fn=recording_score_fn, reps=3,
+        probe_selector=lambda x: list(x), max_workers=4,
     )
-    resolved = ras("A", "x", 0)
-    assert resolved is True       # retry recovered the transient
-    assert mod.calls["x"] == 2    # one retry in the probe path
+    # 1 arm x 3 reps = 3 batched calls (NOT 3 instances x 3 reps = 9).
+    assert len(score_calls) == 3
+    for c in score_calls:
+        assert set(c["ids"]) == set(ids)
+        assert c["max_workers"] == 4
+        # fresh predictions file: exactly the probe ids, once each, no stale lines.
+        assert sorted(c["pred_ids"]) == sorted(ids)
+
+
+def test_run_variance_defaults_to_serial_scoring():
+    # Measurement purity: probe scoring matches the headline (serial) by default.
+    assert orchestrate.PROBE_MAX_WORKERS == 1
+
+
+def test_run_variance_retries_transient_error_in_probe(tmp_path):
+    # The probe must get the SAME transient-ERROR retry as the headline run, AND
+    # the RECOVERED (non-empty) patch — not the failed attempt's empty one — must
+    # be what reaches the scored predictions file.
+    mod = _stateful_arm("A", error_until={"a": 1})  # 'a' fails once then succeeds
+    orchestrate.run_variance(
+        "A", ["a"], rows={}, out_dir=tmp_path, run_id="t",
+        arm_modules={"A": mod}, score_fn=_fake_score_fn({"a"}),
+        reps=1, probe_selector=lambda x: list(x),
+    )
+    assert mod.calls["a"] == 2  # one retry inside the probe
+    pred = json.loads((tmp_path / "probe" / "probe.A.rep0.jsonl").read_text().splitlines()[0])
+    assert pred["instance_id"] == "a"
+    assert pred["model_patch"]  # recovered non-empty patch, not the ERROR empty one
 
 
 def test_orchestrate_computes_variance_when_enabled(tmp_path):

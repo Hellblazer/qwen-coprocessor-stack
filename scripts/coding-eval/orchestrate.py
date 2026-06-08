@@ -281,48 +281,17 @@ def build_and_write_report(
     return cards, deltas, md
 
 
-def make_run_and_score(
-    rows: Mapping[str, Mapping[str, Any]],
-    out_dir: Path,
-    run_id: str,
-    *,
-    arm_modules: Mapping[str, Any] = ARM_MODULES,
-    score_fn: Callable[..., dict] = score.score_predictions,
-    error_retries: int = 1,
-    harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
-) -> variance.RunAndScore:
-    """Build the ``(arm, instance_id, rep) -> resolved bool`` adapter the probe
-    consumes. Each rep runs the SAME arm driver + scorer the headline uses (the
-    probe measures the real pipeline's non-determinism), writing isolated
-    per-rep prediction/report files under ``out_dir/probe`` so reps never share
-    an appended predictions file.
-
-    The probe gets the SAME transient-ERROR retry as the headline run (via
-    ``_run_instance_with_retry``) — otherwise an infra blip during a probe rep
-    would register as a false flip and inflate the ±band, which is supposed to
-    measure pipeline non-determinism, not infra noise."""
-    probe_dir = Path(out_dir) / "probe"
-
-    def run_and_score(arm: str, iid: str, rep: int) -> bool:
-        mod = arm_modules[arm]
-        preds = probe_dir / f"probe.{arm}.{iid}.{rep}.jsonl"
-        probe_dir.mkdir(parents=True, exist_ok=True)
-        if preds.exists():
-            preds.unlink()
-        res, _attempts = _run_instance_with_retry(
-            mod, arm, iid, rows, probe_dir, error_retries=error_retries
-        )
-        run_arm.write_prediction(preds, iid, _model_name(mod), res.model_patch)
-        rep_dict = score_fn(
-            preds,
-            f"probe-{arm}-{iid}-{rep}-{run_id}",
-            [iid],
-            report_out=probe_dir / f"probe.{arm}.{iid}.{rep}.report.json",
-            harness_timeout=harness_timeout,
-        )
-        return int(rep_dict.get("resolved", 0)) > 0
-
-    return run_and_score
+# Probe scoring parallelism. DEFAULT 1 — measurement purity: the variance probe
+# must score under the SAME conditions as the headline (serial Docker eval, full
+# host resources per test run). Running eval containers concurrently (>1) injects
+# host-contention noise (CPU/mem/IO) that can flip timeout-sensitive instances,
+# inflating the flip-rate band with scoring-environment variance rather than the
+# pipeline non-determinism the band is meant to measure. The BATCHING (one
+# harness call per (arm,rep) over all probe instances) is the correctness-neutral
+# win — it cuts per-invocation overhead without changing eval conditions.
+# Operators who accept the trade-off can opt into parallelism via
+# --probe-max-workers (NOT empirically verified to leave outcomes unchanged).
+PROBE_MAX_WORKERS = 1
 
 
 def run_variance(
@@ -336,20 +305,72 @@ def run_variance(
     score_fn: Callable[..., dict] = score.score_predictions,
     error_retries: int = 1,
     harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
-    probe_fn: Callable[..., Mapping[str, "variance.FlipRateRecord"]] = variance.run_probe,
+    reps: int = variance.PROBE_REPS,
+    max_workers: int = PROBE_MAX_WORKERS,
+    full_size: int = variance.SUBSET_FULL_SIZE,
     probe_selector: Callable[[Sequence[str]], Sequence[str]] = variance.select_probe_instances,
 ) -> dict[str, dict]:
     """Run the v1 flip-rate probe and return per-arm band dicts ready for the
     report (serialized via ``FlipRateRecord.to_dict()`` — report.py reads dicts,
-    NOT dataclasses, so this serialization is load-bearing)."""
-    probe_ids = probe_selector(instance_ids)
-    run_and_score = make_run_and_score(
-        rows, out_dir, run_id, arm_modules=arm_modules, score_fn=score_fn,
-        error_retries=error_retries, harness_timeout=harness_timeout,
-    )
-    records = probe_fn(
-        list(arms), list(probe_ids), run_and_score, full_size=len(instance_ids)
-    )
+    NOT dataclasses, so this serialization is load-bearing).
+
+    BATCHED scoring (perf, correctness-neutral): the swebench harness keys
+    predictions by ``instance_id``, so the reps of a SINGLE instance cannot share
+    one harness invocation (their patches would collide on the id). The valid
+    batching is per ``(arm, rep)``: run all probe instances' agents, write their
+    patches to ONE predictions file (distinct ids), and score that file in ONE
+    harness invocation. This collapses the probe from ``arms*instances*reps``
+    single-instance invocations to ``arms*reps`` batched ones (e.g. 90 -> 9),
+    cutting per-invocation harness overhead WITHOUT changing eval conditions
+    (``max_workers`` defaults to 1, so each test runs serially with full host
+    resources, exactly as the headline scored). ``max_workers > 1`` would
+    parallelize the test runs but changes scoring conditions (see
+    ``PROBE_MAX_WORKERS``) — opt-in only. (``variance.run_probe`` is the per-rep
+    reference path, retained for its unit tests.)
+
+    ``full_size`` is the denominator the band projects onto (the real subset
+    size, default ``variance.SUBSET_FULL_SIZE``) — NOT the probe size — so a
+    trimmed ``instance_ids`` cannot miscalibrate the band.
+
+    Agents still run sequentially with the SAME transient-ERROR retry as the
+    headline (``_run_instance_with_retry``) so an infra blip during a probe rep
+    doesn't register as a false flip and inflate the band.
+    """
+    probe_ids = list(probe_selector(instance_ids))
+    probe_dir = Path(out_dir) / "probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+
+    records: dict[str, "variance.FlipRateRecord"] = {}
+    for arm in arms:
+        mod = arm_modules[arm]
+        verdicts: dict[str, list[bool]] = {iid: [] for iid in probe_ids}
+        for rep in range(reps):
+            preds = probe_dir / f"probe.{arm}.rep{rep}.jsonl"
+            if preds.exists():
+                preds.unlink()
+            # Run every probe instance's agent for this (arm, rep), appending all
+            # patches to ONE predictions file (one line per distinct instance).
+            for iid in probe_ids:
+                res, _attempts = _run_instance_with_retry(
+                    mod, arm, iid, rows, probe_dir, error_retries=error_retries
+                )
+                run_arm.write_prediction(preds, iid, _model_name(mod), res.model_patch)
+            # Score all probe instances for this (arm, rep) in ONE batched call.
+            rep_report = score_fn(
+                preds,
+                f"probe-{arm}-rep{rep}-{run_id}",
+                list(probe_ids),
+                report_out=probe_dir / f"probe.{arm}.rep{rep}.report.json",
+                harness_timeout=harness_timeout,
+                max_workers=max_workers,
+            )
+            resolved = set(rep_report.get("resolved_ids", []))
+            for iid in probe_ids:
+                verdicts[iid].append(iid in resolved)
+        records[arm] = variance.summarize_arm(
+            arm, verdicts, n_reps=reps, full_size=full_size
+        )
+
     variance.write_flip_rates(Path(out_dir) / "flip_rates.json", records)
     return {arm: rec.to_dict() for arm, rec in records.items()}
 
@@ -369,6 +390,7 @@ def orchestrate(
     do_variance: bool = False,
     error_retries: int = 1,
     harness_timeout: float = score.DEFAULT_HARNESS_TIMEOUT_SECONDS,
+    probe_max_workers: int = PROBE_MAX_WORKERS,
     flips: Mapping[str, Mapping] | None = None,
     on_progress: Callable[[str, run_arm.RunResult], None] | None = None,
 ) -> dict:
@@ -409,6 +431,7 @@ def orchestrate(
                 arms, instance_ids, rows, out_dir, run_id,
                 arm_modules=arm_modules, score_fn=score_fn,
                 error_retries=error_retries, harness_timeout=harness_timeout,
+                max_workers=probe_max_workers,
             )
         else:
             print(
@@ -471,6 +494,10 @@ def main() -> None:
                     help="per-arm swebench scoring timeout in seconds "
                          f"(default {int(score.DEFAULT_HARNESS_TIMEOUT_SECONDS)}; cold 40-instance "
                          "scoring builds ~37 env images and needs hours)")
+    ap.add_argument("--probe-max-workers", type=int, default=PROBE_MAX_WORKERS,
+                    help=f"parallel Docker workers for variance-probe scoring (default "
+                         f"{PROBE_MAX_WORKERS}=serial, matches headline conditions; >1 is faster "
+                         "but changes scoring conditions and may bias the flip-rate band)")
     args = ap.parse_args()
 
     arms = "".join(a for a in args.arms.upper() if a in ARM_MODULES)
@@ -492,6 +519,7 @@ def main() -> None:
         do_variance=not args.no_variance,
         error_retries=args.error_retries,
         harness_timeout=args.harness_timeout,
+        probe_max_workers=args.probe_max_workers,
         on_progress=_progress,
     )
     # Loud contamination surfacing — these bias scoring if ignored.

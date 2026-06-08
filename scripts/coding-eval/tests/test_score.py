@@ -380,3 +380,10 @@ def test_score_predictions_threads_harness_timeout_to_built_runner(tmp_path, mon
         harness_timeout=12345, cwd=tmp_path, report_out=tmp_path / "out.json",
     )
     assert captured["timeout"] == 12345
+
+
+def test_build_argv_max_workers_default_and_override():
+    a1 = score.build_argv("p.jsonl", "r", ["i"])
+    assert a1[a1.index("--max_workers") + 1] == "1"   # headline default
+    a4 = score.build_argv("p.jsonl", "r", ["i"], max_workers=4)
+    assert a4[a4.index("--max_workers") + 1] == "4"   # batched probe override

@@ -127,13 +127,17 @@ def build_argv(
     instance_ids: Sequence[str],
     *,
     dataset: str = DATASET_NAME,
+    max_workers: int = 1,
 ) -> list[str]:
     """Construct the official harness argv (RF-1 proven shape).
 
     The ``--namespace`` value is the EMPTY STRING — load-bearing on arm64
-    (forces a local build; see module docstring). ``--cache_level instance``
-    and ``--max_workers 1`` are pinned. Instance IDs are passed explicitly so
-    the harness scores exactly the pinned subset selection.
+    (forces a local build; see module docstring). ``--cache_level instance`` is
+    pinned. ``--max_workers`` defaults to 1 (the headline scores one arm's full
+    subset; 1 keeps the cold env-image builds race-free and deterministic). The
+    batched variance probe raises it to evaluate many instances' (cached-image)
+    test runs concurrently — the dominant cost once images are built. Instance
+    IDs are passed explicitly so the harness scores exactly the requested set.
     """
     argv = [
         sys.executable,
@@ -146,7 +150,7 @@ def build_argv(
         "--run_id",
         run_id,
         "--max_workers",
-        "1",
+        str(max_workers),
         "--namespace",
         "",  # MANDATORY empty string -> optional_str -> None -> local arm64 build
         "--cache_level",
@@ -282,6 +286,7 @@ def score_predictions(
     dataset: str = DATASET_NAME,
     cwd: Path | None = None,
     report_out: Path | None = None,
+    max_workers: int = 1,
 ) -> dict:
     """Score ``predictions_path`` via the official harness; return normalized dict.
 
@@ -298,7 +303,9 @@ def score_predictions(
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     instance_ids = list(instance_ids)
 
-    argv = build_argv(predictions_path, run_id, instance_ids, dataset=dataset)
+    argv = build_argv(
+        predictions_path, run_id, instance_ids, dataset=dataset, max_workers=max_workers
+    )
     rc = runner(argv, cwd)
 
     rep_file = report_path(predictions_path, run_id, cwd)
