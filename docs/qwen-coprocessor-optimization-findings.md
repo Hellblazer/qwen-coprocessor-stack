@@ -101,19 +101,65 @@ degeneracy is visible, not hidden behind the word "consensus."
 ## 5. The recipe + recommendations
 
 **Recipe for the coprocessor:** plain prompt → k independent attempts → select by
-**consensus** (same-file cluster, smallest diff) → fall back to non-empty/applies.
-$0 local cost; exploits the measured ~20–30% per-attempt instability.
+**any cheap non-degenerate pick** over the non-empty/applying attempts (the
+diff-size tiebreak is an unvalidated default — see §6, it is noise on this data) →
+fall back to non-empty/applies. $0 local cost; exploits the measured ~20–30%
+per-attempt instability. The lift is *diversification across k*, not the selector.
 
 Priorities:
 1. **Implement best-of-k with a consensus selector as a first-class coprocessor
    capability** (40v.21). Per-task quality lever; measured 30→40% on the flippy
    set.
-2. **Better selector than file-consensus** (40v.22) — content-level agreement, an
-   independent verifier model, or a cheap regression run — to close the 40→50%
-   gap. The file-level consensus missed `12747`.
+2. **Better selector than file-consensus / diff-size** (40v.22) — both are
+   unvalidated (§6: diff-size direction is noise; consensus vacuous on 9/10).
+   Closing the 40→50% gap needs a *discriminating* signal — content-level
+   agreement, an independent verifier model, or a cheap regression run — validated
+   on a random, non-enriched sample (new runs required).
 3. **Fix Arm A turn/finish instrumentation** (prereq for any rigorous wrapper
    analysis; §1).
 4. **Do NOT** pursue: self-test prompts (§3), or treating the A↔B Δ as signal
    (§1).
 5. Backend decode (qwentescence P4) remains the orthogonal lever for *speed*, not
    resolve rate.
+
+## 6. Selector-key ablation — the diff-size tiebreak is NOISE (40v.22a)
+
+§4's correction left one hypothesis standing: that "smallest applying diff among
+k" (the default `key=len` tiebreak) is what earns the 30→40% lift. We ablated the
+`key` directly on the existing k=4 Arm-B artifacts (headline + 3 probe reps per
+instance; **zero new agent runs**), scoring how many of the 10 probe instances
+each selector lands on a *resolved* attempt:
+
+| selector key | resolved selections |
+|---|---|
+| pass@1 (headline, attempt 0) | 3/10 |
+| earliest (const key ⇒ attempt 0) | 3/10 |
+| **smallest-diff (`key=len`)** | **4/10** |
+| **largest-diff (`key=-len`)** | **4/10** |
+| random (uniform within winning cluster, analytic E) | 3.92/10 |
+| pass@4 (ceiling, perfect selector) | 5/10 |
+
+**Smallest-diff does NOT beat its own opposite.** Both land 4/10 — and on
+*different* instances: smallest resolves `{astropy-14995, django-14411, scikit-10297,
+sympy-18698}`, largest resolves `{astropy-14995, django-12747, scikit-10297,
+sympy-18698}`. They trade `django-14411 ↔ django-12747`. The diff-size *direction*
+carries no signal; which one "wins" an instance is luck. Random selection captures
+essentially the whole lift (3.92 ≈ 4).
+
+**Conclusion:** the 3→4 (30→40%) improvement is entirely *"sample k attempts and
+don't pin to attempt 0"* — pure diversification. Neither file-consensus (vacuous
+on 9/10) NOR the smallest-diff tiebreak is a validated discriminating signal; any
+non-degenerate pick over k attempts yields ~4/10. Per-instance detail confirms the
+mechanism: 9/10 are single-file (consensus inert), and on the one multi-file
+instance (`matplotlib-22835`) no attempt resolved anyway.
+
+**Implication for the 40→50% gap.** Closing 4/10 → the 5/10 ceiling cannot come
+from tuning `key` — it requires a selector with *genuine* discriminating signal
+(content-level agreement across attempts, an independent verifier model, or a cheap
+regression oracle), and it must be validated on a **random, non-enriched** sample
+(the n=10 probe set is borderline-enriched and below significance). That needs new
+agent runs (qwentescence-bound) — gated, not free. Until then, ship best-of-k with
+*any* cheap non-degenerate selector and label the diff-size tiebreak as an
+unvalidated default, not the mechanism.
+
+(Reproduce: `scripts/coding-eval/work/ablate_selector.py`.)
