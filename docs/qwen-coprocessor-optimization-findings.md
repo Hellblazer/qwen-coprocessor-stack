@@ -85,6 +85,19 @@ end of the population effect. The whole-40 lift is smaller (many instances are
 stable solves or stable fails where k doesn't help) — a full best-of-k run would
 quantify it, at ~k× the (qwentescence-bound) agent cost.
 
+**Correction (mechanism) — review of 40v.21 found the consensus story is wrong
+for this data.** On **9 of the 10** instances, *all* attempts touched a single,
+identical file-set, so the file-consensus clustering did NO discriminating work —
+selection reduced to the tiebreak. The measured 30→40% is therefore attributable
+to **"smallest applying diff among k,"** NOT to file consensus. File consensus
+only discriminates on multi-file instances (rare here) and remains **unvalidated**
+as a signal. The smaller-diff tiebreak is itself a *hypothesis* ("focused fix >
+sprawling fix"), now exposed as an injectable `key` for ablation (random /
+verifier-score / similarity). n=10 is also below significance. Net: best-of-k
+with *some* cheap selector lifts qwen here; *which* selector earns the lift is
+still open (40v.22). The `bestofk` module reports `cluster_report.vacuous` so this
+degeneracy is visible, not hidden behind the word "consensus."
+
 ## 5. The recipe + recommendations
 
 **Recipe for the coprocessor:** plain prompt → k independent attempts → select by
