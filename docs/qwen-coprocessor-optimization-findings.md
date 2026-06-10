@@ -106,15 +106,15 @@ diff-size tiebreak is an unvalidated default — see §6, it is noise on this da
 fall back to non-empty/applies. $0 local cost; exploits the measured ~20–30%
 per-attempt instability. The lift is *diversification across k*, not the selector.
 
-Priorities:
-1. **Implement best-of-k with a consensus selector as a first-class coprocessor
-   capability** (40v.21). Per-task quality lever; measured 30→40% on the flippy
-   set.
-2. **Better selector than file-consensus / diff-size** (40v.22) — both are
-   unvalidated (§6: diff-size direction is noise; consensus vacuous on 9/10).
-   Closing the 40→50% gap needs a *discriminating* signal — content-level
-   agreement, an independent verifier model, or a cheap regression run — validated
-   on a random, non-enriched sample (new runs required).
+Priorities (revised by §7 — read it before acting on 1–2):
+1. ~~Implement best-of-k + consensus as a first-class capability~~ **SUPERSEDED by
+   §7.** On a random sample best-of-k buys ~0–1 instance on average and no selector
+   beats pass@1; not worth its k× cost as a default. Reserve for known-flippy tasks.
+2. ~~Better selector than file-consensus / diff-size~~ **CLOSED by §7 (40v.22).**
+   File-consensus, content-consensus, smallest-diff, and a claude verifier are all
+   statistically indistinguishable from pass@1 at n=40. The gap is the *ceiling*,
+   not the selector. Remaining levers: raise k / add a real regression-test oracle,
+   or improve model+decode quality (P4) to convert stable-fails.
 3. **Fix Arm A turn/finish instrumentation** (prereq for any rigorous wrapper
    analysis; §1).
 4. **Do NOT** pursue: self-test prompts (§3), or treating the A↔B Δ as signal
@@ -163,3 +163,57 @@ agent runs (qwentescence-bound) — gated, not free. Until then, ship best-of-k 
 unvalidated default, not the mechanism.
 
 (Reproduce: `scripts/coding-eval/work/ablate_selector.py`.)
+
+## 7. Random-sample validation — best-of-k does NOT survive de-enrichment (40v.22 b/c)
+
+§6 said the open question must be settled on a *random, non-enriched* sample with
+new runs. We did it: best-of-k=4 over the **whole frozen 40-instance subset** (not
+the borderline-enriched probe), Arm B, run #1 reused as rep0 + 3 fresh reps (~18h
+of qwentescence-bound agent time). 12/40 instances are now multi-file (vs 1/10 in
+the probe), so file-consensus is finally testable; and we added two new selectors:
+**content-consensus** (cluster by normalized code change, not file-set) and a
+**claude verifier** (an external strong model ranks the k patches; no gold-test
+access).
+
+| selector | resolved (/40) | 95% CI | vs smallest-diff (sign test) |
+|---|---|---|---|
+| pass@1 (single attempt) | 18 (45%) | — | — |
+| random (analytic E) | 17.0 | — | — |
+| earliest | 17 | [11, 23] | +1/−2, p=1.00 |
+| **smallest-diff** | **18** | [12, 24] | — |
+| largest-diff | 15 | [9, 21] | +1/−4, p=0.38 |
+| file-consensus | 18 | [12, 24] | +0/−0, p=1.00 |
+| content-consensus | 19 | [13, 25] | +1/−0, p=1.00 |
+| verifier (claude) | 19 | [13, 25] | +2/−1, p=1.00 |
+| **pass@4 (ceiling)** | **23 (57.5%)** | — | — |
+
+**No selector significantly beats pass@1.** Every candidate lands in 15–19 with
+massively overlapping CIs; no paired sign test against the smallest-diff baseline
+reaches significance (best is p=0.38, and that one is *worse*). Even the external
+claude verifier — the strongest plausible no-cheat selector — gets 19, a single
+instance over pass@1 (p=1.00).
+
+**Why the lift evaporated.** The 40 instances decompose as **14 stable-solve
+(4/4)**, **17 stable-fail (0/4)**, and only **9 flippy (1–3/4)**. best-of-k can
+*only* act on the 9 flippy instances; the other 31 are decided regardless of k or
+selector. pass@1 already catches ~4 flippy by luck, leaving a 18→23 ceiling gap of
+5 instances spread across 9 noisy ones — too small a target for any proxy selector
+to grip at n=40. The §6 "30→40%" was an artifact of the probe being *selected* for
+flippiness; on a representative sample the population is mostly stable, so the
+average best-of-k effect is small and no cheap selector captures it.
+
+**Verdict on 40v.22.** Closing the resolve-rate gap is **not** a selector problem.
+- File-consensus, content-consensus, smallest-diff, and a claude verifier are all
+  statistically indistinguishable from pass@1 on a random sample. None is the
+  "better selector" the bead sought — the ceiling itself is the bind.
+- The only honest levers left are (a) **raise the ceiling** — higher k, or a
+  *real* test oracle (run the repo's own pre-existing tests as a regression
+  filter, the one no-cheat signal we did not build), not better ranking of a fixed
+  attempt pool; or (b) **model/decode quality** (qwentescence P4), which moves
+  stable-fail→solve rather than nibbling the flippy tail.
+- For shipping: best-of-k with *any* non-degenerate selector buys ~0–1 instance on
+  average and is not worth its k× cost as a default. Reserve it for known-flippy
+  tasks, not a blanket capability.
+
+(Reproduce: `scripts/coding-eval/work/bok_n40_run.py` → `work/bok_n40_selectors.py
+[--verifier]`. Raw: `work/bok_n40/attempts.json`, n=40 k=4.)
