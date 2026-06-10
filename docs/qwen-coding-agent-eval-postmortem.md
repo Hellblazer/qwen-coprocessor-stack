@@ -99,3 +99,29 @@ P0 (agent concurrency 4×) + P2 (scoring 4×) + P3 (no cold re-pay): a full 3-ar
 variance run drops from **~24 h to ~5–7 h**, bounded mainly by qwentescence decode
 speed (P4). Without touching the backend, P0 alone is the difference between an
 overnight run and a long-afternoon run.
+
+## Update (2026-06-08): P0 measured — concurrency does NOT speed the qwen arms
+
+A re-run at `--agent-concurrency 3` was started and **killed early** once the data
+made the conclusion clear: the qwen arms are **inference-throughput-bound on
+qwentescence**, not parallelism-bound.
+
+| Arm A per-instance | time |
+|---|---|
+| Serial (run #1) | ~358 s |
+| Concurrency=3 | **854–1022 s** |
+
+Each concurrent qwen instance ran ~2.5–3× slower because one model server splits
+its fixed GPU decode budget across the streams — 3-in-parallel × ~2.7× slower ≈
+the **same wall-clock as serial**. So:
+
+- **P0 (40v.17) helps Arm C (claude — separate API), Docker scoring, and the
+  variance probe — but NOT Arms A/B.** The ~3–4× projection assumed independent
+  agents; the qwen arms share one server.
+- **The real qwen lever is P4: backend decode speed** — drop `--kv-unified`
+  (bd `bisect-2026-05-21…`), more/faster GPU, or a second qwentescence replica to
+  actually add decode throughput. Only with more aggregate decode capacity does
+  agent concurrency translate to wall-clock for qwen.
+- **Decision:** run #1 (C 21 / B 18 / A 15 with bands) stands as the eval of
+  record; the harness improvements (timeout fix, clean-apply fix, HOME isolation,
+  batched probe, P0) ship for future use; a faster *qwen* re-run waits on P4.
