@@ -2,12 +2,15 @@
 title: "Coding-agent evaluation — Qwen3.6-35B-A3B vs Claude on SWE-bench Lite, three arms"
 id: RDR-006
 type: Research
-status: accepted
+status: closed
 priority: high
 author: hal
 reviewed-by: self
 created: 2026-06-06
 accepted_date: 2026-06-07
+closed_date: 2026-06-10
+close_reason: implemented
+post_mortem: post-mortem/006-coding-agent-eval.md
 related_issues: []
 ---
 
