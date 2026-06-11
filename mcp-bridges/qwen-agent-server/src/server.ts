@@ -14,6 +14,8 @@
 //   qwen_backends — list backend health
 
 import { isAbsolute } from "node:path";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createLogger } from "./log.js";
 import { SUPERVISOR_VERSION } from "./version.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1420,7 +1422,27 @@ export function stripCodeFences(raw: string): string {
 }
 
 // Only run main when executed directly (not when imported for testing).
-const isMain = process.argv[1]?.endsWith("server.js") || process.argv[1]?.endsWith("server.ts");
+//
+// Must be robust to being launched via a bin symlink (npx / `npm i -g` /
+// node_modules/.bin), where process.argv[1] is the symlink path
+// (".../qwen-agent-server"), NOT ".../server.js". The previous endsWith
+// check failed for every symlinked invocation -> main() never ran ->
+// silent exit 0 (the npx-delivery breakage). Resolve realpaths and compare
+// to this module's own path; fall back to a name check if realpath fails.
+function isEntrypoint(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return (
+      argv1.endsWith("server.js") ||
+      argv1.endsWith("server.ts") ||
+      argv1.endsWith("qwen-agent-server")
+    );
+  }
+}
+const isMain = isEntrypoint();
 if (isMain) {
   main().catch((err) => {
     log.error({ err }, "fatal startup error");
