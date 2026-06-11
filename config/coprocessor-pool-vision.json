@@ -1,0 +1,55 @@
+{
+  "_comment": "Coder-Next coprocessor with (a) text/coding POOLED across Mac (MLX) + box (qwentescence, llama.cpp >= b9596), and (b) a multimodal backend for vision/OCR (Coder-Next is text-only). Copy to ~/.qwen-coprocessor-stack/config.json. Routing (src/backends.ts): heavy/coding prompts -> weighted round-robin across the two 'heavy' text backends (the Coder-Next pool, both machines used simultaneously); qwen_oneshot_vision -> the 'multimodal' backend; qwen_embed/qwen_rerank -> their modality. See tests/routing-pool-vision.test.ts.",
+  "backends": [
+    {
+      "_comment": "Coder-Next on the Mac (MLX/Metal, M4 Max). Higher weight = faster host gets more of the pool.",
+      "id": "coder-mac",
+      "url": "http://localhost:8080/v1",
+      "model": "mlx-community/Qwen3-Coder-Next-4bit",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 2,
+      "ctx_size": 262144,
+      "modality": "text"
+    },
+    {
+      "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan; b9090 crashes on the Gated-Delta-Net arch). Pools with coder-mac for coding/text.",
+      "id": "coder-box",
+      "url": "http://qwentescence:1235/v1",
+      "model": "qwen",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 32768,
+      "modality": "text"
+    },
+    {
+      "_comment": "Vision/OCR backend — qwen3.6-35B-A3B with mmproj (Coder-Next has no vision). qwen_oneshot_vision routes here by modality. 'fast' keeps it out of the heavy coding pool.",
+      "id": "vision-box",
+      "url": "http://qwentescence:1234/v1",
+      "model": "qwen3.6-35b-a3b",
+      "tier": "remote",
+      "capacity": "fast",
+      "weight": 1,
+      "ctx_size": 131072,
+      "modality": "multimodal",
+      "vision_only": true
+    },
+    {
+      "id": "embed-local",
+      "url": "http://localhost:8081/v1",
+      "model": "bge-m3",
+      "tier": "local",
+      "capacity": "fast",
+      "modality": "embedding"
+    },
+    {
+      "id": "rerank-local",
+      "url": "http://localhost:8082/v1",
+      "model": "bge-reranker-v2-m3",
+      "tier": "local",
+      "capacity": "fast",
+      "modality": "rerank"
+    }
+  ]
+}
