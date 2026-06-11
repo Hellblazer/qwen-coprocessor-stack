@@ -14,6 +14,27 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-06-11
+
+Fixes the plugin source so installs are scratch-immune. 0.11.1 pointed
+the marketplace at a `git-subdir` source with `path: "."`, but Claude
+Code's `git-subdir` only resolves a plugin living in a **subdirectory** —
+`"."` sparse-checks out just the repo's top-level files, omitting
+`.claude-plugin/`, so the plugin had no manifest. (Plain `git` is an
+unsupported source type.)
+
+### Changed
+
+- **Plugin relocated to `plugins/qwen-stack/`** (manifest + the five
+  skills: `backends`, `budget`, `defaults`, `extensions`, `status`),
+  matching the ecosystem layout. `marketplace.json` plugin source is now
+  `git-subdir` with `path: "plugins/qwen-stack"`, `ref: v0.11.2` — installs
+  clone only that subtree.
+- **Supervisor republished as `qwen-agent-server@0.11.2`** (no code change
+  from 0.11.1; version bumped only to keep the strict parity gate —
+  `SUPERVISOR_VERSION` == plugin == marketplace — passing). Plugin
+  `mcpServers` pins `npx -y qwen-agent-server@0.11.2`.
+
 ## [0.11.1] - 2026-06-11
 
 Packaging release: make the plugin installable without copying the

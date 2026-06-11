@@ -4,11 +4,11 @@
 //
 // The release surface advertises a version string in four places:
 //
-//   1. mcp-bridges/qwen-agent-server/src/version.ts  — SUPERVISOR_VERSION,
+//   1. mcp-bridges/qwen-agent-server/src/version.ts         — SUPERVISOR_VERSION,
 //      reported on the MCP wire as ServerInfo.version.
-//   2. .claude-plugin/plugin.json                    — plugin manifest.
-//   3. .claude-plugin/marketplace.json               — metadata.version.
-//   4. .claude-plugin/marketplace.json               — plugins[0].version.
+//   2. plugins/qwen-stack/.claude-plugin/plugin.json        — plugin manifest.
+//   3. .claude-plugin/marketplace.json                      — metadata.version.
+//   4. .claude-plugin/marketplace.json                      — plugins[0].version.
 //
 // Any release bump that misses one of these surfaces ships a confusing
 // state (e.g. plugin says 0.11.0, marketplace still says 0.10.0). The
@@ -34,7 +34,7 @@ function readJson(rel: string): Record<string, unknown> {
 
 describe("version consistency", () => {
   it("SUPERVISOR_VERSION matches plugin.json and both marketplace.json fields", () => {
-    const plugin = readJson(".claude-plugin/plugin.json");
+    const plugin = readJson("plugins/qwen-stack/.claude-plugin/plugin.json");
     const marketplace = readJson(".claude-plugin/marketplace.json");
     const metadata = marketplace["metadata"] as Record<string, unknown>;
     const plugins = marketplace["plugins"] as Array<Record<string, unknown>>;
