@@ -22,8 +22,13 @@ fi
 
 LLAMA_DIR="${LLAMA_DIR:-$HOME/src/llama.cpp}"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
+# Models live outside the repo (keeps the plugin source tree small enough for
+# a directory-source marketplace install). Override MODELS_DIR to relocate;
+# the legacy in-repo $ROOT/models is used as a fallback if a file exists there.
+MODELS_DIR="${MODELS_DIR:-$HOME/.qwen-coprocessor-stack/models}"
 EMBED_FILE="${EMBED_FILE:-bge-m3-Q8_0.gguf}"
-EMBED_PATH="$ROOT/models/$EMBED_FILE"
+EMBED_PATH="$MODELS_DIR/$EMBED_FILE"
+[ -f "$EMBED_PATH" ] || { [ -f "$ROOT/models/$EMBED_FILE" ] && EMBED_PATH="$ROOT/models/$EMBED_FILE"; }
 EMBED_ALIAS="${EMBED_ALIAS:-bge-m3}"
 EMBED_PORT="${EMBED_PORT:-8081}"
 
@@ -31,7 +36,7 @@ EMBED_PORT="${EMBED_PORT:-8081}"
 [ -f "$EMBED_PATH" ] || {
   echo "[!] Embedding model not present at $EMBED_PATH."
   echo "    Fetch with:"
-  echo "      hf download gpustack/bge-m3-GGUF $EMBED_FILE --local-dir $ROOT/models"
+  echo "      hf download gpustack/bge-m3-GGUF $EMBED_FILE --local-dir $MODELS_DIR"
   echo "    Or override EMBED_FILE=… to point at another GGUF you already have."
   exit 1
 }
