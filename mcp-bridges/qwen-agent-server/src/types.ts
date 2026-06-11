@@ -51,6 +51,16 @@ export interface Backend {
    */
   modality?: "text" | "multimodal" | "embedding" | "rerank";
   /**
+   * When true on a `'multimodal'` backend, exclude it from the TEXT
+   * chat pool (`chooseBackend`) — it serves only `qwen_oneshot_vision`
+   * (and any explicit pin). Use this to dedicate a vision/OCR model to
+   * vision tasks while a separate text model (e.g. a coding model that
+   * has no vision) handles `qwen_spawn` / `qwen_oneshot`. Without it,
+   * a multimodal backend also serves text chat (the default, since a
+   * multimodal model can do text). Ignored on non-multimodal backends.
+   */
+  vision_only?: boolean;
+  /**
    * Optional bearer-token credential for remote OpenAI-compatible
    * endpoints (OpenRouter, Together, Fireworks, etc.). The supervisor
    * sends `Authorization: Bearer <key>` on every request to this backend.

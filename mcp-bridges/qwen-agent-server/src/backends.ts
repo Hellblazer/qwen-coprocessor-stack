@@ -487,6 +487,10 @@ export async function chooseBackend(
   // serve text-only chat). See bead qwen-coprocessor-stack-w63.
   const chatPool = pool.filter((b) => {
     const m = b.modality ?? "text";
+    // vision_only multimodal backends are dedicated to qwen_oneshot_vision
+    // and excluded from text chat (so a vision model doesn't absorb coding
+    // traffic meant for the text pool). See Backend.vision_only.
+    if (m === "multimodal" && b.vision_only === true) return false;
     return m === "text" || m === "multimodal";
   });
   if (chatPool.length === 0) return null;
