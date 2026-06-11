@@ -21,8 +21,13 @@ fi
 
 LLAMA_DIR="${LLAMA_DIR:-$HOME/src/llama.cpp}"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
+# Models live outside the repo (keeps the plugin source tree small enough for
+# a directory-source marketplace install). Override MODELS_DIR to relocate;
+# the legacy in-repo $ROOT/models is used as a fallback if a file exists there.
+MODELS_DIR="${MODELS_DIR:-$HOME/.qwen-coprocessor-stack/models}"
 RERANK_FILE="${RERANK_FILE:-bge-reranker-v2-m3-Q8_0.gguf}"
-RERANK_PATH="$ROOT/models/$RERANK_FILE"
+RERANK_PATH="$MODELS_DIR/$RERANK_FILE"
+[ -f "$RERANK_PATH" ] || { [ -f "$ROOT/models/$RERANK_FILE" ] && RERANK_PATH="$ROOT/models/$RERANK_FILE"; }
 RERANK_ALIAS="${RERANK_ALIAS:-bge-reranker-v2-m3}"
 RERANK_PORT="${RERANK_PORT:-8082}"
 
@@ -30,7 +35,7 @@ RERANK_PORT="${RERANK_PORT:-8082}"
 [ -f "$RERANK_PATH" ] || {
   echo "[!] Reranker model not present at $RERANK_PATH."
   echo "    Fetch with:"
-  echo "      hf download gpustack/bge-reranker-v2-m3-GGUF $RERANK_FILE --local-dir $ROOT/models"
+  echo "      hf download gpustack/bge-reranker-v2-m3-GGUF $RERANK_FILE --local-dir $MODELS_DIR"
   echo "    Or override RERANK_FILE=… to point at another reranker GGUF."
   exit 1
 }

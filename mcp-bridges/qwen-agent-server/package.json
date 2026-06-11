@@ -1,13 +1,25 @@
 {
   "name": "qwen-agent-server",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.11.1",
   "description": "Stateful MCP supervisor exposing Qwen Code as a multi-backend agent — see docs/rdr/RDR-001",
   "type": "module",
+  "license": "MIT",
+  "author": "Hal Hildebrand",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hellblazer/qwen-coprocessor-stack.git",
+    "directory": "mcp-bridges/qwen-agent-server"
+  },
   "main": "dist/server.js",
+  "bin": {
+    "qwen-agent-server": "dist/server.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
-    "postinstall": "tsc",
+    "prepublishOnly": "tsc",
     "test": "vitest run --exclude 'tests/integration/**'",
     "test:integration": "vitest run --dir tests/integration",
     "start": "node dist/server.js",

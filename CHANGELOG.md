@@ -4,13 +4,41 @@ All notable changes to the qwen-coprocessor-stack are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-This repo's `package.json` is marked `private: true`; tags are git-only
-and not published to npm. The two artifacts of interest to operators are
-the **supervisor binary** (built via `npm run build` in
-`mcp-bridges/qwen-agent-server`) and the **Claude Code plugin** at
-`.claude-plugin/plugin.json`.
+As of 0.11.1 the supervisor ships as a published npm package
+(`qwen-agent-server`); the Claude Code plugin's `mcpServers` runs it via
+`npx -y qwen-agent-server@<version>`, and the marketplace installs the
+plugin from a `git-subdir` source pinned to the release tag (tracked
+files only — no working-tree copy). The two artifacts of interest to
+operators are the **published supervisor** (`npx qwen-agent-server`) and
+the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
+
+## [0.11.1] - 2026-06-11
+
+Packaging release: make the plugin installable without copying the
+working tree. Previously the marketplace used a directory source, so
+`plugin install` recursively copied the entire repo — including
+gitignored runtime weights and eval scratch (24 GB+ at worst) — and hung.
+
+### Changed
+
+- **Supervisor distributed via npm.** `mcp-bridges/qwen-agent-server`
+  `package.json` un-`private`d, gains `bin` + `files: ["dist"]`, drops
+  the dev-only `postinstall: tsc` (replaced by `prepublishOnly`), and the
+  entrypoint gains a `#!/usr/bin/env node` shebang. The plugin's
+  `supervisor` MCP server now runs `npx -y qwen-agent-server@0.11.1`
+  instead of `node ${CLAUDE_PLUGIN_ROOT}/.../dist/server.js`. Rationale:
+  `@qwen-code/sdk` self-locates and spawns its own on-disk CLI, so the
+  server cannot be bundled into a single file — `npx` lets the registry
+  resolve the 56 MB SDK + deps at run time (bead `7e1`).
+- **Marketplace plugin source → `git-subdir` @ `v0.11.1`.** Installs now
+  clone only tracked files; `models/`, `node_modules/`, and eval scratch
+  are never copied.
+- **bge embed/rerank models relocated out of the repo.**
+  `start-embed-server.sh` / `start-rerank-server.sh` default `MODELS_DIR`
+  to `~/.qwen-coprocessor-stack/models` (legacy `$ROOT/models` fallback),
+  keeping the plugin source tree small.
 
 ## [0.11.0] - 2026-05-21
 
