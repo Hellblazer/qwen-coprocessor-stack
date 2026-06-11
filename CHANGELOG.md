@@ -14,6 +14,32 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-06-11
+
+Fixes the supervisor never starting under npx/bin launch. 0.11.1/0.11.2
+wired `mcpServers` to `npx -y qwen-agent-server`, but the server's
+main-module guard was `process.argv[1].endsWith("server.js")` — false for
+every symlinked launch (`npx`, `npm i -g`, `node_modules/.bin/...`), where
+argv[1] is the bin symlink (".../qwen-agent-server"). So `main()` never
+ran, the process exited 0 silently, and the MCP client reported "Failed to
+connect". The earlier `node ${CLAUDE_PLUGIN_ROOT}/.../dist/server.js`
+launch masked it (argv[1] ended in `server.js`); the npx switch exposed it.
+Every in-process unit test passed throughout (they import the module, which
+correctly skips `main()`), so nothing caught it.
+
+### Fixed
+
+- **Entrypoint detection is now symlink-robust** (`src/server.ts`): resolve
+  `realpath(process.argv[1])` and compare to this module's own realpath,
+  with a name-suffix fallback. Works for `node server.js`, npx, global
+  install, and `.bin` symlink launches.
+- **Regression test** `tests/entrypoint.test.ts` spawns the built server
+  through a symlink named `qwen-agent-server` and asserts it answers
+  `initialize` — the exact production launch path, which no prior test
+  exercised.
+
+Versions bumped `0.11.2 → 0.11.3` in lockstep (server republished).
+
 ## [0.11.2] - 2026-06-11
 
 Fixes the plugin source so installs are scratch-immune. 0.11.1 pointed
