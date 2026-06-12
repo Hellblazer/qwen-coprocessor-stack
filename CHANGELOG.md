@@ -14,7 +14,35 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
-## [0.11.5] - 2026-06-12
+## [0.11.6] - 2026-06-12
+
+Explicit role-based routing for `qwen_chat` (bead `k8j`).
+
+### Added
+
+- **Backend `roles` field** + **`chooseBackendByRole`** + **`qwen_chat`
+  `opts.role`**: route operator dispatch to a backend by an explicit,
+  operator-assigned role rather than a hardcoded id. Resolution
+  precedence in `qwen_chat`: `opts.backend` (id pin) > `opts.role` >
+  default (text, multimodal fallback). `roles` is a *soft* routing hint,
+  distinct from `modality` (a hard capability) — so a `vision_only`
+  multimodal backend can still be reached for text via a role (it stays
+  out of the agentic text pool, but role routing ignores that).
+- **Config tags** (`config/coprocessor-pool-vision.json`): coder-mac /
+  coder-box → `roles:["code"]`; the 35B (vision-box) → `roles:["general",
+  "reasoning"]`. So `qwen_chat role="code"` hits the fast Coder-Next pool
+  (bulk operator dispatch) and `role="general"/"reasoning"` hits the 35B
+  (reasoning/judgment operators) — the *same already-loaded vision model*,
+  no extra backend.
+
+### Notes
+
+- Settles `k8j` empirically: a clean direct-vs-direct A/B showed
+  Coder-Next handles bulk operator tasks well and ~9× faster, while the
+  35B wins on reasoning (e.g. the "9.9 vs 9.11" trap Coder-Next fails).
+  Hence explicit per-call role selection rather than a single default
+  model or a magic auto-router. `qwen_oneshot`/`qwen_spawn` (agentic,
+  coding) are unchanged.
 
 Adds `qwen_chat` — a direct text chat-completion dispatch path for
 operator/general work, bypassing the qwen-code agentic harness.

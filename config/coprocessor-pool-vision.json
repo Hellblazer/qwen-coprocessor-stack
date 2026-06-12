@@ -1,5 +1,5 @@
 {
-  "_comment": "Coder-Next coprocessor with (a) text/coding POOLED across Mac (MLX) + box (qwentescence, llama.cpp >= b9596), and (b) a multimodal backend for vision/OCR (Coder-Next is text-only). Copy to ~/.qwen-coprocessor-stack/config.json. Routing (src/backends.ts): heavy/coding prompts -> weighted round-robin across the two 'heavy' text backends (the Coder-Next pool, both machines used simultaneously); qwen_oneshot_vision -> the 'multimodal' backend; qwen_embed/qwen_rerank -> their modality. See tests/routing-pool-vision.test.ts.",
+  "_comment": "Coder-Next coprocessor with (a) text/coding POOLED across Mac (MLX) + box (qwentescence, llama.cpp >= b9596), and (b) a multimodal backend for vision/OCR (Coder-Next is text-only). Copy to ~/.qwen-coprocessor-stack/config.json. Routing (src/backends.ts): heavy/coding prompts -> weighted round-robin across the two 'heavy' text backends (the Coder-Next pool, both machines used simultaneously); qwen_oneshot_vision -> the 'multimodal' backend; qwen_embed/qwen_rerank -> their modality. ROLES (bead k8j): qwen_chat opts.role routes by the 'roles' array — role='code' -> the Coder-Next pool (fast, bulk operator dispatch), role='general'/'reasoning' -> the 35B (slower but reasons; it's the vision-box model, reached via role even though vision_only keeps it out of the agentic text pool). See tests/routing-pool-vision.test.ts.",
   "backends": [
     {
       "_comment": "Coder-Next on the Mac (MLX/Metal, M4 Max). Higher weight = faster host gets more of the pool.",
@@ -10,7 +10,8 @@
       "capacity": "heavy",
       "weight": 2,
       "ctx_size": 262144,
-      "modality": "text"
+      "modality": "text",
+      "roles": ["code"]
     },
     {
       "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan; b9090 crashes on the Gated-Delta-Net arch). Pools with coder-mac for coding/text.",
@@ -21,10 +22,11 @@
       "capacity": "heavy",
       "weight": 1,
       "ctx_size": 32768,
-      "modality": "text"
+      "modality": "text",
+      "roles": ["code"]
     },
     {
-      "_comment": "Vision/OCR backend — qwen3.6-35B-A3B with mmproj (Coder-Next has no vision). qwen_oneshot_vision routes here by modality. 'fast' keeps it out of the heavy coding pool.",
+      "_comment": "qwen3.6-35B-A3B with mmproj. Serves TWO explicit paths on one loaded model: (1) qwen_oneshot_vision by modality=multimodal; (2) qwen_chat role='general'/'reasoning' by the roles array (a general/reasoning instruct model — beats Coder-Next on judgment/reasoning operator tasks, slower). vision_only keeps it out of the agentic text pool (qwen_spawn/oneshot); role routing reaches it regardless. See bead k8j.",
       "id": "vision-box",
       "url": "http://qwentescence:1234/v1",
       "model": "qwen3.6-35b-a3b",
@@ -33,7 +35,8 @@
       "weight": 1,
       "ctx_size": 131072,
       "modality": "multimodal",
-      "vision_only": true
+      "vision_only": true,
+      "roles": ["general", "reasoning"]
     },
     {
       "id": "embed-local",
