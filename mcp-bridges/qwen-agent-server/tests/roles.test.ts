@@ -3,7 +3,7 @@
 // Tests for chooseBackendByRole — explicit operator-role routing (bead k8j).
 
 import { describe, expect, it } from "vitest";
-import { chooseBackendByRole } from "../src/backends.js";
+import { chooseBackend, chooseBackendByModality, chooseBackendByRole } from "../src/backends.js";
 import type { Backend } from "../src/types.js";
 
 const coderMac: Backend = { id: "coder-mac", url: "http://localhost:8080/v1", model: "coder", tier: "remote", capacity: "heavy", weight: 2, modality: "text", roles: ["code"] };
@@ -56,5 +56,38 @@ describe("chooseBackendByRole", () => {
     // embed-local has no roles; a role query must not return it.
     const b = await chooseBackendByRole([embed], "general", undefined, allHealthy);
     expect(b).toBeNull();
+  });
+});
+
+describe("no_agentic exclusion (bead 081)", () => {
+  // coder-box mirrors the shipped config: text, role=code, but no_agentic.
+  const coderBoxNoAgentic: Backend = { ...coderBox, no_agentic: true };
+  const POOL2: Backend[] = [coderMac, coderBoxNoAgentic, visionBox, embed];
+
+  it("chooseBackend (agentic pool) never routes to a no_agentic backend", async () => {
+    for (let i = 0; i < 40; i++) {
+      const b = await chooseBackend(POOL2, {}, "fix the bug in foo.ts", allHealthy);
+      expect(b!.id).toBe("coder-mac");
+    }
+  });
+
+  it("but an explicit pin to a no_agentic backend still wins (caller authority)", async () => {
+    const b = await chooseBackend(POOL2, { backend: "coder-box" }, "x", allHealthy);
+    expect(b?.id).toBe("coder-box");
+  });
+
+  it("no_agentic backend is STILL reachable for direct chat by role and modality", async () => {
+    // role=code resolves across both coder backends (direct qwen_chat path)
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      seen.add((await chooseBackendByRole(POOL2, "code", undefined, allHealthy))!.id);
+    }
+    expect(seen.has("coder-box")).toBe(true); // not excluded from role routing
+    // modality=text selection also still includes it
+    const textSeen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      textSeen.add((await chooseBackendByModality(POOL2, "text", undefined, allHealthy))!.id);
+    }
+    expect(textSeen.has("coder-box")).toBe(true);
   });
 });

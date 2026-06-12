@@ -14,7 +14,31 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
-## [0.11.6] - 2026-06-12
+## [0.11.7] - 2026-06-12
+
+Routes agentic coding away from the backend that crashes on it (bead `081`).
+
+### Added
+
+- **Backend `no_agentic` flag**: excludes a backend from the AGENTIC pool
+  (`chooseBackend` → `qwen_spawn`/`qwen_oneshot`) while keeping it for
+  DIRECT dispatch (`qwen_chat` by modality/role) and `qwen_tokenize`. An
+  explicit `opts.backend` pin still overrides.
+- **Config**: `coder-box` tagged `no_agentic: true`. Agentic coding now
+  routes only to coder-mac (MLX, which survives it); coder-box continues
+  serving fast direct `qwen_chat` (role="code") + tokenize.
+
+### Notes
+
+- `081` resolution: Coder-Next on the box (qwen3_next / Gated-Delta-Net,
+  llama.cpp Vulkan) reliably crashes on the qwen-code *agentic* request
+  shape. Confirmed unfixed by dropping `--cache-reuse`, by `--no-kv-unified`
+  (which instead crashes warmup), by a full box reboot, AND by upgrading
+  the build b9596 → **b9611** (tested 2026-06-12 — coder-box still crashed
+  the agentic oneshot). A *direct* `/v1/chat/completions` to the same
+  backend is fine. So the supervisor routes around it rather than waiting
+  on an upstream llama.cpp Vulkan fix. coder-mac handles agentic; the box
+  is fully used for direct operator dispatch + vision.
 
 Explicit role-based routing for `qwen_chat` (bead `k8j`).
 

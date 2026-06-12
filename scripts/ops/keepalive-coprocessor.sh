@@ -10,13 +10,18 @@ set -u
 HOST=qwentescence
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
 LL='D:\llama-b9596\llama-server.exe'
+# bead 081: trialed b9611 for coder-box (2026-06-12) — did NOT fix the qwen3_next
+# Vulkan AGENTIC crash (coder-box still died on a qwen_oneshot). Reverted to b9596.
+# The fix is supervisor-side: coder-box is excluded from the agentic pool
+# (no_agentic in config / chooseBackend), kept for qwen_chat + tokenize.
+LL_CODER="$LL"
 # NOTE (bead 081): do NOT disable unified-KV (--parallel 1 / --no-kv-unified) —
 # that crashes Coder-Next during WARMUP on b9596. And --cache-reuse is DROPPED
 # here: the agentic-request crash was captured dying silently in the cross-slot
 # prompt-cache "looking for better prompt" path — the same kv_unified+cache-reuse
 # combo that caused the b9090 cancel-task bug (bisect-2026-05-21). On b9596
 # kv_unified is forced on, so we break the combo from the cache-reuse side.
-CODER="$LL -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log"
+CODER="$LL_CODER -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log"
 VISION="$LL -m D:\\models\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --mmproj D:\\models\\mmproj-Qwen3.6-35B-A3B-BF16.gguf --host 0.0.0.0 --port 1234 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --cache-reuse 32 --alias qwen3.6-35b-a3b --log-file D:\\logs\\vision-box.log"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 CODER_PID=0; VISION_PID=0

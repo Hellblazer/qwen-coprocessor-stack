@@ -491,6 +491,10 @@ export async function chooseBackend(
     // and excluded from text chat (so a vision model doesn't absorb coding
     // traffic meant for the text pool). See Backend.vision_only.
     if (m === "multimodal" && b.vision_only === true) return false;
+    // no_agentic backends are excluded from the AGENTIC pool (this selector
+    // serves qwen_spawn/qwen_oneshot). They crash on the qwen-code agentic
+    // request shape but serve direct qwen_chat / tokenize fine. See bead 081.
+    if (b.no_agentic === true) return false;
     return m === "text" || m === "multimodal";
   });
   if (chatPool.length === 0) return null;
