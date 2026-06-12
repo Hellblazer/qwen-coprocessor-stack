@@ -34,6 +34,7 @@ import type {
 } from "./types.js";
 import {
   chooseBackendByModality,
+  chooseBackendByRole,
   getCachedHealth,
   refreshPoolBackends,
 } from "./backends.js";
@@ -265,7 +266,7 @@ export type ToolHandlers = {
    */
   qwen_chat: (args: {
     task: string;
-    opts?: ChatOpts & { backend?: string; continuation_id?: string };
+    opts?: ChatOpts & { backend?: string; role?: string; continuation_id?: string };
   }) => Promise<ChatResult>;
   /**
    * Stateless embeddings dispatch. POSTs to a backend's /v1/embeddings
@@ -823,9 +824,15 @@ export function createToolHandlers(
     // backend, falling back to 'multimodal' (a vision model also serves
     // text). Honour an explicit pin verbatim. No agentic harness, so —
     // unlike qwen_oneshot — this does NOT crash coder-box (bead 081).
+    // Resolution precedence: explicit id pin > explicit role > default
+    // (text, multimodal fallback). Role is the operator's explicit routing
+    // lever (bead k8j): e.g. role="general"/"reasoning" → the 35B,
+    // role="code" → the Coder-Next pool, without hardcoding backend ids.
     let backend: import("./types.js").Backend | null = null;
     if (opts?.backend !== undefined) {
       backend = pool.backends.find((b) => b.id === opts.backend) ?? null;
+    } else if (opts?.role !== undefined && opts.role !== "") {
+      backend = await chooseBackendByRole(pool.backends, opts.role);
     } else {
       backend =
         (await chooseBackendByModality(pool.backends, "text")) ??
@@ -840,13 +847,16 @@ export function createToolHandlers(
           code: "backend_error",
           message: opts?.backend
             ? `no backend matches pin "${opts.backend}"`
-            : "no healthy text/multimodal backend available",
+            : opts?.role
+              ? `no healthy backend advertises role "${opts.role}"`
+              : "no healthy text/multimodal backend available",
         },
       };
     }
 
     const dispatchOpts: ChatOpts = { ...opts };
     delete (dispatchOpts as { backend?: unknown }).backend;
+    delete (dispatchOpts as { role?: unknown }).role;
     delete (dispatchOpts as { continuation_id?: unknown }).continuation_id;
 
     const thread = threads.resolve(opts?.continuation_id);
@@ -1344,14 +1354,15 @@ async function main(): Promise<void> {
         no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen reasoning-mode thinking; default true."),
         json_schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema constraint; emitted as response_format.json_schema and the content is parsed into result.parsed."),
         grammar: z.string().optional().describe("GBNF grammar for token-by-token output enforcement (llama-server `grammar`)."),
-        backend: z.string().optional().describe("Pin to a specific backend by id (e.g. a general-instruct model). Default: weighted text-backend selection, multimodal fallback."),
+        backend: z.string().optional().describe("Pin to a specific backend by id (highest precedence). Default: weighted text-backend selection, multimodal fallback."),
+        role: z.string().optional().describe("Explicit operator role to route by (e.g. 'general'/'reasoning' → a general-instruct model, 'code' → the coding pool). Resolves to a healthy backend whose configured `roles` includes this. Ignored if `backend` is also set. See bead k8j."),
         continuation_id: z.string().optional().describe("Thread id from a prior qwen_chat / qwen_oneshot / qwen_oneshot_vision call; prior turns are prepended. Same in-process thread store (3h TTL, 20-turn cap)."),
       }).optional(),
     },
     async (args) => {
       const result = await handlers.qwen_chat({
         task: args.task,
-        ...(args.opts !== undefined ? { opts: args.opts as ChatOpts & { backend?: string; continuation_id?: string } } : {}),
+        ...(args.opts !== undefined ? { opts: args.opts as ChatOpts & { backend?: string; role?: string; continuation_id?: string } } : {}),
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],

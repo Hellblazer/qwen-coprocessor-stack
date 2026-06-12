@@ -563,3 +563,43 @@ export async function chooseBackendByModality(
 
   return roundRobin(`modality:${wanted}`, live);
 }
+
+/**
+ * Resolve a healthy backend by an EXPLICIT operator-assigned role (bead k8j).
+ *
+ * Filters to backends whose `roles` array includes `wanted`, drops
+ * unhealthy ones, and picks via weighted round-robin (same pooling as
+ * the modality/chat selectors). Returns null if no healthy backend
+ * advertises the role.
+ *
+ * `pinned_id` short-circuits to that backend verbatim (caller authority
+ * over the role hint), mirroring chooseBackendByModality.
+ *
+ * This is a soft routing hint, NOT a capability gate: it does not check
+ * modality. A caller asking for role "general" gets whatever backend the
+ * operator tagged "general"; if that backend can't actually serve the
+ * request the downstream dispatch surfaces the error as usual.
+ */
+export async function chooseBackendByRole(
+  pool: Backend[],
+  wanted: string,
+  pinned_id?: string,
+  healthy_lookup: (b: Backend) => Promise<boolean | null> = getCachedHealth,
+): Promise<Backend | null> {
+  if (pool.length === 0) return null;
+
+  if (pinned_id !== undefined) {
+    return pool.find((b) => b.id === pinned_id) ?? null;
+  }
+
+  const candidates = pool.filter((b) => b.roles?.includes(wanted) ?? false);
+  if (candidates.length === 0) return null;
+
+  const healthChecks = await Promise.all(
+    candidates.map(async (b) => ({ b, healthy: await healthy_lookup(b) })),
+  );
+  const live = healthChecks.filter((h) => h.healthy !== false).map((h) => h.b);
+  if (live.length === 0) return null;
+
+  return roundRobin(`role:${wanted}`, live);
+}

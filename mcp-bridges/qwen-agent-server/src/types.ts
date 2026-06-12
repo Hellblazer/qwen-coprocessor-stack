@@ -51,6 +51,18 @@ export interface Backend {
    */
   modality?: "text" | "multimodal" | "embedding" | "rerank";
   /**
+   * Operator-declared role labels for EXPLICIT routing (bead k8j). Free-form
+   * strings (e.g. "code", "general", "reasoning"); a backend may advertise
+   * several. Callers select a role explicitly — `qwen_chat`'s `opts.role`
+   * resolves to a healthy backend whose `roles` includes it (weighted
+   * round-robin), letting operator dispatch pick "general"/"reasoning"
+   * vs "code" without hardcoding backend ids. Distinct from `modality`
+   * (a hard capability: text/vision/embed/rerank); `roles` is a soft
+   * routing hint the operator assigns. Unset = matches no role query
+   * (the backend stays reachable by id pin or modality routing).
+   */
+  roles?: string[];
+  /**
    * When true on a `'multimodal'` backend, exclude it from the TEXT
    * chat pool (`chooseBackend`) — it serves only `qwen_oneshot_vision`
    * (and any explicit pin). Use this to dedicate a vision/OCR model to
