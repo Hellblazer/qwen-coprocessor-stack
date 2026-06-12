@@ -15,7 +15,7 @@
       "no_tokenize": true
     },
     {
-      "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan). no_agentic (bead 081): EXCLUDED from the agentic pool (qwen_spawn/oneshot) because it reliably CRASHES on the qwen-code agentic request shape (qwen3_next Gated-Delta-Net Vulkan; not fixed by cache-reuse/kv-unified/reboot/b9611). Still serves DIRECT qwen_chat (role=code) + tokenize fine. So agentic coding goes to coder-mac; coder-box does fast direct operator dispatch.",
+      "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan). FRAGILE: qwen3_next Gated-Delta-Net Vulkan crashes under (a) the qwen-code agentic request shape (bead 081 -> no_agentic) AND (b) any CONCURRENT compute (bead akf -> direct chat+tokenize hitting it at once crashed it, cascading a full re-sequence). So it carries NO 'code' role (role=code stays on coder-mac, which handles concurrency) and no_agentic. Effectively single-concurrency: reachable by explicit opts.backend pin + as the unpinned qwen_tokenize fallback (low concurrency). The box's reliable contribution is the 35B (vision-box: vision + role=general/reasoning).",
       "id": "coder-box",
       "url": "http://qwentescence:1235/v1",
       "model": "qwen",
@@ -24,7 +24,6 @@
       "weight": 1,
       "ctx_size": 32768,
       "modality": "text",
-      "roles": ["code"],
       "no_agentic": true
     },
     {
