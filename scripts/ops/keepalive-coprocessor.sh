@@ -24,29 +24,52 @@ LL_CODER="$LL"
 CODER="$LL_CODER -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log"
 VISION="$LL -m D:\\models\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --mmproj D:\\models\\mmproj-Qwen3.6-35B-A3B-BF16.gguf --host 0.0.0.0 --port 1234 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --cache-reuse 32 --alias qwen3.6-35b-a3b --log-file D:\\logs\\vision-box.log"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
-CODER_PID=0; VISION_PID=0
+CODER_PID=0; VISION_PID=0; VISION_FAILS=0
 up()    { curl -s --max-time 5 "http://$HOST:$1/v1/models" 2>/dev/null | grep -q '"name"'; }
 log()   { echo "$(date '+%H:%M:%S') $*"; }
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
 killremote() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $KILLALL_B64" >/dev/null 2>&1; }
 waitup(){ for i in $(seq 1 30); do up "$1" && return 0; sleep 8; done; return 1; }
+# Full clean re-sequence: kill BOTH, clean GPU, coder FIRST (anchor), then
+# vision on a FRESH coder (low footprint, so the 21GB vision fits). Reused by
+# the coder-down path and the 0e8 escalation below.
+resequence() {
+  log "full re-sequence (clean GPU, coder first)"
+  kpid "$CODER_PID"; kpid "$VISION_PID"; killremote; sleep 10
+  $SSH "$HOST" "$CODER" >/dev/null 2>&1 & CODER_PID=$!
+  waitup 1235 && log "coder-box UP" || log "coder-box FAILED to come up"
+  if up 1235; then
+    $SSH "$HOST" "$VISION" >/dev/null 2>&1 & VISION_PID=$!
+    waitup 1234 && log "vision-box UP" || log "vision-box FAILED"
+  fi
+  VISION_FAILS=0
+}
 trap 'log "shutdown; killing held ssh"; kpid "$CODER_PID"; kpid "$VISION_PID"; exit 0' TERM INT
 log "keepalive started (pid $$)"
 while true; do
   if ! up 1235; then
-    log "coder-box (anchor) DOWN -> full re-sequence (clean GPU, coder first)"
-    kpid "$CODER_PID"; kpid "$VISION_PID"; killremote; sleep 10
-    $SSH "$HOST" "$CODER" >/dev/null 2>&1 & CODER_PID=$!
-    waitup 1235 && log "coder-box UP" || log "coder-box FAILED to come up"
-    if up 1235; then
-      $SSH "$HOST" "$VISION" >/dev/null 2>&1 & VISION_PID=$!
-      waitup 1234 && log "vision-box UP" || log "vision-box FAILED"
-    fi
+    log "coder-box (anchor) DOWN"
+    resequence
   elif ! up 1234; then
-    log "vision-box DOWN (coder up) -> start vision on top (good order)"
-    kpid "$VISION_PID"
-    $SSH "$HOST" "$VISION" >/dev/null 2>&1 & VISION_PID=$!
-    waitup 1234 && log "vision-box UP" || log "vision-box FAILED"
+    # vision down, coder up. Try restarting vision ON TOP of the running
+    # coder (correct load order, cheap). But after a coder crash its
+    # context-checkpoint/KV footprint can grow so the 21GB vision no longer
+    # fits on top and the on-top load repeatedly OOMs — only a FRESH coder
+    # reload frees enough room. So escalate to a full re-sequence after 2
+    # consecutive on-top failures rather than retrying it forever (bead 0e8).
+    if [ "$VISION_FAILS" -ge 2 ]; then
+      log "vision-box on-top failed x$VISION_FAILS -> escalate to full re-sequence"
+      resequence
+    else
+      log "vision-box DOWN (coder up) -> start vision on top (attempt $((VISION_FAILS + 1)))"
+      kpid "$VISION_PID"
+      $SSH "$HOST" "$VISION" >/dev/null 2>&1 & VISION_PID=$!
+      if waitup 1234; then
+        log "vision-box UP"; VISION_FAILS=0
+      else
+        log "vision-box FAILED on-top"; VISION_FAILS=$((VISION_FAILS + 1))
+      fi
+    fi
   fi
   sleep 20
 done

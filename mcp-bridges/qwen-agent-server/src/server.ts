@@ -996,9 +996,13 @@ export function createToolHandlers(
     if (opts?.backend !== undefined) {
       backend = pool.backends.find((b) => b.id === opts.backend) ?? null;
     } else {
+      // Exclude no_tokenize backends (MLX/non-llama.cpp lack /tokenize → 404).
+      // Tokenizers are model-specific, so we only do this for UNPINNED routing;
+      // an explicit pin is honoured verbatim. See bead id7.
+      const tokPool = pool.backends.filter((b) => b.no_tokenize !== true);
       backend =
-        (await chooseBackendByModality(pool.backends, "text")) ??
-        (await chooseBackendByModality(pool.backends, "multimodal"));
+        (await chooseBackendByModality(tokPool, "text")) ??
+        (await chooseBackendByModality(tokPool, "multimodal"));
     }
     if (!backend) {
       return {
@@ -1009,7 +1013,7 @@ export function createToolHandlers(
           code: "backend_error",
           message: opts?.backend
             ? `no backend matches pin "${opts.backend}"`
-            : "no healthy text/multimodal backend available",
+            : "no healthy text/multimodal backend with /tokenize available",
         },
       };
     }

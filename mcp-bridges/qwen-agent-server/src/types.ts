@@ -90,6 +90,16 @@ export interface Backend {
    */
   no_agentic?: boolean;
   /**
+   * When true, exclude this backend from UNPINNED `qwen_tokenize` routing
+   * (bead id7). llama.cpp serves `/tokenize`; MLX (mlx_lm.server) and other
+   * non-llama.cpp backends do NOT, so unpinned tokenize that lands on them
+   * 404s. Tag such backends `no_tokenize` so tokenize routes only to a
+   * backend whose server implements `/tokenize`. An explicit `opts.backend`
+   * pin still reaches it (and will surface the backend's own 404). Tokenizers
+   * are model-specific, so we never silently re-route a pinned request.
+   */
+  no_tokenize?: boolean;
+  /**
    * Optional bearer-token credential for remote OpenAI-compatible
    * endpoints (OpenRouter, Together, Fireworks, etc.). The supervisor
    * sends `Authorization: Bearer <key>` on every request to this backend.

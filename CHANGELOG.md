@@ -14,7 +14,27 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
-## [0.11.7] - 2026-06-12
+## [0.11.8] - 2026-06-12
+
+Two reliability cleanups: `qwen_tokenize` MLX routing (`id7`) and keepalive
+vision recovery (`0e8`).
+
+### Fixed
+
+- **`qwen_tokenize` no longer 404s on unpinned MLX routing** (`id7`):
+  new `Backend.no_tokenize` flag excludes backends without a `/tokenize`
+  endpoint (MLX / non-llama.cpp) from UNPINNED tokenize selection. coder-mac
+  (MLX) is tagged `no_tokenize`, so unpinned `qwen_tokenize` routes to a
+  llama.cpp backend (coder-box / vision-box). An explicit `opts.backend`
+  pin is still honoured verbatim (tokenizers are model-specific — never
+  silently re-routed).
+- **Keepalive escalates to a full re-sequence when "vision-on-top" reload
+  fails** (`0e8`): after a coder crash, coder's grown context-checkpoint/KV
+  footprint can leave no room for the 21 GB vision model on top, so the
+  on-top reload repeatedly OOMs. The keepalive now retries on-top twice,
+  then escalates to a full clean re-sequence (kill all → fresh coder →
+  vision), which reliably fits. Re-sequence logic extracted to a shared
+  `resequence()` function.
 
 Routes agentic coding away from the backend that crashes on it (bead `081`).
 
