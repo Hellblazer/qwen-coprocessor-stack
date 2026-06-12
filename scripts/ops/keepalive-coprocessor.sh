@@ -10,6 +10,11 @@ set -u
 HOST=qwentescence
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
 LL='D:\llama-b9596\llama-server.exe'
+# NOTE (bead 081): do NOT disable unified-KV here. Forcing kv_unified=false
+# (--parallel 1 and/or --no-kv-unified) makes Coder-Next CRASH DURING WARMUP on
+# this Vulkan build (b9596) — server never comes up. With the default
+# (n_parallel=4, kv_unified=true) it starts and serves small requests fine; the
+# agentic-request crash (081) is therefore NOT a kv_unified issue. Left at default.
 CODER="$LL -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --cache-reuse 32 --alias qwen --log-file D:\\logs\\coder-box.log"
 VISION="$LL -m D:\\models\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --mmproj D:\\models\\mmproj-Qwen3.6-35B-A3B-BF16.gguf --host 0.0.0.0 --port 1234 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --cache-reuse 32 --alias qwen3.6-35b-a3b --log-file D:\\logs\\vision-box.log"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
