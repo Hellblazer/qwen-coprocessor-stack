@@ -70,6 +70,7 @@ import {
 } from "./threads.js";
 import { dispatchEmbed, type EmbedOpts, type EmbedResult } from "./embed.js";
 import { dispatchRerank, type RerankOpts, type RerankResult } from "./rerank.js";
+import { dispatchChat, type ChatOpts, type ChatResult } from "./chat.js";
 import {
   dispatchTokenize,
   type TokenizeOpts,
@@ -253,6 +254,19 @@ export type ToolHandlers = {
     },
     progress?: ProgressEmitter,
   ) => Promise<VisionOneshotResult>;
+  /**
+   * Stateless DIRECT text chat dispatch (bead 5h5). POSTs system+user
+   * straight to a backend's /v1/chat/completions — no @qwen-code/sdk, no
+   * agentic harness, no tools. The fast, crash-free path for operator
+   * dispatch (extract/summarize/classify/judge/answer). Routes to a
+   * 'text' (or, as fallback, 'multimodal') backend; pin a general-instruct
+   * model via `opts.backend`. Use qwen_oneshot/qwen_spawn instead for
+   * actual coding-agent work (file edits, multi-step tools).
+   */
+  qwen_chat: (args: {
+    task: string;
+    opts?: ChatOpts & { backend?: string; continuation_id?: string };
+  }) => Promise<ChatResult>;
   /**
    * Stateless embeddings dispatch. POSTs to a backend's /v1/embeddings
    * (OpenAI-compat). Requires a backend declared with
@@ -779,6 +793,75 @@ export function createToolHandlers(
   // corresponding modality; tokenize accepts any text/multimodal
   // backend (the tokenizer is colocated with the loaded model).
 
+  // ── qwen_chat (direct text chat dispatch, bead 5h5) ─────────
+  //
+  // The text twin of qwen_oneshot_vision: POSTs straight to
+  // /v1/chat/completions, bypassing the SDK / qwen-code agentic harness.
+  // Fast + crash-free for operator dispatch. Routes to a 'text' backend
+  // (multimodal as fallback), honouring an opts.backend pin.
+
+  const qwen_chat: ToolHandlers["qwen_chat"] = async ({ task, opts }) => {
+    const elapsed_start = Date.now();
+    if (shuttingDown) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: { code: "backend_error", message: "supervisor shutting down" },
+      };
+    }
+    if (typeof task !== "string" || task.length === 0) {
+      return {
+        ok: false,
+        elapsed_ms: 0,
+        backend_id: "",
+        error: { code: "backend_error", message: "task must be a non-empty string" },
+      };
+    }
+    refreshPoolBackends(pool);
+    // Direct chat runs on any chat-capable model; route to a 'text'
+    // backend, falling back to 'multimodal' (a vision model also serves
+    // text). Honour an explicit pin verbatim. No agentic harness, so —
+    // unlike qwen_oneshot — this does NOT crash coder-box (bead 081).
+    let backend: import("./types.js").Backend | null = null;
+    if (opts?.backend !== undefined) {
+      backend = pool.backends.find((b) => b.id === opts.backend) ?? null;
+    } else {
+      backend =
+        (await chooseBackendByModality(pool.backends, "text")) ??
+        (await chooseBackendByModality(pool.backends, "multimodal"));
+    }
+    if (!backend) {
+      return {
+        ok: false,
+        elapsed_ms: Date.now() - elapsed_start,
+        backend_id: "",
+        error: {
+          code: "backend_error",
+          message: opts?.backend
+            ? `no backend matches pin "${opts.backend}"`
+            : "no healthy text/multimodal backend available",
+        },
+      };
+    }
+
+    const dispatchOpts: ChatOpts = { ...opts };
+    delete (dispatchOpts as { backend?: unknown }).backend;
+    delete (dispatchOpts as { continuation_id?: unknown }).continuation_id;
+
+    const thread = threads.resolve(opts?.continuation_id);
+    const prior_messages = formatChatPrelude(thread.turns);
+    const continuation_id = thread.id;
+
+    const result = await dispatchChat(backend, task, dispatchOpts, prior_messages);
+
+    if (result.ok && typeof result.result === "string") {
+      threads.append(continuation_id, { role: "user", content: task });
+      threads.append(continuation_id, { role: "assistant", content: result.result });
+    }
+    return { ...result, continuation_id };
+  };
+
   const qwen_embed: ToolHandlers["qwen_embed"] = async ({ texts, opts }) => {
     const elapsed_start = Date.now();
     if (!Array.isArray(texts) || texts.length === 0) {
@@ -976,6 +1059,7 @@ export function createToolHandlers(
     qwen_sessions,
     qwen_oneshot,
     qwen_oneshot_vision,
+    qwen_chat,
     qwen_embed,
     qwen_rerank,
     qwen_tokenize,
@@ -1241,6 +1325,34 @@ async function main(): Promise<void> {
         },
         progress,
       );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+      };
+    },
+  );
+
+  mcpServer.tool(
+    "qwen_chat",
+    "Stateless DIRECT text chat dispatch: system+user → text/JSON response, POSTed straight to a backend's /v1/chat/completions. Bypasses the qwen-code agentic harness entirely — much faster and crash-free for operator/general dispatch (extract, summarize, classify, judge, answer). Routes to a 'text' backend (multimodal fallback); pin a general-instruct model via opts.backend. For actual coding-agent work (file edits, multi-step tools) use qwen_oneshot / qwen_spawn instead.",
+    {
+      task: z.string().describe("The prompt / instruction for the model."),
+      opts: z.object({
+        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 120000."),
+        max_tokens: z.number().int().positive().optional().describe("Max tokens to generate; default 2048."),
+        temperature: z.number().min(0).max(2).optional().describe("Sampling temperature; default 0.3."),
+        system: z.string().optional().describe("Optional system-role prefix."),
+        no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen reasoning-mode thinking; default true."),
+        json_schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema constraint; emitted as response_format.json_schema and the content is parsed into result.parsed."),
+        grammar: z.string().optional().describe("GBNF grammar for token-by-token output enforcement (llama-server `grammar`)."),
+        backend: z.string().optional().describe("Pin to a specific backend by id (e.g. a general-instruct model). Default: weighted text-backend selection, multimodal fallback."),
+        continuation_id: z.string().optional().describe("Thread id from a prior qwen_chat / qwen_oneshot / qwen_oneshot_vision call; prior turns are prepended. Same in-process thread store (3h TTL, 20-turn cap)."),
+      }).optional(),
+    },
+    async (args) => {
+      const result = await handlers.qwen_chat({
+        task: args.task,
+        ...(args.opts !== undefined ? { opts: args.opts as ChatOpts & { backend?: string; continuation_id?: string } } : {}),
+      });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };

@@ -14,7 +14,31 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
-## [0.11.4] - 2026-06-11
+## [0.11.5] - 2026-06-12
+
+Adds `qwen_chat` — a direct text chat-completion dispatch path for
+operator/general work, bypassing the qwen-code agentic harness.
+
+### Added
+
+- **`qwen_chat` MCP tool** (bead `5h5`): POSTs `system`+`user` straight to
+  a backend's `/v1/chat/completions` (the text twin of
+  `qwen_oneshot_vision`) — no `@qwen-code/sdk`, no agentic preamble, no
+  tools. For operator dispatch (extract/summarize/classify/judge/answer).
+  Supports `json_schema` (→ `response_format`, parsed into `result.parsed`),
+  GBNF `grammar` passthrough, `system`, `no_think` (default true),
+  `temperature`, `max_tokens`, and thread `continuation_id` (shared store
+  with `qwen_oneshot`/`_vision`). Routes to a `text` backend (multimodal
+  fallback); pin a general-instruct model via `opts.backend`.
+
+  Rationale (beads `081`/`k8j`): routing simple operator tasks through the
+  qwen-code agentic harness was the root cause of three problems measured
+  2026-06-12 — ~20 s latency (preamble prefill) vs ~3–5 s direct;
+  prompt-echo on terse instructions; and the coder-box crash (`081`, which
+  is the agentic request, not direct chat). `qwen_chat` sidesteps all
+  three and is backend-agnostic. `qwen_oneshot`/`qwen_spawn` remain the
+  agentic path for real coding-agent work. Verified end-to-end against the
+  live 35B (`general-box`): `qwen_chat` → "Tokyo" in 4.6 s.
 
 Fixes the agentic tools (`qwen_oneshot` / `qwen_spawn`) failing in the
 published package. They spawn the qwen CLI through
