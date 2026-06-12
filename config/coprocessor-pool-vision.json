@@ -14,7 +14,7 @@
       "roles": ["code"]
     },
     {
-      "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan; b9090 crashes on the Gated-Delta-Net arch). Pools with coder-mac for coding/text.",
+      "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan). no_agentic (bead 081): EXCLUDED from the agentic pool (qwen_spawn/oneshot) because it reliably CRASHES on the qwen-code agentic request shape (qwen3_next Gated-Delta-Net Vulkan; not fixed by cache-reuse/kv-unified/reboot/b9611). Still serves DIRECT qwen_chat (role=code) + tokenize fine. So agentic coding goes to coder-mac; coder-box does fast direct operator dispatch.",
       "id": "coder-box",
       "url": "http://qwentescence:1235/v1",
       "model": "qwen",
@@ -23,7 +23,8 @@
       "weight": 1,
       "ctx_size": 32768,
       "modality": "text",
-      "roles": ["code"]
+      "roles": ["code"],
+      "no_agentic": true
     },
     {
       "_comment": "qwen3.6-35B-A3B with mmproj. Serves TWO explicit paths on one loaded model: (1) qwen_oneshot_vision by modality=multimodal; (2) qwen_chat role='general'/'reasoning' by the roles array (a general/reasoning instruct model — beats Coder-Next on judgment/reasoning operator tasks, slower). vision_only keeps it out of the agentic text pool (qwen_spawn/oneshot); role routing reaches it regardless. See bead k8j.",

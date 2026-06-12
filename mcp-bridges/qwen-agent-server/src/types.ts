@@ -73,6 +73,23 @@ export interface Backend {
    */
   vision_only?: boolean;
   /**
+   * When true, exclude this backend from the AGENTIC text pool
+   * (`chooseBackend`, used by `qwen_spawn` / `qwen_oneshot`) while
+   * keeping it available for DIRECT dispatch (`qwen_chat` via modality
+   * /role) and `qwen_tokenize`.
+   *
+   * Motivation (bead 081): Coder-Next on the box (qwen3_next / Gated
+   * Delta Net, llama.cpp Vulkan) reliably CRASHES on the qwen-code
+   * agentic request shape (large system preamble + tool schemas) —
+   * confirmed across cache-reuse/kv-unified/reboot and the b9611 build
+   * upgrade. But a DIRECT /v1/chat/completions to the same backend is
+   * fine. So mark coder-box `no_agentic` → agentic coding routes only
+   * to backends that survive it (coder-mac/MLX), while coder-box still
+   * serves fast direct `qwen_chat` (role="code") and tokenize. An
+   * explicit `opts.backend` pin still overrides (caller authority).
+   */
+  no_agentic?: boolean;
+  /**
    * Optional bearer-token credential for remote OpenAI-compatible
    * endpoints (OpenRouter, Together, Fireworks, etc.). The supervisor
    * sends `Authorization: Bearer <key>` on every request to this backend.
