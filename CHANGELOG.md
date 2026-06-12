@@ -14,6 +14,24 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-06-11
+
+Fixes the agentic tools (`qwen_oneshot` / `qwen_spawn`) failing in the
+published package. They spawn the qwen CLI through
+`scripts/qwen-extensions-wrapper.sh`, but `package.json` `files: ["dist"]`
+excluded it from the npm tarball — so the published supervisor failed with
+`Invalid pathToQwenExecutable: … qwen-extensions-wrapper.sh not found`. The
+direct-dispatch tools (embed/rerank/tokenize/extensions/backends) were
+unaffected (they don't spawn the CLI), which is why it surfaced only on a
+full shakeout. Audited all out-of-`dist` runtime file resolutions; the
+wrapper is the only one.
+
+### Fixed
+
+- **Publish the wrapper script**: `files: ["dist", "scripts"]` so
+  `scripts/qwen-extensions-wrapper.sh` ships in the npm tarball. Verified
+  via `npm pack --dry-run`. Server republished; npx pins `@0.11.4`.
+
 ## [0.11.3] - 2026-06-11
 
 Fixes the supervisor never starting under npx/bin launch. 0.11.1/0.11.2
