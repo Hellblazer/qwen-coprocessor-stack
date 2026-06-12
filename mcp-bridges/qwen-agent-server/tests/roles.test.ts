@@ -59,6 +59,35 @@ describe("chooseBackendByRole", () => {
   });
 });
 
+describe("no_tokenize exclusion (bead id7)", () => {
+  // coder-mac (MLX) lacks /tokenize; mark it no_tokenize. coder-box (llama.cpp)
+  // serves /tokenize. Unpinned tokenize routing filters no_tokenize then picks
+  // by modality — mirrors the server.ts qwen_tokenize handler.
+  const coderMacNoTok: Backend = { ...coderMac, no_tokenize: true };
+  const POOL3: Backend[] = [coderMacNoTok, coderBox, visionBox, embed];
+
+  it("unpinned tokenize routing (filter no_tokenize → modality) skips the MLX backend", async () => {
+    const tokPool = POOL3.filter((b) => b.no_tokenize !== true);
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const b =
+        (await chooseBackendByModality(tokPool, "text", undefined, allHealthy)) ??
+        (await chooseBackendByModality(tokPool, "multimodal", undefined, allHealthy));
+      seen.add(b!.id);
+    }
+    expect(seen.has("coder-mac")).toBe(false); // MLX excluded
+    expect(seen.has("coder-box")).toBe(true); // llama.cpp serves /tokenize
+  });
+
+  it("falls back to multimodal (vision-box) when the only text backend is no_tokenize", async () => {
+    const tokPool = [coderMacNoTok, visionBox].filter((b) => b.no_tokenize !== true);
+    const b =
+      (await chooseBackendByModality(tokPool, "text", undefined, allHealthy)) ??
+      (await chooseBackendByModality(tokPool, "multimodal", undefined, allHealthy));
+    expect(b?.id).toBe("vision-box"); // multimodal llama.cpp has /tokenize
+  });
+});
+
 describe("no_agentic exclusion (bead 081)", () => {
   // coder-box mirrors the shipped config: text, role=code, but no_agentic.
   const coderBoxNoAgentic: Backend = { ...coderBox, no_agentic: true };

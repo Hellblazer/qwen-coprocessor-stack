@@ -2,7 +2,7 @@
   "_comment": "Coder-Next coprocessor with (a) text/coding POOLED across Mac (MLX) + box (qwentescence, llama.cpp >= b9596), and (b) a multimodal backend for vision/OCR (Coder-Next is text-only). Copy to ~/.qwen-coprocessor-stack/config.json. Routing (src/backends.ts): heavy/coding prompts -> weighted round-robin across the two 'heavy' text backends (the Coder-Next pool, both machines used simultaneously); qwen_oneshot_vision -> the 'multimodal' backend; qwen_embed/qwen_rerank -> their modality. ROLES (bead k8j): qwen_chat opts.role routes by the 'roles' array — role='code' -> the Coder-Next pool (fast, bulk operator dispatch), role='general'/'reasoning' -> the 35B (slower but reasons; it's the vision-box model, reached via role even though vision_only keeps it out of the agentic text pool). See tests/routing-pool-vision.test.ts.",
   "backends": [
     {
-      "_comment": "Coder-Next on the Mac (MLX/Metal, M4 Max). Higher weight = faster host gets more of the pool.",
+      "_comment": "Coder-Next on the Mac (MLX/Metal, M4 Max). Higher weight = faster host gets more of the pool. no_tokenize (bead id7): MLX's mlx_lm.server has no /tokenize endpoint, so unpinned qwen_tokenize must skip it (route to a llama.cpp backend instead).",
       "id": "coder-mac",
       "url": "http://localhost:8080/v1",
       "model": "mlx-community/Qwen3-Coder-Next-4bit",
@@ -11,7 +11,8 @@
       "weight": 2,
       "ctx_size": 262144,
       "modality": "text",
-      "roles": ["code"]
+      "roles": ["code"],
+      "no_tokenize": true
     },
     {
       "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan). no_agentic (bead 081): EXCLUDED from the agentic pool (qwen_spawn/oneshot) because it reliably CRASHES on the qwen-code agentic request shape (qwen3_next Gated-Delta-Net Vulkan; not fixed by cache-reuse/kv-unified/reboot/b9611). Still serves DIRECT qwen_chat (role=code) + tokenize fine. So agentic coding goes to coder-mac; coder-box does fast direct operator dispatch.",
