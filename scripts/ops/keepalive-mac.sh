@@ -13,6 +13,7 @@ export HF_HOME="/Volumes/Transcend Hell/hf-cache"
 LOGDIR="$HOME/.qwen-coprocessor-stack/logs"; mkdir -p "$LOGDIR"
 VISION_MODEL="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
 REASON_MODEL="mlx-community/Qwen3.6-35B-A3B-4bit"
+REASON_MAX_TOKENS="${REASON_MAX_TOKENS:-4096}"  # generation-length guardrail for reason-mac (mlx_lm.server has no --max-kv-size; --max-tokens bounds generation -> bounds KV growth since operator prompts are small). Override via env.
 VISION_PID=0; REASON_PID=0
 up()  { curl -s --max-time 5 "http://localhost:$1/v1/models" 2>/dev/null | grep -q '"object"'; }
 log() { echo "$(date '+%H:%M:%S') $*"; }
@@ -26,9 +27,15 @@ start_vision() {
   waitup 8083 && log "vision-mac UP" || log "vision-mac FAILED"
 }
 start_reason() {
-  log "starting reason-mac (:8084, $REASON_MODEL)"
+  # --max-tokens guardrail: cap generation length so a runaway on this verbose
+  # thinking model can't balloon unified memory and pressure vision-mac (the
+  # co-residency we engineered away). mlx_lm.server has no --max-kv-size; capping
+  # generation bounds KV growth because operator prompts are small. 64K is far
+  # above any real answer; the model's native window is 256K (we don't need it).
+  log "starting reason-mac (:8084, $REASON_MODEL, max-tokens $REASON_MAX_TOKENS)"
   kpid "$REASON_PID"
   "$VENV/bin/mlx_lm.server" --model "$REASON_MODEL" --host 0.0.0.0 --port 8084 \
+    --max-tokens "$REASON_MAX_TOKENS" \
     > "$LOGDIR/reason-mac.log" 2>&1 & REASON_PID=$!
   waitup 8084 && log "reason-mac UP" || log "reason-mac FAILED"
 }
