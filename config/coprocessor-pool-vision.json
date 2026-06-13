@@ -1,21 +1,8 @@
 {
-  "_comment": "Coder-Next coprocessor with (a) text/coding POOLED across Mac (MLX) + box (qwentescence, llama.cpp >= b9596), and (b) a multimodal backend for vision/OCR (Coder-Next is text-only). Copy to ~/.qwen-coprocessor-stack/config.json. Routing (src/backends.ts): heavy/coding prompts -> weighted round-robin across the two 'heavy' text backends (the Coder-Next pool, both machines used simultaneously); qwen_oneshot_vision -> the 'multimodal' backend; qwen_embed/qwen_rerank -> their modality. ROLES (bead k8j): qwen_chat opts.role routes by the 'roles' array — role='code' -> the Coder-Next pool (fast, bulk operator dispatch), role='general'/'reasoning' -> the 35B (slower but reasons; it's the vision-box model, reached via role even though vision_only keeps it out of the agentic text pool). See tests/routing-pool-vision.test.ts.",
+  "_comment": "Coder-Next coprocessor, MAC-HEAVY topology (2026-06-12, vision-on-mac migration). ROOT CAUSE of the box crashes (beads 081/akf): coder-box(49GB)+vision-35B(21GB) co-residency exhausted the box's ~106GB Vulkan -> uncaught vk alloc -> abort 0xc0000409. FIX: split the two big jobs across machines. BOX runs coder-box ALONE (no co-residency -> stable agentic). MAC runs vision (Qwen2.5-VL-7B, mlx_vlm) + the 35B (Qwen3.6-35B-A3B, mlx_lm, general/reasoning) co-resident \u2014 fits comfortably (~25GB weights, 44GB free) where 3 models (coder+vision+35B) swapped. Routing (src/backends.ts): agentic coding -> coder-box; qwen_chat role=code -> coder-box; role=general/reasoning -> reason-mac; qwen_oneshot_vision -> vision-mac; tokenize -> coder-box (llama.cpp); embed/rerank -> local bge.",
   "backends": [
     {
-      "_comment": "Coder-Next on the Mac (MLX/Metal, M4 Max). Higher weight = faster host gets more of the pool. no_tokenize (bead id7): MLX's mlx_lm.server has no /tokenize endpoint, so unpinned qwen_tokenize must skip it (route to a llama.cpp backend instead).",
-      "id": "coder-mac",
-      "url": "http://localhost:8080/v1",
-      "model": "mlx-community/Qwen3-Coder-Next-4bit",
-      "tier": "remote",
-      "capacity": "heavy",
-      "weight": 2,
-      "ctx_size": 262144,
-      "modality": "text",
-      "roles": ["code"],
-      "no_tokenize": true
-    },
-    {
-      "_comment": "Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan). FRAGILE: qwen3_next Gated-Delta-Net Vulkan crashes under (a) the qwen-code agentic request shape (bead 081 -> no_agentic) AND (b) any CONCURRENT compute (bead akf -> direct chat+tokenize hitting it at once crashed it, cascading a full re-sequence). So it carries NO 'code' role (role=code stays on coder-mac, which handles concurrency) and no_agentic. Effectively single-concurrency: reachable by explicit opts.backend pin + as the unpinned qwen_tokenize fallback (low concurrency). The box's reliable contribution is the 35B (vision-box: vision + role=general/reasoning).",
+      "_comment": "THE coder. Coder-Next on the box (qwentescence, llama.cpp b9596 Vulkan), now running ALONE (vision/35B moved to the Mac) so no co-residency VRAM pressure -> the 081/akf abort does not recur. Serves agentic coding (qwen_spawn/oneshot), role=code, and unpinned tokenize (only llama.cpp backend with /tokenize).",
       "id": "coder-box",
       "url": "http://qwentescence:1235/v1",
       "model": "qwen",
@@ -24,20 +11,38 @@
       "weight": 1,
       "ctx_size": 32768,
       "modality": "text",
-      "no_agentic": true
+      "roles": [
+        "code"
+      ]
     },
     {
-      "_comment": "qwen3.6-35B-A3B with mmproj. Serves TWO explicit paths on one loaded model: (1) qwen_oneshot_vision by modality=multimodal; (2) qwen_chat role='general'/'reasoning' by the roles array (a general/reasoning instruct model — beats Coder-Next on judgment/reasoning operator tasks, slower). vision_only keeps it out of the agentic text pool (qwen_spawn/oneshot); role routing reaches it regardless. See bead k8j.",
-      "id": "vision-box",
-      "url": "http://qwentescence:1234/v1",
-      "model": "qwen3.6-35b-a3b",
+      "_comment": "Vision on the Mac (MLX, M4 Max, mlx_vlm server :8083). Qwen2.5-VL-7B-Instruct-4bit. Replaces the box 35B+mmproj for vision/OCR \u2014 faster (546 vs 256 GB/s) and off the box. vision_only: dedicated vision \u2014 kept out of the agentic text/chat pool so coding never routes to a VL model.",
+      "id": "vision-mac",
+      "url": "http://localhost:8083/v1",
+      "model": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
       "tier": "remote",
       "capacity": "fast",
       "weight": 1,
-      "ctx_size": 131072,
+      "ctx_size": 32768,
       "modality": "multimodal",
-      "vision_only": true,
-      "roles": ["general", "reasoning"]
+      "vision_only": true
+    },
+    {
+      "_comment": "The 35B on the Mac (MLX, mlx_lm server :8084). Qwen3.6-35B-A3B-4bit (the same model that was on the box, moved). Reasoning/general operator backend via role=general/reasoning. no_agentic: it is a reasoning model, not the coder, so keep it out of the agentic coding pool. no_tokenize: MLX has no /tokenize. NOTE: thinking model \u2014 needs generous max_tokens (>=800) or no_think for short answers.",
+      "id": "reason-mac",
+      "url": "http://localhost:8084/v1",
+      "model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "tier": "remote",
+      "capacity": "fast",
+      "weight": 1,
+      "ctx_size": 32768,
+      "modality": "text",
+      "roles": [
+        "general",
+        "reasoning"
+      ],
+      "no_agentic": true,
+      "no_tokenize": true
     },
     {
       "id": "embed-local",
