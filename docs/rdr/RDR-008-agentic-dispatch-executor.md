@@ -71,8 +71,20 @@ kind (another agent CLI, a different result-extraction strategy, a future provid
 3. **The MCP tool surface: `qwen_dispatch`.** Resolves a dispatcher from the registry, runs the task,
    returns `{patch, turns, outcome, cost}`. This is the operator nexus (or any orchestrator) calls.
 4. **Host-effect strategies (pluggable).** The injected effects become named strategies: the run
-   effect (spawn+poll local Qwen), `extractPatch` (git diff against `base_commit`, source-only,
-   contamination strip), and worktree handling. Pluggable so a future executor can supply its own.
+   effect (spawn+poll local Qwen), `extractPatch`, and worktree handling — pluggable so a future
+   executor can supply its own. Two contract points are **locked** here:
+   - **`base_commit` is explicit at the tool/effect boundary.** RDR-007's in-process `ExtractPatch`
+     was `(worktree) => Promise<string>` with `base_commit` closure-captured; a closure can't cross
+     the MCP boundary, so the `qwen_dispatch` input carries `base_commit` and `ExtractPatch` becomes
+     `(worktree, baseCommit) => Promise<string>`. It always diffs against `base_commit`, never `HEAD`,
+     and returns the source-only patch. **`AgentTask`/`AgentResult` are pinned by RDR-007's closed
+     golden fixtures (`agent-shapes.json`)**, so `base_commit` is carried as a `qwen_dispatch`
+     tool-input + `ExtractPatch` parameter — **not** by mutating the locked `AgentTask`, unless we
+     explicitly amend RDR-007's contract and its fixture (which this RDR does not).
+   - **Contamination is host-internal (decided, not open).** Per RDR-007 P4b, `test_edit_contamination`
+     is deliberately *not* a field of `AgentResult`. The executor returns the source-only
+     (test-stripped) patch; the contamination boolean stays a host-internal eval concern. Surfacing it
+     would be a future `AgentResult` contract extension, out of scope here.
 5. **`agent-cli` provider registration.** Today every backend is `kind:"model-endpoint"`; define how
    an `agent-cli` provider (the local Qwen agent) is declared/configured.
 6. **The `base_commit` integration test** the RDR-007 close demanded (agent-commits-its-edits case;
@@ -83,10 +95,14 @@ kind (another agent CLI, a different result-extraction strategy, a future provid
 
 ### Discipline — a seam, not a speculative platform
 
-The "framework" is the **registry + the RDR-007 effect interfaces**, nothing more. We ship **one**
-dispatcher (local Qwen). We do **not** build plugin discovery, dynamic loading, or a plugin lifecycle
-until a *second concrete* executor kind justifies it. The extensibility is the seam; the machinery
-waits for a real second plugin. (Same restraint that kept us from rebuilding nexus's engine here.)
+The "framework" is the **registry + the RDR-007 effect interfaces**, nothing more. We do **not** build
+plugin discovery, dynamic loading, or a plugin lifecycle until a *second concrete* executor justifies
+it. (Same restraint that kept us from rebuilding nexus's engine here.) Two axes, honestly:
+- **Dispatcher axis** — we ship **one** dispatcher (local Qwen). The registry stays a thin seam until
+  a real second dispatcher appears; this axis is single-member by design for now.
+- **Host-effect axis** — the worktree strategy has a *proven* second member (the eval harness's
+  `materialize.py` mechanics) shipping as an immediate fast-follow, not the same instant. So this seam
+  is justified by an actual, already-written second strategy — not a speculative one.
 
 ### Out of scope (deferred to a nexus proposal)
 
@@ -109,9 +125,20 @@ Implementation phases, each closed by a bead (`ItemN=<closing-bead>`; beads file
 
 1. **Dispatcher registry + local-Qwen dispatcher + `agent-cli` provider registration** — the plugin
    seam and its first plugin. Item1=none (bead TBD).
-2. **`qwen_dispatch` MCP tool + pluggable host-effect strategies + `base_commit` integration test** —
-   the operator surface and the locked extraction invariant. Item2=none (bead TBD).
-3. **Published dispatch-operator + continuation-requirements spec for nexus.** Item3=none (bead TBD).
+2. **`qwen_dispatch` MCP tool + host-effect strategies + the `base_commit` contract change & its
+   integration test (same bead).** The tool input carries `base_commit`; `ExtractPatch` gains the
+   `baseCommit` parameter; the agent-commits-its-edits integration test (diff-vs-base non-empty,
+   diff-vs-`HEAD` empty) lands in the **same bead** as the signature change, so the silent-zero path
+   can't ship unguarded. Ships the caller-supplied worktree strategy; the executor-managed strategy
+   (the `materialize.py` port) is a fast-follow. Item2=none (bead TBD).
+3. **Published dispatch-operator + continuation-requirements spec for nexus — with an enforcement
+   hook.** The continuation behavior is prose (not fixture-pinnable), so item 3 carries an explicit
+   acceptance criterion: **(a)** a linked nexus issue with an agreed dispatch-operator interface
+   signature, AND **(b)** a JSON-shape conformance fixture for the `qwen_dispatch` request/response
+   contract (which *is* fixture-pinnable, as RDR-007 did for `AgentTask`/`AgentResult`). The spec must
+   also document that this executor is strictly one-shot (`idle` is terminal — nexus must not build a
+   resume-the-executor path) and the operator-registration ceremony nexus needs. Without (a)+(b),
+   item 3 is documentation with no feedback loop. Item3=none (bead TBD).
 
 ## Research Findings
 
@@ -134,9 +161,11 @@ Implementation phases, each closed by a bead (`ItemN=<closing-bead>`; beads file
   `HEAD`, source-only. **Worktree handling is a pluggable host-effect strategy**: default
   *caller-supplied worktree path* (executor just runs + extracts; lifecycle is the caller's), with an
   optional *executor-managed worktree* (a TS port of the eval harness's bare-mirror + detached-worktree
-  + cleanup mechanics, `materialize.py`) as a second strategy. Ship the default first; the managed
-  strategy is the natural second host-effect plugin — meaning the pluggable seam has a concrete second
-  member on day one (not speculative). T2: `RDR-008-research-05-worktree-base-commit-ownership`.
+  + cleanup mechanics, `materialize.py`) as a second strategy. Ship the caller-supplied default first;
+  the executor-managed strategy (a port of the proven `materialize.py` mechanics) is the immediate
+  fast-follow — a beat after the first, not the same instant. So the host-effect seam is justified by a
+  real, already-written second strategy. (The *dispatcher* axis still has one member until a real
+  second dispatcher appears.) T2: `RDR-008-research-05-worktree-base-commit-ownership`.
 - **RF-6 — Build-new vs extend-nexus. RESOLVED: extend nexus (Option B).** Engine + capture live in
   nexus; this repo contributes only the executor (as a pluggable framework). The strategic
   "build substrate, capture use cases declaratively without a framework per case" bet rides on nexus's
@@ -153,7 +182,12 @@ Implementation phases, each closed by a bead (`ItemN=<closing-bead>`; beads file
 ### Negative
 - Depends on nexus adopting the dispatch operator and building the continuations (cross-repo
   coordination; we only publish a spec, as RDR-007 did for `pick_dispatcher_for`). Until nexus adopts,
-  `qwen_dispatch` has only ad-hoc callers.
+  `qwen_dispatch` has only ad-hoc callers. **The strategic value (plan-engine-routed inverted gradient)
+  is contingent on nexus adoption — an accepted risk, not a positive.** The executor is independently
+  useful on delivery (any orchestrator can call `qwen_dispatch`), but the inverted-gradient *thesis*
+  needs nexus to wire it as a typed operator. Precedent caution: RDR-007's `pick_dispatcher_for` spec
+  remains unadopted by nexus — item 3's acceptance criterion (linked issue + conformance fixture)
+  exists precisely to avoid a published-but-ignored spec.
 - A registry is a (small) abstraction with one implementation at first — justified only by the intent
   to add more; the discipline note guards against it growing prematurely.
 
