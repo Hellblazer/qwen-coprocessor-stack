@@ -30,8 +30,10 @@ import type {
   ContentBlock,
   SDKAssistantMessage,
   SDKMessage,
+  SDKResultMessage,
   SDKResultMessageSuccess,
   TextBlock,
+  ToolInput,
   ToolUseBlock,
 } from "@qwen-code/sdk";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from "node:fs";
@@ -189,7 +191,7 @@ describe("Pin 1 — KV-cache locality", () => {
       const messages = await drainStream(iter, 80);
 
       // Collect all result messages (one per turn in the multi-turn stream).
-      const results = messages.filter((m) => m.type === "result");
+      const results = messages.filter((m): m is SDKResultMessage => m.type === "result");
 
       expect(results.length, "should receive at least two result messages (one per turn)").toBeGreaterThanOrEqual(2);
 
@@ -198,8 +200,10 @@ describe("Pin 1 — KV-cache locality", () => {
       const turn2Result = results[1]!;
       expect(turn2Result.type).toBe("result");
 
-      // The usage field lives on the result message.
-      const usage = (turn2Result as { type: "result"; usage?: { cache_read_input_tokens?: number } }).usage;
+      // The usage field lives on the result message (both SDK result variants
+      // carry `usage: ExtendedUsage`), so it is read through the SDK type — a
+      // future rename of cache_read_input_tokens then fails this gate.
+      const usage = turn2Result.usage;
       expect(
         usage?.cache_read_input_tokens,
         "turn-2 cache_read_input_tokens must be > 0 — KV-cache locality regression if this fires",
@@ -257,11 +261,17 @@ describe("Pin 2 — ask_user_question ToolUseBlock shape", () => {
         "no ToolUseBlock with name=ask_user_question found in stream — shape regression or model changed behavior",
       ).toBeDefined();
 
-      // The input must have a questions array with at least one entry,
-      // each entry having a non-empty "question" string field. The SDK types
-      // ToolUseBlock.input as `unknown`; this test asserts its shape, so cast
-      // to an indexable record before probing.
-      const questions = (toolUseBlock!.input as Record<string, unknown>)["questions"];
+      // The input must have a questions array with at least one entry, each
+      // entry having a non-empty "question" string field. The SDK types
+      // ToolUseBlock.input as `unknown`; guard that it is an object before
+      // probing so a null/non-object input fails as a clear assertion rather
+      // than an opaque TypeError.
+      const rawInput: unknown = toolUseBlock!.input;
+      expect(
+        typeof rawInput === "object" && rawInput !== null,
+        "ask_user_question input must be an object",
+      ).toBe(true);
+      const questions = (rawInput as ToolInput)["questions"];
       expect(
         Array.isArray(questions),
         "ask_user_question input.questions must be an array",
@@ -407,8 +417,9 @@ describe("Pin 3 — streamInput multi-turn answer delivery", () => {
         .map((b) => b.text)
         .join(" ");
 
-      // Only the success result carries a `result` string (the error variant
-      // has no result text); narrow to it via subtype.
+      // Only the success result carries a `result` string (SDKResultMessageError
+      // has no result field, so the prior `m.result ?? ""` mapped error results
+      // to "" anyway — narrowing to the success subtype is equivalent).
       const turn2ResultText = turn2Messages
         .filter((m): m is SDKResultMessageSuccess => m.type === "result" && m.subtype === "success")
         .map((m) => m.result)
