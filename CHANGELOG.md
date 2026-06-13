@@ -14,6 +14,45 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-06-13
+
+Vision-on-Mac topology hardening plus a silent-correctness fix for concurrent
+vision requests. The supervisor change is the serialization of multimodal
+backends (`6vl`); the rest is operational (topology, keepalives) and ships in
+the repo, not the published package.
+
+### Fixed
+
+- **Concurrent requests to a multimodal backend no longer corrupt each other**
+  (`6vl`): `mlx_vlm.server` (the vision backend) has no per-request KV
+  isolation — simultaneous `/v1/chat/completions` requests interleave decode
+  state and return silently-wrong output (deterministic: 4 concurrent OCR → 2
+  garbage; 4 sequential → 4/4 correct). New `runSerial` per-key queue +
+  `maybeSerialize`, gated on `backend.modality === "multimodal"`, serialize
+  per backend id. Wired into **both** `/v1/chat/completions` paths
+  (`dispatchVisionOneshot` and `dispatchChat`), so the `qwen_chat`
+  multimodal-fallback / explicit-pin route is covered too — not just
+  `qwen_oneshot_vision`. Text backends (coder-box, reason-mac) pass through
+  untouched, preserving concurrency. mlx_lm is unaffected.
+- **`coder-box` no longer crashes under co-resident load** (`akf` / `081`):
+  root cause was VRAM exhaustion when coder-box and the vision model shared
+  the box GPU. Resolved by the vision-on-mac topology split (coder-box runs
+  alone on the box; vision + the 35B move to the Mac).
+
+### Operational (repo, not the published package)
+
+- **Vision-on-Mac topology**: `coder-box` runs alone on the box; `vision-mac`
+  (Qwen2.5-VL-7B via mlx_vlm), `reason-mac` (Qwen3.6-35B-A3B via mlx_lm), and
+  the `embed-local`/`rerank-local` bge servers are co-resident on the Mac.
+  `config/coprocessor-pool-vision.json` updated accordingly.
+- **`reason-mac` generation guardrail**: `keepalive-mac.sh` starts
+  `mlx_lm.server` with `--max-tokens 4096` to bound generation length on the
+  verbose thinking model.
+- **embed/rerank held by the Mac keepalive** (`hvr`): `keepalive-mac.sh` now
+  health-checks and restarts `embed-local` (:8081) and `rerank-local` (:8082)
+  alongside the MLX servers, so they survive a reboot instead of silently
+  dropping.
+
 ## [0.11.8] - 2026-06-12
 
 Two reliability cleanups: `qwen_tokenize` MLX routing (`id7`) and keepalive
