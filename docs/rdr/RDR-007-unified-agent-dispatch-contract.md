@@ -189,6 +189,21 @@ test + published contract spec). **Deferred:** nexus adoption of the spec;
 the in-loop coprocessor capability (a running Claude session delegating to
 Qwen subagents) — both their own RDRs.
 
+### Approach
+
+The numbered Decision items above are realized across six implementation
+phases, each closed by a bead (`ItemN=<closing-bead>` for the phase-review-gate
+cross-walk; review/gate beads azf.2/4/6/8/11 and the final gate azf.12 are
+process gates, not Approach items):
+
+1. **`AgentProvider` descriptor + closed `TaskKind` enum + `Backend`→`AgentProvider` projection** (Decision item 1). Item1=qwen-coprocessor-stack-azf.1
+2. **`classifyTask(signals)→TaskKind` classifier** — closed enum, precedence table (Decision item 2). Item2=qwen-coprocessor-stack-azf.1
+3. **`select()` one-registry-pass refactor** behind unchanged `chooseBackend*` signatures, parity-neutral (Decision item 3). Item3=qwen-coprocessor-stack-azf.3
+4. **`excludes` enforcement + net-new MLX `schemaSynth` guard + exhaustive excludes-parity test** (Decision item 1 `excludes` + item 2 parity test). Item4=qwen-coprocessor-stack-azf.5
+5. **`dispatch()` agentic interface** — `kind:"agent-cli"` only (`claude -p` + `qwen_spawn` poll-to-completion) (Decision item 4). Item5=qwen-coprocessor-stack-azf.7
+6. **`run_arm` spine alignment to `AgentTask`/`AgentResult`** — Python host, RF-1 (Decision item 4, Python side). Item6=qwen-coprocessor-stack-azf.9
+7. **Published language-neutral contract spec + golden conformance fixtures** both hosts pass (the published-contract-spec deliverable). Item7=qwen-coprocessor-stack-azf.10
+
 ## Research Findings
 
 The three open questions are resolved by source audit (2026-06-13). Full
