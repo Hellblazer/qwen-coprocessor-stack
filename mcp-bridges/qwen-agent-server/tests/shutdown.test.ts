@@ -26,6 +26,13 @@ function makeStoppableSession(id: string, stopDelayMs = 0) {
   };
 }
 
+// A minimal SessionPool stand-in. `setupShutdown` reads ONLY `pool.sessions`
+// (it iterates `.values()` to stop live sessions), so the other SessionPool
+// fields (maxSessions, idleTtlMs, backends, qwenRealBin, wrapperPath) are
+// omitted and the call sites widen via `as unknown as Parameters<typeof
+// setupShutdown>[1]`. NOTE: if setupShutdown is ever extended to read one of
+// those fields, this mock must grow to match — the cast would otherwise hide
+// the missing field from tsc (silent undefined at runtime).
 function makePool(sessions: ReturnType<typeof makeStoppableSession>[]) {
   const map = new Map(sessions.map((s) => [s.task_id, s]));
   return { sessions: map };
@@ -62,8 +69,8 @@ describe("setupShutdown", () => {
     const pool = makePool([]);
     const { isShuttingDown } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
     expect(isShuttingDown()).toBe(false);
   });
@@ -72,8 +79,8 @@ describe("setupShutdown", () => {
     const pool = makePool([]);
     const { isShuttingDown, handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
 
     void handleSignal("SIGTERM");
@@ -89,8 +96,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
 
     await handleSignal("SIGTERM");
@@ -104,8 +111,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
 
     const p = handleSignal("SIGTERM");
@@ -124,8 +131,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
 
     const p = handleSignal("SIGTERM");
@@ -141,8 +148,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
 
     await handleSignal("SIGTERM");
@@ -157,8 +164,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
 
     const p1 = handleSignal("SIGTERM");
@@ -177,8 +184,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
     );
 
     await handleSignal("SIGTERM");
