@@ -710,3 +710,67 @@ export function backendToAgentProvider(b: Backend): AgentProvider {
     ...(b.weight !== undefined ? { weight: b.weight } : {}),
   };
 }
+
+// ── Agentic dispatch contract (RDR-007 §4 / P3) ────────────────────────────
+//
+// The agentic-altitude interface: `dispatch(task, provider)` for
+// `kind:"agent-cli"` providers (claude -p, qwen_spawn poll-to-completion). It
+// is the `run_arm` spine (scripts/coding-eval/run_arm.py) generalized onto the
+// TS side. `kind:"model-endpoint"` providers (chat/schemaSynth/embed/rerank)
+// are SELECTED via `select()` but INVOKED through their existing tool paths
+// (qwen_oneshot/embed/rerank) — they do NOT implement dispatch() (gate
+// Critical-3: don't force a patch/worktree shape onto a JSON object or vector).
+
+/**
+ * Terminal state of an agentic run, independent of resolved/unresolved (which
+ * a downstream scoring harness decides). Mirrors `run_arm.Outcome` verbatim so
+ * the TS spine and the Python eval spine classify identically (RF-1).
+ *
+ * - `completed`  — the agent finished on its own.
+ * - `timeout`    — the wall-clock cutoff fired (spine-owned).
+ * - `turn_limit` — the agent hit `maxTurns` (driver-classified).
+ * - `error`      — non-zero exit / invocation failure.
+ */
+export type AgentOutcome = "completed" | "timeout" | "turn_limit" | "error";
+
+/**
+ * One unit of agentic work (RDR-007 §4). Host-agnostic: the same shape is
+ * handed to a `claude -p` provider or a `qwen_spawn` provider.
+ *
+ * - `prompt`    — the task/problem statement given to the agent.
+ * - `worktree`  — absolute path to the isolated working tree the agent edits;
+ *                 also the target the host's `extractPatch` effect diffs.
+ * - `maxTurns`  — turn budget; `turns >= maxTurns` classifies as `turn_limit`.
+ * - `minTokens` — per-turn output-token floor (the reasoning-clearing floor;
+ *                 run_arm 4yx). Forwarded to the qwen spawn's
+ *                 `max_output_tokens`. The claude provider self-manages
+ *                 generation and does NOT consume this.
+ * - `timeout`   — wall-clock cutoff in milliseconds; firing yields `timeout`.
+ */
+export interface AgentTask {
+  prompt: string;
+  worktree: string;
+  maxTurns: number;
+  minTokens: number;
+  timeout: number;
+}
+
+/**
+ * Result of an agentic run (RDR-007 §4).
+ *
+ * - `patch`   — the source diff, produced by the HOST's `extractPatch` effect
+ *               off `worktree` (a `git diff <base>`), NEVER the agent's own
+ *               self-reported patch field (run_arm's locked invariant: the
+ *               `claude -p --output-format json` `model_patch` is telemetry
+ *               only). RF-1 keeps git-diff a host effect, not centralized.
+ * - `turns`   — turns the agent used (driver-specific signal: claude's
+ *               `num_turns`, qwen's poll-reported turn count).
+ * - `outcome` — see {@link AgentOutcome}.
+ * - `cost`    — USD cost (metered providers; `0` for free-local).
+ */
+export interface AgentResult {
+  patch: string;
+  turns: number;
+  outcome: AgentOutcome;
+  cost: number;
+}
