@@ -538,6 +538,14 @@ export interface SessionInfo {
  * - `embed` — embedding generation (`qwen_embed`).
  * - `rerank` — reranking (`qwen_rerank`).
  * - `chat` — plain single/multi-turn text chat.
+ *
+ * SCOPE NOTE (RDR-007): tokenization is deliberately NOT a member. The
+ * `Backend.no_tokenize` exclusion stays a call-site filter in `server.ts`
+ * (tokenize routes by modality, not through this dispatch contract). Folding
+ * `no_tokenize` into the `excludes` model is out of scope for RDR-007 and
+ * tracked as a follow-up; adding a member to this CLOSED union later forces a
+ * matching update to the P2 exhaustive parity test, so it is a deliberate
+ * decision, not an oversight.
  */
 export type TaskKind =
   | "schemaSynth"
@@ -545,6 +553,13 @@ export type TaskKind =
   | "embed"
   | "rerank"
   | "chat";
+
+/**
+ * The hard-capability modality of a provider. Alias over `Backend.modality`'s
+ * value set so the element type of `AgentProvider.modalities` stays in lockstep
+ * with `Backend` (a future modality added there flows here automatically).
+ */
+export type Modality = NonNullable<Backend["modality"]>;
 
 /**
  * Provider cost class — a closed union, not an open string. `free-local` is a
@@ -561,23 +576,25 @@ export type CostClass = "free-local" | "metered";
  * endpoint-only fields.
  *
  * NOTE the plurality shift: `Backend.modality` is singular/optional, but
- * `AgentProvider.modalities` is a (non-empty) array. The projection
+ * `AgentProvider.modalities` is a NON-EMPTY array (tuple-typed). The projection
  * normalizes `undefined → ["text"]`.
  */
 export interface AgentProvider {
   id: string;
   /** Which selection/dispatch family this provider belongs to. */
   kind: "model-endpoint" | "agent-cli";
-  /** Hard capabilities. Plural; `Backend.modality` (singular) maps to a
-   *  single-element array via `backendToAgentProvider`. */
-  modalities: NonNullable<Backend["modality"]>[];
+  /** Hard capabilities. Non-empty by type (`[Modality, ...Modality[]]`) so a
+   *  provider can never be silently un-selectable. `Backend.modality`
+   *  (singular) maps to a single-element array via `backendToAgentProvider`. */
+  modalities: [Modality, ...Modality[]];
   /** Advisory/soft hint — what this provider is good at. NOT used for hard
    *  filtering (that is `excludes`). */
   strengths?: TaskKind[];
   /** HARD exclusions: a provider is never routed a `TaskKind` in this list.
-   *  Populated/enforced in P2 (azf.5); unset here in P0 to stay
-   *  behavior-neutral. */
-  excludes?: TaskKind[];
+   *  REQUIRED (matches RDR-007 Decision §1) so P2's exhaustive parity check is
+   *  `excludes.includes(kind)` with no `undefined` handling. P0 projects `[]`
+   *  for every model-endpoint (behavior-neutral); P2 (azf.5) populates it. */
+  excludes: TaskKind[];
   /** Relative decode latency vs the Claude baseline (1.0). Advisory. */
   latencyMult?: number;
   costClass?: CostClass;
@@ -613,19 +630,20 @@ export interface TaskSignals {
 /**
  * Classify a dispatch call into its `TaskKind` (RDR-007 Decision §2). Pure.
  *
- * Precedence (a single call site supplies one signal class, so these are
- * effectively disjoint; the order only disambiguates the degenerate case of
- * an input carrying several):
- *   1. `modality` embedding/rerank → `embed` / `rerank` (hard capability path)
- *   2. `opts.json_schema` present  → `schemaSynth`
- *   3. `opts` present (agentic)    → `agenticLoop`
+ * Precedence follows the RDR-007 Decision §2 table top-to-bottom verbatim (a
+ * single call site supplies one signal class, so the rows are disjoint at every
+ * real call site; the order only disambiguates the degenerate case of an input
+ * carrying several, and matching the accepted spec avoids silent divergence):
+ *   1. `opts.json_schema` present  → `schemaSynth`
+ *   2. `opts` present (agentic)    → `agenticLoop`
+ *   3. `modality` embedding/rerank → `embed` / `rerank`
  *   4. otherwise                   → `chat`
  */
 export function classifyTask(sig: TaskSignals): TaskKind {
-  if (sig.modality === "embedding") return "embed";
-  if (sig.modality === "rerank") return "rerank";
   if (sig.opts?.json_schema !== undefined) return "schemaSynth";
   if (sig.opts !== undefined) return "agenticLoop";
+  if (sig.modality === "embedding") return "embed";
+  if (sig.modality === "rerank") return "rerank";
   return "chat";
 }
 
@@ -647,6 +665,9 @@ export function backendToAgentProvider(b: Backend): AgentProvider {
     id: b.id,
     kind: "model-endpoint",
     modalities: [b.modality ?? "text"],
+    // Behavior-neutral default: every model-endpoint starts with no
+    // exclusions. P2 (azf.5) is the sole phase that populates this.
+    excludes: [],
     url: b.url,
     model: b.model,
     tier: b.tier,

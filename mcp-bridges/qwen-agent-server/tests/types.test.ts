@@ -244,6 +244,7 @@ describe("agent dispatch contract (RDR-007)", () => {
       tier: "remote",
       capacity: "heavy",
       strengths: ["agenticLoop", "schemaSynth"],
+      excludes: [],
       latencyMult: 4.0,
       costClass: "free-local",
     };
@@ -256,6 +257,7 @@ describe("agent dispatch contract (RDR-007)", () => {
       id: "claude-sonnet",
       kind: "agent-cli",
       modalities: ["text"],
+      excludes: [],
       latencyMult: 1.0,
       costClass: "metered",
     };
@@ -302,14 +304,25 @@ describe("agent dispatch contract (RDR-007)", () => {
       vision_only: false,
     };
     const p = backendToAgentProvider(b);
-    // P0 is behavior-neutral: excludes stays unset here.
-    expect(p.excludes).toBeUndefined();
+    // P0 is behavior-neutral: no_agentic/vision_only are NOT folded into
+    // excludes; the projection emits an empty (but present) list. P2 populates.
+    expect(p.excludes).toEqual([]);
   });
 
   it("classifyTask: json_schema present on the agentic surface -> schemaSynth", () => {
     expect(classifyTask({ opts: { json_schema: { type: "object" } } })).toBe(
       "schemaSynth",
     );
+  });
+
+  it("classifyTask: precedence follows the RDR-007 §2 table (json_schema beats modality)", () => {
+    // Disjoint at every real call site, but lock the spec order so a future
+    // edit can't silently invert it (review M1). json_schema wins over a
+    // co-supplied modality; agentic opts win over a co-supplied modality.
+    expect(
+      classifyTask({ opts: { json_schema: {} }, modality: "embedding" }),
+    ).toBe("schemaSynth");
+    expect(classifyTask({ opts: {}, modality: "rerank" })).toBe("agenticLoop");
   });
 
   it("classifyTask: agentic surface without a schema -> agenticLoop", () => {
