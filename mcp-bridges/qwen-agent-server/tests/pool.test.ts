@@ -13,6 +13,13 @@ const { mockSessions, MockSession, getMockCounter, resetMockCounter } = vi.hoist
   let _counter = 0;
   const _sessions: Map<string, InstanceType<typeof MS>> = new Map();
 
+  // The pool stores these as `PooledSession` (Map<string, PooledSession>), but
+  // MS adds test-only control members (`stopCalled`, `setState`) absent from
+  // that interface. `vi.mock` below replaces `QwenSession` wholesale, so a
+  // retrieved session IS an MS at runtime — hence retrieval sites widen via
+  // `as unknown as InstanceType<typeof MockSession>` to reach the mock members.
+  // The double-cast is safe (not a silenced error); a single `as` would wrongly
+  // require PooledSession to extend MS.
   class MS {
     readonly task_id: string;
     readonly backend: { id: string };
