@@ -114,8 +114,17 @@ export interface Backend {
    * convention only (`chat.ts` emitted `response_format` unconditionally;
    * nothing guarded it). Coverage matches the other exclusion flags: the guard
    * fires on the UNPINNED model-endpoint paths (`chooseBackend` agentic +
-   * `chooseBackendByModality` chat). An explicit `opts.backend` pin and the
-   * role path (`chooseBackendByRole`, a soft hint) bypass it by design.
+   * `chooseBackendByModality` chat — INCLUDING `qwen_chat`'s multimodal
+   * fallback, which threads `taskKind=schemaSynth`, so a multimodal `no_schema`
+   * backend like vision-mac IS excluded there).
+   *
+   * NOT enforced on: an explicit `opts.backend` pin; the role path
+   * (`chooseBackendByRole`, a soft hint — passes `kind=null`); and the
+   * DEDICATED vision path (`qwen_oneshot_vision`), which calls
+   * `chooseBackendByModality` WITHOUT a `taskKind` by design (M2=NO — the sole
+   * multimodal backend has no alternative; excluding it would fail the request
+   * rather than degrade it, and vision callers are expected to pin). On that
+   * path a `json_schema` is silently dropped by MLX, as it was pre-RDR-007.
    */
   no_schema?: boolean;
   /**

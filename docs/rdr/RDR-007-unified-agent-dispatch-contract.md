@@ -125,12 +125,27 @@ excludes`. The parity test asserts: for every call shape, no selected
 provider excludes the classified `TaskKind`. `TaskKind` is a **closed enum**
 (RF-2) so this assertion is exhaustive.
 
-**Documented limitation (gate):** an explicit `opts.backend` pin bypasses
-all filters — including `excludes` — exactly as it does today in
-`chooseBackend` step 1 ("caller knows best"). So a caller that pins an MLX
-backend *and* passes `json_schema` still gets the unguarded path. This is
-pre-existing behavior, unchanged here; the `excludes` guard covers the
-*unpinned* routing path, which is where the rule actually rots.
+**Documented limitations (gate).** Three paths bypass `excludes` by design;
+the guard covers the *unpinned, non-role, model-endpoint* routing path, which
+is where the rule actually rots:
+
+1. **Explicit `opts.backend` pin** — bypasses all filters including `excludes`,
+   exactly as `chooseBackend` step 1 does today ("caller knows best"). A caller
+   that pins an MLX backend *and* passes `json_schema` gets the unguarded path.
+2. **Role path** (`chooseBackendByRole`) — passes `kind=null` to `select()`,
+   skipping `excludes`. Role is a soft routing hint, **not** a capability gate
+   (P1). So `qwen_chat` with `role=reasoning` + `json_schema` still routes to
+   reason-mac and the schema is silently dropped by MLX. Pre-existing role
+   semantics, not introduced by P2.
+3. **Dedicated vision path** (`qwen_oneshot_vision`) — calls
+   `chooseBackendByModality` **without** a `taskKind`, so `schemaSynth` is not
+   evaluated (decision **M2 = NO**). The sole multimodal backend is MLX;
+   excluding it would fail the request rather than degrade it, and vision
+   callers are expected to pin. Note: `qwen_chat`'s multimodal *fallback* DOES
+   thread `schemaSynth`, so it *does* exclude a multimodal `no_schema` backend —
+   the two multimodal-touching paths differ deliberately.
+
+All three are pre-existing behaviors, unchanged here.
 
 **3. `select()` — the one registry pass.** `chooseBackend` and
 `chooseBackendByModality/Role` keep their **exact current public signatures**;

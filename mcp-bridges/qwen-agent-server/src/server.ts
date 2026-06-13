@@ -714,6 +714,14 @@ export function createToolHandlers(
     // inputs (llama-server with --mmproj). Route by modality directly
     // rather than through chooseBackend (which targets text chat).
     // See bead qwen-coprocessor-stack-w63.
+    //
+    // RDR-007 M2=NO: no `taskKind` is threaded here, so the `schemaSynth`
+    // exclude is NOT evaluated on the dedicated vision path even when
+    // `opts.json_schema` is set. The sole multimodal backend (vision-mac) is
+    // MLX (no_schema); excluding it would fail the request rather than degrade
+    // it, and vision callers are expected to pin. The schema is silently
+    // dropped by MLX, as pre-RDR-007. (The qwen_chat multimodal FALLBACK does
+    // thread schemaSynth and so DOES exclude vision-mac — see qwen_chat.)
     const backend = await chooseBackendByModality(
       pool.backends,
       "multimodal",

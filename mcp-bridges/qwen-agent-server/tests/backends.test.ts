@@ -612,6 +612,30 @@ describe("excludes enforcement (RDR-007 P2)", () => {
       expect(seen.has("reason-mac")).toBe(true);
     });
 
+    // vision-mac (MLX multimodal, no_schema) is reachable by TWO paths with
+    // DIFFERENT excludes behaviour (azf.6 review S1):
+    //  - qwen_chat's multimodal FALLBACK passes kind=schemaSynth → EXCLUDED here.
+    //  - the dedicated qwen_oneshot_vision passes NO taskKind (M2=NO) → reachable.
+    const visionMac: Backend = {
+      id: "vision-mac",
+      url: "http://mac.local:8083/v1",
+      model: "mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
+      tier: "remote",
+      capacity: "fast",
+      modality: "multimodal",
+      no_schema: true,
+    };
+
+    it("schemaSynth EXCLUDES a no_schema multimodal backend (qwen_chat fallback path)", async () => {
+      const r = await chooseBackendByModality([visionMac], "multimodal", undefined, allHealthy, "schemaSynth");
+      expect(r).toBeNull(); // the tag is live on this path — not dead config
+    });
+
+    it("a no_schema multimodal backend is reachable without a taskKind (dedicated-vision path, M2=NO)", async () => {
+      const r = await chooseBackendByModality([visionMac], "multimodal", undefined, allHealthy);
+      expect(r?.id).toBe("vision-mac");
+    });
+
     it("a pinned no_schema backend STILL returns it even for schemaSynth (caller authority)", async () => {
       const r = await chooseBackendByModality(
         [mlxText, llamaText],

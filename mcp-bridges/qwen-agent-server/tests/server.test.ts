@@ -1152,8 +1152,9 @@ describe("MCP tool handlers", () => {
       await callTool(handlers, "qwen_chat", { task: "hello" });
       const call = mockChooseBackendByModality.mock.calls[0];
       expect(call?.[1]).toBe("text");
-      // classifyTask({}) → "chat"; not schemaSynth, so no exclusion.
-      expect(call?.[4]).not.toBe("schemaSynth");
+      // classifyTask({modality:"text"}) → "chat" (NOT agenticLoop, which a bare
+      // {opts:{}} would yield); positive pin catches a future misclassification.
+      expect(call?.[4]).toBe("chat");
     });
   });
 
