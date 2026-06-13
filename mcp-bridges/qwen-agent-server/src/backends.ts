@@ -460,6 +460,29 @@ function roundRobin<T extends { weight?: number }>(key: string, candidates: T[])
 // Shared selection spine (RDR-007 P1)
 
 /**
+ * Build the `id → Backend` index used by `select()` to map a chosen
+ * `AgentProvider` back to its `Backend` and to run the injected health lookup
+ * on the original object.
+ *
+ * Warns (does NOT throw) on duplicate ids: they collapse in the Map, so a
+ * colliding id would make `select()` return the last-seen `Backend` rather than
+ * the one that produced the chosen provider. Backend ids are expected unique;
+ * surfacing the misconfig beats silently mis-routing. The pre-refactor code was
+ * immune (it threaded `Backend` objects directly, no id round-trip) — this
+ * guard restores that safety on the new path (RDR-007 P1 review, finding M1).
+ */
+function indexById(pool: Backend[]): Map<string, Backend> {
+  const byId = new Map(pool.map((b) => [b.id, b] as const));
+  if (byId.size !== pool.length) {
+    log.warn(
+      { event_type: "duplicate_backend_id", pool_size: pool.length, unique_ids: byId.size },
+      "duplicate backend ids in pool; selection may return the wrong backend for a colliding id",
+    );
+  }
+  return byId;
+}
+
+/**
  * The provider-agnostic selection spine shared by all three public selectors
  * (RDR-007 P1, bead azf.3). Operates over the `AgentProvider` registry
  * projection of an already-capability-filtered candidate list, then:
@@ -538,7 +561,12 @@ export async function chooseBackend(
   // are projected per-step and the shared `select()` spine runs excludes (P1:
   // empty) + health + weighted round-robin. `kind` is `agenticLoop` here, or
   // `schemaSynth` when the agentic call carries a json_schema.
-  const byId = new Map(pool.map((b) => [b.id, b] as const));
+  const byId = indexById(pool);
+  // The conditional spread is REQUIRED, not over-defensive: under
+  // exactOptionalPropertyTypes, `{ json_schema: opts.json_schema }` fails tsc
+  // (TS2375) when `opts.json_schema` is `undefined` — an optional prop may be
+  // omitted but not explicitly assigned `undefined`. classifyTask still does
+  // the `!== undefined` check internally; this only keeps the literal legal.
   const kind = classifyTask({
     opts: opts.json_schema !== undefined ? { json_schema: opts.json_schema } : {},
   });
@@ -614,7 +642,7 @@ export async function chooseBackendByModality(
   // RDR-007 P1: modality is a Backend-only field, so the capability filter
   // stays on Backend; survivors go through the shared spine (excludes empty in
   // P1, health, RR). `kind` follows from the wanted modality (embed/rerank/chat).
-  const byId = new Map(pool.map((b) => [b.id, b] as const));
+  const byId = indexById(pool);
   const candidates = pool.filter((b) => (b.modality ?? "text") === wanted);
   const kind = classifyTask({ modality: wanted });
 
@@ -653,7 +681,7 @@ export async function chooseBackendByRole(
   // not check modality), so the shared spine runs with `kind = null` — the
   // `excludes` slot is skipped here by design. This keeps role selection a soft
   // hint when `excludes` becomes non-empty in P2. Health + RR are shared.
-  const byId = new Map(pool.map((b) => [b.id, b] as const));
+  const byId = indexById(pool);
   const candidates = pool.filter((b) => b.roles?.includes(wanted) ?? false);
 
   return select(candidates.map(backendToAgentProvider), null, `role:${wanted}`, healthy_lookup, byId);

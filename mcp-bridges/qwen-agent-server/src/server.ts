@@ -832,6 +832,12 @@ export function createToolHandlers(
     if (opts?.backend !== undefined) {
       backend = pool.backends.find((b) => b.id === opts.backend) ?? null;
     } else if (opts?.role !== undefined && opts.role !== "") {
+      // NOTE (RDR-007): the role path does NOT evaluate AgentProvider.excludes
+      // (chooseBackendByRole passes kind=null to select()) — role is a soft
+      // routing hint, not a capability gate. So a backend tagged e.g.
+      // excludes:["schemaSynth"] in P2 remains reachable via role routing, the
+      // same way an explicit opts.backend pin bypasses excludes. If qwen_chat
+      // ever carries json_schema, the exclude would NOT fire on this path.
       backend = await chooseBackendByRole(pool.backends, opts.role);
     } else {
       backend =
