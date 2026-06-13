@@ -80,7 +80,10 @@ The design is **layered**, and the layers ship in order:
 **L1 — Workflow engine + Mediator.** A declarative blueprint (JSON) of steps over a minimal DSL
 (`call`/`loop`/`parallel`/`pipe`/`collect`, borrowed from Parmar), executed by an MCP-mediator: a
 server that is also a client to downstream MCP servers. Implicit data flow via `steps.<id>`,
-template resolution for parameters. This is the deterministic spine.
+template resolution for parameters. This is the deterministic spine. **(RF-1, resolved: the mediator
+is a SEPARATE component/process — the supervisor is one downstream MCP server it calls via
+`qwen_spawn`/`poll`/`send`/`stop`, not the mediator itself. `@modelcontextprotocol/sdk` already
+ships the client, so no new dependency and zero supervisor changes.)**
 
 **L2 — Dispatch as a step executor, executor selectable.** A node's executor is a routing choice,
 not a structural one:
@@ -94,16 +97,30 @@ demanded.
 
 **L3 — Continuations with injectable choice.** Loosen Parmar's no-runtime-intelligence rule. A node
 may suspend the run and emit a *choice request*; the run resumes when an external actor supplies the
-answer. Two channels:
-- **LLM / driving-Claude choice** → MCP **sampling**. The engine asks the *client's* LLM for the
-  judgment. This preserves the RDR-001 credential boundary: the engine never holds a key, it asks
-  the client that already does.
-- **Human choice** → MCP **elicitation** (structured input against a schema).
-The **baseline mechanism is poll/resume tools** that reuse the existing session model:
-`run_workflow(...) → {status:"suspended", runId, choicePoint}`, then `resume_workflow(runId, choice)`.
-A suspended workflow run is the same shape as a paused session; injecting a choice is the
-`send`-into-a-session move lifted to runs. **`sampling`/`elicitation` are progressive enhancement**
-for clients that support server-initiated callbacks; the poll/resume core works without them.
+answer.
+
+The **baseline mechanism is poll/resume tools**: `run_workflow(...) → {status:"suspended", runId,
+choicePoint}`, then `resume_workflow(runId, choice)`. **(RF-2, resolved:** the suspended run's state
+lives in an engine-side `Map<runId, RunState>` — *not* in the supervisor's session pool. A run spans
+multiple Qwen sessions, outlives any one of them, and must not be subject to the session reaper's
+idle-TTL. Per-node Qwen execution still uses the session model, but each Qwen step completes and is
+stopped *before* the run suspends, so no session is held across a suspension. The shape is
+session-like; the container is the engine's own map.**)**
+
+Choice channels:
+- **LLM / driving-Claude judgment** — carried by the poll/resume baseline itself. The driving Claude
+  is the *caller* of `run_workflow`; on suspend the engine yields control with a `choicePoint`, and
+  the driving Claude reasons and calls `resume_workflow`. Yielding to the caller *is* the mechanism —
+  no server-initiated call needed. (RF-3: Claude Code does **not** support server-initiated
+  `sampling`, so this yield-to-caller path is the design, not a fallback. Autonomous mid-run judgment,
+  when wanted, dispatches to a local Qwen agent instead.) The credential boundary holds: the engine
+  never reasons and never holds a key.
+- **Human choice** → MCP **elicitation** (RF-3: supported in Claude Code **2.1.76+**, 2026-03-14). The
+  engine requests structured input against a JSON schema; Claude Code renders the form. A genuine
+  server-initiated enhancement layered on the poll/resume baseline.
+
+Server-initiated `sampling` (engine pulls an LLM completion mid-run *without* yielding) is
+**deferred** until Claude Code ships it. The design does not depend on it.
 
 **L4 — Human choice rendered as a surface.** The elicitation/choice request renders through the
 a2ui / palinex surface stack; the selection resolves the continuation.
@@ -149,19 +166,27 @@ the RDR (no rails without a train).
 
 ## Research Findings
 
-Open questions to resolve in the research phase (RF):
-
-- **RF-1 — Mediator placement.** Does the existing coprocessor/supervisor *become* the MCP mediator,
-  or is the workflow engine a separate component that the supervisor is one downstream client of?
-  This decision shapes everything downstream.
-- **RF-2 — Continuation baseline.** Confirm poll/resume over the existing in-memory session model is
-  the right baseline mechanism (suspended run ≅ paused session; `resume_workflow` ≅ `send`).
-- **RF-3 — Client callback support.** Verify whether the driving client (Claude Code / the harness)
-  actually implements server-initiated **sampling** and **elicitation**. If not, L3-enhancement is
-  deferred and the poll/resume baseline stands alone.
-- **RF-4 — Value validation.** Does `/accept` (or another real workflow) have a spine worth compiling
-  and nodes worth dispatching? Quantify against top-level-Claude-live.
-- **RF-5 — Worktree/base_commit ownership.** Caller-supplied worktree+base vs engine-created
+- **RF-1 — Mediator placement. RESOLVED (2026-06-13): separate engine.** The workflow engine is its
+  own MCP-mediator process; the supervisor is one downstream MCP server it calls (`qwen_spawn`/etc.).
+  `@modelcontextprotocol/sdk` already ships the client → no new deps, zero supervisor changes. The
+  supervisor stays a single-upstream stdio server; mixing N-downstream-client lifecycle into it was
+  rejected (transport coupling + tool-surface separation). T2: `RDR-008-research-01-mediator-placement`.
+- **RF-2 — Continuation baseline. RESOLVED (2026-06-13): poll/resume, separate `RunState` map.** The
+  poll/resume *interface* is right, but run state lives in an engine-side `Map<runId, RunState>`, NOT
+  in the session pool (a run spans multiple sessions, outlives them, and the 30-min session reaper
+  would evict a run waiting on a human choice). Sessions are reused only for per-node Qwen execution,
+  stopped before the run suspends. Pool confirmed in-memory/non-durable — the bright line describes
+  existing reality. T2: `RDR-008-research-02-continuation-baseline`.
+- **RF-3 — Client callback support. RESOLVED (2026-06-13): elicitation yes, sampling no.** Elicitation
+  shipped in Claude Code 2.1.76 (2026-03-14) → human-choice channel is available. Server-initiated
+  `sampling` is not supported (on roadmap) → the LLM-judgment case is carried by the poll/resume
+  yield-to-caller path instead, and `sampling` is deferred. `@modelcontextprotocol/sdk` implements
+  both `createMessage`/`elicitInput` server-side, gated on client capability. T2:
+  `RDR-008-research-03-client-callback-support`.
+- **RF-4 — Value validation. OPEN.** Does `/accept` (or another real workflow) have a spine worth
+  compiling and nodes worth dispatching? Quantify against top-level-Claude-live. This is the value
+  gate; still to be probed.
+- **RF-5 — Worktree/base_commit ownership. OPEN.** Caller-supplied worktree+base vs engine-created
   worktree. Iterate; the `base_commit`-not-`HEAD` invariant is non-negotiable regardless.
 
 ## Consequences
