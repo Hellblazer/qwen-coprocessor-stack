@@ -1,7 +1,7 @@
 ---
 name: Qwen-as-coprocessor — stateful Node MCP server with multi-backend routing
 type: architecture
-status: final
+status: closed
 priority: high
 created: 2026-05-03
 accepted: 2026-05-03
