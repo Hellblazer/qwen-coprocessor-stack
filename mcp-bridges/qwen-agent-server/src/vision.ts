@@ -21,6 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { createLogger } from "./log.js";
 import { dispatchOpenAIPost } from "./openai-compat.js";
+import { maybeSerialize } from "./serialize.js";
 import type { Backend } from "./types.js";
 
 const log = createLogger("qwen-vision");
@@ -318,9 +319,17 @@ export async function dispatchVisionOneshot(
     body.grammar = opts.grammar;
   }
 
-  const outcome = await dispatchOpenAIPost(backend, "/v1/chat/completions", body, {
-    timeout_ms,
-  });
+  // Serialize per backend id for multimodal backends: mlx_vlm.server has no
+  // per-request isolation, so concurrent requests corrupt each other's output
+  // (bead qwen-coprocessor-stack-6vl). Only the backend POST is inside the
+  // queue — image normalization above runs concurrently. maybeSerialize is a
+  // no-op for non-multimodal backends. Vision is low-QPS, so the wait is
+  // negligible versus the cost of silently-wrong OCR/scene results.
+  const outcome = await maybeSerialize(backend, () =>
+    dispatchOpenAIPost(backend, "/v1/chat/completions", body, {
+      timeout_ms,
+    }),
+  );
 
   if (!outcome.ok) {
     // llama-server returns the "image input is not supported" hint with

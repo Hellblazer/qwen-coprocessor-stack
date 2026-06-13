@@ -24,6 +24,7 @@
 
 import { createLogger } from "./log.js";
 import { dispatchOpenAIPost } from "./openai-compat.js";
+import { maybeSerialize } from "./serialize.js";
 import type { Backend } from "./types.js";
 
 const log = createLogger("qwen-chat");
@@ -129,9 +130,15 @@ export async function dispatchChat(
     body.grammar = opts.grammar;
   }
 
-  const outcome = await dispatchOpenAIPost(backend, "/v1/chat/completions", body, {
-    timeout_ms,
-  });
+  // maybeSerialize: a no-op for text backends (coder-box/reason-mac stay fully
+  // concurrent), but if qwen_chat falls through to — or is explicitly pinned to
+  // — a multimodal backend (vision-mac), serialize per backend id so it can't
+  // hit the mlx_vlm concurrent-corruption bug (qwen-coprocessor-stack-6vl).
+  const outcome = await maybeSerialize(backend, () =>
+    dispatchOpenAIPost(backend, "/v1/chat/completions", body, {
+      timeout_ms,
+    }),
+  );
 
   if (!outcome.ok) {
     if (outcome.status !== undefined) {
