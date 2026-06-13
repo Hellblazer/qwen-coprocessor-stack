@@ -39,12 +39,13 @@ jobs:
       - name: typecheck + build
         run: npm run build
 
-      # Type-check the unit test sources too: the build tsconfig scopes rootDir
-      # to src/ and excludes tests/, and vitest runs via esbuild (strips types),
-      # so compile-only assertions in tests/*.test.ts were never type-checked
-      # (bead ahd). This gate catches an invalid test literal — e.g. a
-      # BackendInfo missing a required field — instead of passing silently.
-      - name: typecheck unit tests
+      # Type-check the test sources too (unit + integration): the build tsconfig
+      # scopes rootDir to src/ and excludes tests/, and vitest runs via esbuild
+      # (strips types), so compile-only assertions in tests/*.test.ts were never
+      # type-checked (beads ahd + h7v). This gate catches an invalid test literal
+      # (e.g. a BackendInfo missing a required field) or SDK message-shape drift
+      # instead of passing silently.
+      - name: typecheck test sources
         run: npm run typecheck:tests
 
       - name: unit tests
