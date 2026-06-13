@@ -59,6 +59,28 @@ describe("chooseBackendByRole", () => {
   });
 });
 
+describe("excludes bypass on the role path (RDR-007 P2)", () => {
+  // A no_schema backend (excludes:[schemaSynth]) must STILL be reachable via
+  // role routing — the role selector passes kind=null to select(), so the
+  // excludes gate is intentionally skipped (role is a soft hint, not a
+  // capability gate). This asserts the OPPOSITE of an exclusion (azf.4 S1).
+  const reasonMac: Backend = {
+    id: "reason-mac",
+    url: "http://mac.local:8084/v1",
+    model: "mlx-community/Qwen3.6-35B-A3B-4bit",
+    tier: "remote",
+    capacity: "heavy",
+    modality: "text",
+    no_schema: true,
+    roles: ["reasoning"],
+  };
+
+  it("role routing still reaches a no_schema backend (excludes NOT evaluated on the role path)", async () => {
+    const b = await chooseBackendByRole([reasonMac], "reasoning", undefined, allHealthy);
+    expect(b?.id).toBe("reason-mac");
+  });
+});
+
 describe("no_tokenize exclusion (bead id7)", () => {
   // coder-mac (MLX) lacks /tokenize; mark it no_tokenize. coder-box (llama.cpp)
   // serves /tokenize. Unpinned tokenize routing filters no_tokenize then picks

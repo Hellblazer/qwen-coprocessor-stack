@@ -1130,6 +1130,34 @@ describe("MCP tool handlers", () => {
     });
   });
 
+  describe("qwen_chat — schemaSynth threading into modality selection (RDR-007 P2)", () => {
+    // The guard bites on the unpinned modality path: a json_schema chat must
+    // pass taskKind='schemaSynth' so select() can exclude no_schema (MLX)
+    // backends. mockChooseBackendByModality returns null by default → the
+    // handler returns backend_error, but we assert the threaded call args.
+    it("passes taskKind='schemaSynth' to chooseBackendByModality when json_schema is set", async () => {
+      mockChooseBackendByModality.mockResolvedValue(null);
+      await callTool(handlers, "qwen_chat", {
+        task: "make json",
+        opts: { json_schema: { type: "object" } },
+      });
+      // First (text) call. Arg 0=pool, 1=modality, 2=pinned_id, 3=health, 4=taskKind.
+      const call = mockChooseBackendByModality.mock.calls[0];
+      expect(call?.[1]).toBe("text");
+      expect(call?.[4]).toBe("schemaSynth");
+    });
+
+    it("passes a non-schemaSynth taskKind for a plain chat (no json_schema)", async () => {
+      mockChooseBackendByModality.mockResolvedValue(null);
+      await callTool(handlers, "qwen_chat", { task: "hello" });
+      const call = mockChooseBackendByModality.mock.calls[0];
+      expect(call?.[1]).toBe("text");
+      // classifyTask({modality:"text"}) → "chat" (NOT agenticLoop, which a bare
+      // {opts:{}} would yield); positive pin catches a future misclassification.
+      expect(call?.[4]).toBe("chat");
+    });
+  });
+
   describe("qwen_oneshot progress emission", () => {
     it("invokes progress callback at each attempt boundary", async () => {
       // Force schema-parse failure → retry → success path. With 2 attempts

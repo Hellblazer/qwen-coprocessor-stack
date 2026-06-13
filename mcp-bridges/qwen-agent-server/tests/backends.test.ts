@@ -528,6 +528,194 @@ describe("chooseBackendByModality", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
+// excludes enforcement (RDR-007 P2 / azf.5) — NET-NEW guard.
+//
+// A backend tagged `no_schema` (MLX: ignores response_format.json_schema)
+// projects to AgentProvider.excludes = ["schemaSynth"]. select() drops any
+// provider that excludes the classified TaskKind. The guard covers the
+// UNPINNED routing path; explicit pins + the role path bypass it (documented).
+
+describe("excludes enforcement (RDR-007 P2)", () => {
+  const allHealthy = async (): Promise<boolean> => true;
+
+  // MLX text backend that cannot enforce json_schema. modality 'text' so it is
+  // reachable via chooseBackendByModality('text') (the qwen_chat rot path).
+  const mlxText: Backend = {
+    id: "reason-mac",
+    url: "http://mac.local:8084/v1",
+    model: "mlx-community/Qwen3.6-35B-A3B-4bit",
+    tier: "remote",
+    capacity: "fast",
+    modality: "text",
+    no_schema: true,
+  };
+  // llama.cpp text backend that CAN enforce json_schema.
+  const llamaText: Backend = {
+    id: "coder-box",
+    url: "http://box:1235/v1",
+    model: "qwen",
+    tier: "remote",
+    capacity: "fast",
+    modality: "text",
+  };
+
+  describe("chat / modality path (chooseBackendByModality)", () => {
+    it("schemaSynth task EXCLUDES the no_schema backend → routes to the llama backend", async () => {
+      // Run many times: RR must never land on the excluded MLX backend.
+      for (let i = 0; i < 20; i++) {
+        const r = await chooseBackendByModality(
+          [mlxText, llamaText],
+          "text",
+          undefined,
+          allHealthy,
+          "schemaSynth",
+        );
+        expect(r?.id).toBe("coder-box");
+      }
+    });
+
+    it("schemaSynth task with ONLY a no_schema backend → null (blocked, no unguarded fallback)", async () => {
+      const r = await chooseBackendByModality(
+        [mlxText],
+        "text",
+        undefined,
+        allHealthy,
+        "schemaSynth",
+      );
+      expect(r).toBeNull();
+    });
+
+    it("a plain chat task (no taskKind) leaves the no_schema backend selectable (behaviour-neutral)", async () => {
+      // Existing 4-arg callers (embed/rerank/tokenize/plain chat) are unchanged:
+      // without an explicit schemaSynth taskKind, no exclusion applies.
+      const seen = new Set<string>();
+      for (let i = 0; i < 20; i++) {
+        const r = await chooseBackendByModality([mlxText, llamaText], "text", undefined, allHealthy);
+        if (r) seen.add(r.id);
+      }
+      expect(seen.has("reason-mac")).toBe(true);
+      expect(seen.has("coder-box")).toBe(true);
+    });
+
+    it("an explicit 'chat' taskKind does NOT exclude the no_schema backend", async () => {
+      const seen = new Set<string>();
+      for (let i = 0; i < 20; i++) {
+        const r = await chooseBackendByModality(
+          [mlxText, llamaText],
+          "text",
+          undefined,
+          allHealthy,
+          "chat",
+        );
+        if (r) seen.add(r.id);
+      }
+      expect(seen.has("reason-mac")).toBe(true);
+    });
+
+    // vision-mac (MLX multimodal, no_schema) is reachable by TWO paths with
+    // DIFFERENT excludes behaviour (azf.6 review S1):
+    //  - qwen_chat's multimodal FALLBACK passes kind=schemaSynth → EXCLUDED here.
+    //  - the dedicated qwen_oneshot_vision passes NO taskKind (M2=NO) → reachable.
+    const visionMac: Backend = {
+      id: "vision-mac",
+      url: "http://mac.local:8083/v1",
+      model: "mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
+      tier: "remote",
+      capacity: "fast",
+      modality: "multimodal",
+      no_schema: true,
+    };
+
+    it("schemaSynth EXCLUDES a no_schema multimodal backend (qwen_chat fallback path)", async () => {
+      const r = await chooseBackendByModality([visionMac], "multimodal", undefined, allHealthy, "schemaSynth");
+      expect(r).toBeNull(); // the tag is live on this path — not dead config
+    });
+
+    it("a no_schema multimodal backend is reachable without a taskKind (dedicated-vision path, M2=NO)", async () => {
+      const r = await chooseBackendByModality([visionMac], "multimodal", undefined, allHealthy);
+      expect(r?.id).toBe("vision-mac");
+    });
+
+    it("a pinned no_schema backend STILL returns it even for schemaSynth (caller authority)", async () => {
+      const r = await chooseBackendByModality(
+        [mlxText, llamaText],
+        "text",
+        "reason-mac",
+        allHealthy,
+        "schemaSynth",
+      );
+      expect(r?.id).toBe("reason-mac");
+    });
+  });
+
+  describe("agentic path (chooseBackend)", () => {
+    // A synthetic MLX backend that IS in the agentic pool (no_agentic absent) —
+    // defends future MLX-agentic topologies even though the current config
+    // marks reason-mac no_agentic.
+    const mlxAgentic: Backend = { ...mlxText, id: "mlx-agentic" };
+
+    it("a json_schema request never routes to a no_schema agentic backend", async () => {
+      for (let i = 0; i < 20; i++) {
+        const r = await chooseBackend(
+          [mlxAgentic, llamaText],
+          { json_schema: { type: "object" } },
+          "synthesize JSON",
+          allHealthy,
+        );
+        expect(r?.id).toBe("coder-box");
+      }
+    });
+
+    it("a non-schema agentic request still pools across both (no exclusion)", async () => {
+      const seen = new Set<string>();
+      for (let i = 0; i < 20; i++) {
+        const r = await chooseBackend([mlxAgentic, llamaText], {}, "x", allHealthy);
+        if (r) seen.add(r.id);
+      }
+      expect(seen.has("mlx-agentic")).toBe(true);
+      expect(seen.has("coder-box")).toBe(true);
+    });
+
+    it("an explicit pin to a no_schema backend + json_schema still wins (documented limitation)", async () => {
+      const r = await chooseBackend(
+        [mlxAgentic, llamaText],
+        { backend: "mlx-agentic", json_schema: { type: "object" } },
+        "x",
+        allHealthy,
+      );
+      expect(r?.id).toBe("mlx-agentic");
+    });
+  });
+
+  describe("exhaustive parity over the closed TaskKind set", () => {
+    // For every TaskKind, a provider that excludes that kind must never be
+    // selected for a call classified as that kind. TaskKind is closed (RF-2)
+    // so this matrix is complete. We exercise the schemaSynth row through both
+    // public selectors; the other kinds have empty excludes by construction
+    // (only no_schema→schemaSynth exists in P2), so their invariant is that the
+    // guard NEVER spuriously excludes them.
+    const ALL_KINDS = ["schemaSynth", "agenticLoop", "embed", "rerank", "chat"] as const;
+
+    it("only schemaSynth is ever excluded in P2; all other kinds pass through", async () => {
+      for (const kind of ALL_KINDS) {
+        const r = await chooseBackendByModality(
+          [mlxText],
+          "text",
+          undefined,
+          allHealthy,
+          kind,
+        );
+        if (kind === "schemaSynth") {
+          expect(r).toBeNull(); // excluded
+        } else {
+          expect(r?.id).toBe("reason-mac"); // not excluded
+        }
+      }
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
 // getSessionBudgetDefaults — RDR-002 Session-budget resolution chain
 //
 // Priority for max_context_tokens:

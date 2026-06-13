@@ -32,6 +32,7 @@ import type {
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
+import { classifyTask } from "./types.js";
 import {
   chooseBackendByModality,
   chooseBackendByRole,
@@ -713,6 +714,14 @@ export function createToolHandlers(
     // inputs (llama-server with --mmproj). Route by modality directly
     // rather than through chooseBackend (which targets text chat).
     // See bead qwen-coprocessor-stack-w63.
+    //
+    // RDR-007 M2=NO: no `taskKind` is threaded here, so the `schemaSynth`
+    // exclude is NOT evaluated on the dedicated vision path even when
+    // `opts.json_schema` is set. The sole multimodal backend (vision-mac) is
+    // MLX (no_schema); excluding it would fail the request rather than degrade
+    // it, and vision callers are expected to pin. The schema is silently
+    // dropped by MLX, as pre-RDR-007. (The qwen_chat multimodal FALLBACK does
+    // thread schemaSynth and so DOES exclude vision-mac — see qwen_chat.)
     const backend = await chooseBackendByModality(
       pool.backends,
       "multimodal",
@@ -832,11 +841,28 @@ export function createToolHandlers(
     if (opts?.backend !== undefined) {
       backend = pool.backends.find((b) => b.id === opts.backend) ?? null;
     } else if (opts?.role !== undefined && opts.role !== "") {
+      // NOTE (RDR-007): the role path does NOT evaluate AgentProvider.excludes
+      // (chooseBackendByRole passes kind=null to select()) — role is a soft
+      // routing hint, not a capability gate. So a backend tagged e.g.
+      // excludes:["schemaSynth"] in P2 remains reachable via role routing, the
+      // same way an explicit opts.backend pin bypasses excludes. If qwen_chat
+      // ever carries json_schema, the exclude would NOT fire on this path.
       backend = await chooseBackendByRole(pool.backends, opts.role);
     } else {
+      // RDR-007 P2: a json_schema chat is a `schemaSynth` task, so classify and
+      // thread the kind into modality selection — this excludes `no_schema`
+      // (MLX) backends from the UNPINNED text/multimodal path (the rot the guard
+      // closes). Only pass `opts` when json_schema is present: classifyTask reads
+      // a bare `{opts:{}}` as the AGENTIC surface (→ agenticLoop); qwen_chat is a
+      // chat surface, so absent a schema we classify via modality (→ chat).
+      const kind = classifyTask(
+        opts?.json_schema !== undefined
+          ? { opts: { json_schema: opts.json_schema } }
+          : { modality: "text" },
+      );
       backend =
-        (await chooseBackendByModality(pool.backends, "text")) ??
-        (await chooseBackendByModality(pool.backends, "multimodal"));
+        (await chooseBackendByModality(pool.backends, "text", undefined, getCachedHealth, kind)) ??
+        (await chooseBackendByModality(pool.backends, "multimodal", undefined, getCachedHealth, kind));
     }
     if (!backend) {
       return {

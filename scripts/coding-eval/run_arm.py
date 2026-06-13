@@ -39,6 +39,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 # ── Shared clean-HOME fixture (spine infrastructure). ──────────────────────
 # The pinned clean qwen config used as $HOME so ~/.qwen has no nx extension and
@@ -238,6 +239,118 @@ def classify_outcome(
     if turns_used is not None and turns_used >= max_turns:
         return Outcome.TURN_LIMIT
     return Outcome.COMPLETED
+
+
+# ── RDR-007 §4 contract boundary: AgentTask / AgentResult ──────────────────
+#
+# The language-neutral agentic-dispatch contract (RDR-007 P4a, bead azf.9). The
+# pure decision logic above (build_prompt, classify_outcome, gold_test_globs)
+# and the Outcome enum already conform to the shared spec — Outcome.value IS the
+# TS `AgentOutcome` string union verbatim. These two TypedDicts + the projection
+# below are the host-uniform task/result shape the TS side declares in
+# mcp-bridges/qwen-agent-server/src/types.ts (AgentTask / AgentResult), so a
+# Phase-4b golden fixture is byte-identical JSON across both hosts.
+#
+# RF-1: these are PURE shape/projection helpers — they add NO host effect. The
+# git-diff (extract_source_patch), process-group kill (run_with_timeout), and
+# file write (write_prediction) stay local host effects and are NOT centralized.
+#
+# Field names are camelCase on purpose: they are the JSON contract keys (mirror
+# the TS interfaces), not Python-style attribute names. TypedDict (not a
+# dataclass) is the deliberate mirror — at runtime it IS a plain dict, i.e. the
+# exact JSON fixture shape both hosts serialize/compare.
+
+
+class AgentTask(TypedDict):
+    """One unit of agentic work — mirror of the TS `AgentTask` (RDR-007 §4).
+
+    `timeout` is in MILLISECONDS to match the TS field's unit; the host converts
+    to its native unit locally (``run_with_timeout`` takes seconds), so the unit
+    conversion stays a host effect (RF-1).
+    """
+
+    prompt: str
+    worktree: str
+    maxTurns: int
+    minTokens: int
+    timeout: int
+
+
+class AgentResult(TypedDict):
+    """Result of an agentic run — mirror of the TS `AgentResult` (RDR-007 §4).
+
+    `outcome` is the AgentOutcome STRING value (``Outcome.value``), never the
+    Python enum, so it round-trips through JSON identically to the TS side.
+    `cost` is USD (metered providers; ``0.0`` for free-local).
+    """
+
+    patch: str
+    turns: int
+    outcome: str
+    cost: float
+
+
+def build_agent_task(
+    prompt: str,
+    worktree: str | Path,
+    *,
+    max_turns: int = MAX_TURNS,
+    min_tokens: int = MIN_COMPLETION_TOKENS,
+    timeout_seconds: float = WALL_CLOCK_SECONDS,
+) -> AgentTask:
+    """Project the spine's task inputs onto the language-neutral AgentTask shape.
+
+    Defaults pin the shared controls (``MAX_TURNS``, ``MIN_COMPLETION_TOKENS``,
+    ``WALL_CLOCK_SECONDS``). ``timeout`` is emitted in milliseconds to match the
+    TS contract unit.
+    """
+    return {
+        "prompt": prompt,
+        "worktree": str(worktree),
+        "maxTurns": max_turns,
+        "minTokens": min_tokens,
+        "timeout": int(timeout_seconds * 1000),
+    }
+
+
+def _telemetry_turns(telemetry: dict) -> int:
+    """Turns the agent used, normalized across arms. Arm A records ``turns``;
+    Arms B/C record ``num_turns``. Either may be absent or ``None`` (telemetry
+    parse failed) → ``0``, matching the TS dispatcher's ``last.turnsUsed ?? 0``.
+    ``turns`` takes precedence if both are somehow present (documented)."""
+    for key in ("turns", "num_turns"):
+        value = telemetry.get(key)
+        if value is not None:
+            return int(value)
+    return 0
+
+
+def _telemetry_cost(telemetry: dict) -> float:
+    """USD cost, normalized across arms. Arm C meters ``total_cost_usd``; Arm B
+    pins ``cost_usd`` = 0.0; Arm A omits cost entirely (local hardware). Absent
+    or ``None`` → ``0.0``, matching the TS ``last.cost ?? 0`` and
+    ``AgentResult.cost`` "0 for free-local". ``total_cost_usd`` wins if both
+    appear (documented precedence)."""
+    for key in ("total_cost_usd", "cost_usd"):
+        value = telemetry.get(key)
+        if value is not None:
+            return float(value)
+    return 0.0
+
+
+def run_result_to_agent_result(result: RunResult) -> AgentResult:
+    """Project a host-internal ``RunResult`` onto the language-neutral
+    ``AgentResult`` contract (RDR-007 §4). The run-identity fields
+    (``instance_id``/``arm``), ``test_edit_contamination`` (host-internal), and
+    the rest of ``telemetry`` are NOT part of the contract surface; ``turns`` and
+    ``cost`` are lifted out of ``telemetry`` via the normalized accessors above.
+    """
+    return {
+        "patch": result.model_patch,
+        "turns": _telemetry_turns(result.telemetry),
+        "outcome": result.outcome.value,
+        "cost": _telemetry_cost(result.telemetry),
+    }
 
 
 # ── Wall-clock cutoff runner ───────────────────────────────────────────────
