@@ -125,13 +125,13 @@ engine's durability posture is nexus's call. We do not build Temporal here.
 Implementation phases, each closed by a bead (`ItemN=<closing-bead>`; beads filed at planning).
 
 1. **Dispatcher registry + local-Qwen dispatcher + `agent-cli` provider registration** — the plugin
-   seam and its first plugin. Item1=none (bead TBD).
+   seam and its first plugin. Item1=qwen-coprocessor-stack-q8k.
 2. **`qwen_dispatch` MCP tool + host-effect strategies + the `base_commit` contract change & its
    integration test (same bead).** The tool input carries `base_commit`; `ExtractPatch` gains the
    `baseCommit` parameter; the agent-commits-its-edits integration test (diff-vs-base non-empty,
    diff-vs-`HEAD` empty) lands in the **same bead** as the signature change, so the silent-zero path
    can't ship unguarded. Ships the caller-supplied worktree strategy; the executor-managed strategy
-   (the `materialize.py` port) is a fast-follow. Item2=none (bead TBD).
+   (the `materialize.py` port) is a fast-follow. Item2=qwen-coprocessor-stack-exn.
 3. **Published dispatch-operator + continuation-requirements spec for nexus — with an enforcement
    hook.** The continuation behavior is prose (not fixture-pinnable), so item 3 carries an explicit
    acceptance criterion: **(a)** a linked nexus issue with an agreed dispatch-operator interface
@@ -139,7 +139,7 @@ Implementation phases, each closed by a bead (`ItemN=<closing-bead>`; beads file
    contract (which *is* fixture-pinnable, as RDR-007 did for `AgentTask`/`AgentResult`). The spec must
    also document that this executor is strictly one-shot (`idle` is terminal — nexus must not build a
    resume-the-executor path) and the operator-registration ceremony nexus needs. Without (a)+(b),
-   item 3 is documentation with no feedback loop. Item3=none (bead TBD).
+   item 3 is documentation with no feedback loop. Item3=qwen-coprocessor-stack-pwa.
 
 ## Research Findings
 
