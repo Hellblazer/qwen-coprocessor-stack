@@ -183,11 +183,36 @@ the RDR (no rails without a train).
   yield-to-caller path instead, and `sampling` is deferred. `@modelcontextprotocol/sdk` implements
   both `createMessage`/`elicitInput` server-side, gated on client capability. T2:
   `RDR-008-research-03-client-callback-support`.
-- **RF-4 — Value validation. OPEN.** Does `/accept` (or another real workflow) have a spine worth
-  compiling and nodes worth dispatching? Quantify against top-level-Claude-live. This is the value
-  gate; still to be probed.
+- **RF-4 — Value validation. RESOLVED with a REFRAME (2026-06-13).** Probed `/accept`: steps 1–6 are
+  a deterministic spine (verify gate, update T2/frontmatter, regen README, git add) — but *trivial*,
+  with no per-step LLM to eliminate, so the Parmar "compile-once-replay-cheap" token win does **not**
+  apply. The expensive part is step 7 (strategic-planner dispatch, `nx_plan_audit`, `nx_enrich_beads`)
+  plus a real human-choice point ("invoke planner? y/n"). So the value of this engine is **not**
+  token-elimination on a repeated spine; it is **(a) inverted-gradient dispatch** of heavy nodes to
+  local Qwen instead of metered Claude, and **(b) first-class continuations** (human via elicitation,
+  LLM via yield-to-caller). The RDR's Parmar-derived value framing should be read through that lens.
+  `/accept` is a valid but *modest* first probe — it exercises the mechanism (spine + dispatch nodes +
+  a continuation), not a high-value token saving. T2: `RDR-008-research-04-value-probe-and-nexus-substrate`.
 - **RF-5 — Worktree/base_commit ownership. OPEN.** Caller-supplied worktree+base vs engine-created
   worktree. Iterate; the `base_commit`-not-`HEAD` invariant is non-negotiable regardless.
+- **RF-6 — Build-new vs extend-nexus (the new load-bearing fork). OPEN.** nexus already implements this
+  architecture for the *retrieval* domain in production: `plan_match` (match intent against a plan
+  library) → `plan_run` (execute a DAG of typed operators) → `plan_save` (persist a successful plan —
+  the **declarative capture**, so new use cases become plans/data, not code), with `nx_answer` as the
+  compile-once-run-many loop. RDR-008's genuinely net-new vs nexus is narrow: an **agentic-dispatch
+  executor** (a bounded Qwen leaf returning a patch/outcome — nexus operators are retrieval ops) and
+  **suspend/resume-with-choice** (nexus plans run to completion). Hence the fork:
+  - **Option A — build in this repo**, borrowing the plan/operator/DAG *design* from nexus + Parmar.
+    Self-contained; duplicates the engine; **we pay the framework cost** (the "galactic hammer" risk).
+  - **Option B — extend nexus's plan engine** with the dispatch operator + continuations; this repo
+    provides the dispatch executor as a downstream MCP server nexus calls. One engine; `plan_save`
+    gives declarative capture for free (**the platform bet pays off**); but nexus is a **separate repo
+    held out of scope by RDR-007** (no change authority) → needs that project's coordination.
+  **The strategic "build the substrate, learn the use cases, capture them declaratively without building
+  a framework per case" bet only pays off under Option B.** Under Option A we build the framework and
+  the over-engineering risk is live. RF-6 is therefore the decision that determines whether this RDR is
+  worth doing at all, and it outranks RF-1's "separate process" answer. T2:
+  `RDR-008-research-04-value-probe-and-nexus-substrate`.
 
 ## Consequences
 
