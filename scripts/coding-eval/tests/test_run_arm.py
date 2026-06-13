@@ -20,13 +20,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from run_arm import (  # noqa: E402
     MAX_TURNS,
+    MIN_COMPLETION_TOKENS,
     WALL_CLOCK_SECONDS,
     Outcome,
+    RunResult,
+    build_agent_task,
     build_prompt,
     classify_outcome,
     detect_test_contamination,
     extract_source_patch,
     gold_test_globs,
+    run_result_to_agent_result,
     run_with_timeout,
     write_prediction,
 )
@@ -255,3 +259,114 @@ def test_write_prediction_appends_swebench_keys(tmp_path):
 def test_shared_controls_present():
     assert MAX_TURNS == 40
     assert WALL_CLOCK_SECONDS > 0
+
+
+# ── RDR-007 §4 contract boundary: AgentTask / AgentResult projection ─────────
+# These pin the Python spine to the SAME language-neutral shape the TS host
+# emits (mcp-bridges/qwen-agent-server/src/types.ts AgentTask/AgentResult), so
+# Phase 4b's golden fixtures are byte-identical across both hosts. Field names
+# are camelCase deliberately — they are the JSON fixture keys, not Python style.
+
+
+def test_agent_outcome_values_match_ts_union():
+    # Outcome.value IS the TS AgentOutcome string union (verbatim, RF-1).
+    assert {o.value for o in Outcome} == {"completed", "timeout", "turn_limit", "error"}
+
+
+def test_agent_task_shape_matches_contract():
+    task = build_agent_task("do the thing", "/tmp/wt")
+    # Exact key set mirrors the TS AgentTask interface (camelCase JSON keys).
+    assert set(task) == {"prompt", "worktree", "maxTurns", "minTokens", "timeout"}
+    assert task["prompt"] == "do the thing"
+    assert task["worktree"] == "/tmp/wt"
+
+
+def test_build_agent_task_defaults_pin_shared_controls():
+    task = build_agent_task("p", "/wt")
+    assert task["maxTurns"] == MAX_TURNS
+    assert task["minTokens"] == MIN_COMPLETION_TOKENS
+    # timeout is emitted in MILLISECONDS to match TS AgentTask.timeout — the
+    # host converts back to seconds for run_with_timeout locally (RF-1).
+    assert task["timeout"] == int(WALL_CLOCK_SECONDS * 1000)
+
+
+def test_build_agent_task_overrides_and_ms_conversion():
+    task = build_agent_task("p", "/wt", max_turns=10, min_tokens=2048, timeout_seconds=5)
+    assert task["maxTurns"] == 10
+    assert task["minTokens"] == 2048
+    assert task["timeout"] == 5000  # seconds -> ms at the contract boundary
+
+
+def _rr(outcome=Outcome.COMPLETED, patch="DIFF", telemetry=None) -> RunResult:
+    return RunResult(
+        instance_id="psf__requests-2148",
+        arm="arm-x",
+        outcome=outcome,
+        model_patch=patch,
+        telemetry=telemetry if telemetry is not None else {},
+    )
+
+
+def test_agent_result_shape_matches_contract():
+    res = run_result_to_agent_result(_rr())
+    # Exact key set mirrors the TS AgentResult interface.
+    assert set(res) == {"patch", "turns", "outcome", "cost"}
+    assert res["patch"] == "DIFF"
+    # outcome is the STRING value (JSON), never the Python enum.
+    assert res["outcome"] == "completed"
+    assert isinstance(res["outcome"], str)
+
+
+def test_map_arm_a_turns_key_no_cost():
+    # Arm A reports telemetry['turns'] and omits cost (local hardware -> 0.0).
+    res = run_result_to_agent_result(_rr(telemetry={"turns": 5, "tool_calls": 12}))
+    assert res["turns"] == 5
+    assert res["cost"] == 0.0
+
+
+def test_map_arm_c_num_turns_and_metered_cost():
+    res = run_result_to_agent_result(
+        _rr(telemetry={"num_turns": 3, "total_cost_usd": 0.717387})
+    )
+    assert res["turns"] == 3
+    assert res["cost"] == pytest.approx(0.717387)
+
+
+def test_map_arm_b_num_turns_zero_cost():
+    res = run_result_to_agent_result(_rr(telemetry={"num_turns": 7, "cost_usd": 0.0}))
+    assert res["turns"] == 7
+    assert res["cost"] == 0.0
+
+
+def test_map_turns_precedence_turns_over_num_turns():
+    # If both keys appear, the Arm-A 'turns' key wins (documented precedence).
+    res = run_result_to_agent_result(_rr(telemetry={"turns": 2, "num_turns": 9}))
+    assert res["turns"] == 2
+
+
+def test_map_cost_precedence_total_over_cost_usd():
+    res = run_result_to_agent_result(
+        _rr(telemetry={"total_cost_usd": 1.5, "cost_usd": 0.0})
+    )
+    assert res["cost"] == pytest.approx(1.5)
+
+
+def test_map_missing_telemetry_defaults_to_zero():
+    # Empty/parse-failed telemetry -> turns 0, cost 0.0 (matches TS `?? 0`).
+    res = run_result_to_agent_result(_rr(telemetry={}))
+    assert res["turns"] == 0
+    assert res["cost"] == 0.0
+
+
+def test_map_none_telemetry_values_default_to_zero():
+    # A telemetry parse failure leaves the keys present but None.
+    res = run_result_to_agent_result(
+        _rr(telemetry={"turns": None, "num_turns": None, "total_cost_usd": None})
+    )
+    assert res["turns"] == 0
+    assert res["cost"] == 0.0
+
+
+def test_map_preserves_every_outcome():
+    for o in Outcome:
+        assert run_result_to_agent_result(_rr(outcome=o))["outcome"] == o.value
