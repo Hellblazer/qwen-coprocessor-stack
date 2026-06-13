@@ -25,7 +25,8 @@
       "weight": 1,
       "ctx_size": 32768,
       "modality": "multimodal",
-      "vision_only": true
+      "vision_only": true,
+      "no_schema": true
     },
     {
       "_comment": "The 35B on the Mac (MLX, mlx_lm server :8084). Qwen3.6-35B-A3B-4bit (the same model that was on the box, moved). Reasoning/general operator backend via role=general/reasoning. no_agentic: it is a reasoning model, not the coder, so keep it out of the agentic coding pool. no_tokenize: MLX has no /tokenize. NOTE: thinking model \u2014 needs generous max_tokens (>=800) or no_think for short answers.",
@@ -42,7 +43,8 @@
         "reasoning"
       ],
       "no_agentic": true,
-      "no_tokenize": true
+      "no_tokenize": true,
+      "no_schema": true
     },
     {
       "id": "embed-local",

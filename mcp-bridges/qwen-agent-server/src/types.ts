@@ -100,6 +100,25 @@ export interface Backend {
    */
   no_tokenize?: boolean;
   /**
+   * When true, exclude this backend from UNPINNED routing of `schemaSynth`
+   * tasks — calls carrying a `json_schema` (RDR-007 P2 / bead azf.5). MLX
+   * servers (`mlx_lm.server` / `mlx_vlm`) silently IGNORE
+   * `response_format.json_schema`, so a json_schema request that lands on one
+   * returns unconstrained text — the schema is dropped with no error. Tag such
+   * backends `no_schema` so the dispatch contract routes json_schema requests
+   * only to a backend that enforces it (llama.cpp). This is the operator
+   * source for `AgentProvider.excludes = ["schemaSynth"]` (see
+   * `backendToAgentProvider`).
+   *
+   * Net-new enforcement: before RDR-007 the MLX-no-schema rule was operator
+   * convention only (`chat.ts` emitted `response_format` unconditionally;
+   * nothing guarded it). Coverage matches the other exclusion flags: the guard
+   * fires on the UNPINNED model-endpoint paths (`chooseBackend` agentic +
+   * `chooseBackendByModality` chat). An explicit `opts.backend` pin and the
+   * role path (`chooseBackendByRole`, a soft hint) bypass it by design.
+   */
+  no_schema?: boolean;
+  /**
    * Optional bearer-token credential for remote OpenAI-compatible
    * endpoints (OpenRouter, Together, Fireworks, etc.). The supervisor
    * sends `Authorization: Bearer <key>` on every request to this backend.
@@ -653,9 +672,10 @@ export function classifyTask(sig: TaskSignals): TaskKind {
  * `Backend` shape is unchanged. Normalizes the singular/optional `modality`
  * (default `"text"`, per `Backend.modality`) into the plural `modalities`.
  *
- * Behavior-neutral (P0): it does NOT translate `no_agentic` / `vision_only`
- * into `excludes`. Generalizing those flags into the exclusion model is
- * Phase 2 (azf.5), the sole behavior-change phase.
+ * Exclusions (P2 / azf.5): only the `no_schema` flag folds into `excludes`
+ * (→ `["schemaSynth"]`). `no_agentic` / `vision_only` deliberately stay inline
+ * `Backend`-level filters in `chooseBackend` — the RDR-007 P2 scope is the MLX
+ * schemaSynth guard, not a migration of the other two flags.
  */
 export function backendToAgentProvider(b: Backend): AgentProvider {
   // `ctx_size` / `weight` are optional on both sides; under
@@ -665,9 +685,14 @@ export function backendToAgentProvider(b: Backend): AgentProvider {
     id: b.id,
     kind: "model-endpoint",
     modalities: [b.modality ?? "text"],
-    // Behavior-neutral default: every model-endpoint starts with no
-    // exclusions. P2 (azf.5) is the sole phase that populates this.
-    excludes: [],
+    // RDR-007 P2 (azf.5): the operator-declared `no_schema` flag folds into the
+    // hard-exclusion model — MLX backends ignore response_format.json_schema, so
+    // they are excluded from `schemaSynth` routing. This is the ONLY flag folded
+    // in P2 by design: `no_agentic` / `vision_only` stay inline Backend-level
+    // filters in chooseBackend (the bead is the MLX schemaSynth guard, not a
+    // migration of the other two flags). A backend without `no_schema` projects
+    // an empty (but present) exclusion list.
+    excludes: b.no_schema === true ? ["schemaSynth"] : [],
     url: b.url,
     model: b.model,
     tier: b.tier,

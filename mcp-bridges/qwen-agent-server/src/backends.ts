@@ -626,12 +626,20 @@ export async function chooseBackend(
  *   caller validates the modality match and surfaces `wrong_modality`.
  * - Otherwise filter by `wanted` (treating unset modality as `'text'`),
  *   then round-robin across healthy candidates. `null` → no match.
+ *
+ * `taskKind` (RDR-007 P2) overrides the modality-derived `TaskKind` used for the
+ * `excludes` check. When omitted (the embed/rerank/tokenize callers), the kind
+ * is derived from `wanted` exactly as before — behaviour-neutral. `qwen_chat`
+ * passes `classifyTask({opts:{json_schema}})` so a json_schema chat classifies
+ * as `schemaSynth` and is excluded from `no_schema` (MLX) backends. The role
+ * path does NOT use this (it bypasses excludes via `chooseBackendByRole`).
  */
 export async function chooseBackendByModality(
   pool: Backend[],
   wanted: NonNullable<Backend["modality"]>,
   pinned_id?: string,
   healthy_lookup: (b: Backend) => Promise<boolean | null> = getCachedHealth,
+  taskKind?: TaskKind,
 ): Promise<Backend | null> {
   if (pool.length === 0) return null;
 
@@ -639,12 +647,13 @@ export async function chooseBackendByModality(
     return pool.find((b) => b.id === pinned_id) ?? null;
   }
 
-  // RDR-007 P1: modality is a Backend-only field, so the capability filter
-  // stays on Backend; survivors go through the shared spine (excludes empty in
-  // P1, health, RR). `kind` follows from the wanted modality (embed/rerank/chat).
+  // RDR-007 P1/P2: modality is a Backend-only field, so the capability filter
+  // stays on Backend; survivors go through the shared spine (excludes, health,
+  // RR). `kind` is the caller-supplied `taskKind` when given (e.g. schemaSynth
+  // from qwen_chat), else derived from the wanted modality (embed/rerank/chat).
   const byId = indexById(pool);
   const candidates = pool.filter((b) => (b.modality ?? "text") === wanted);
-  const kind = classifyTask({ modality: wanted });
+  const kind = taskKind ?? classifyTask({ modality: wanted });
 
   return select(candidates.map(backendToAgentProvider), kind, `modality:${wanted}`, healthy_lookup, byId);
 }

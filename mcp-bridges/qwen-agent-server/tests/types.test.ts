@@ -309,6 +309,39 @@ describe("agent dispatch contract (RDR-007)", () => {
     expect(p.excludes).toEqual([]);
   });
 
+  it("backendToAgentProvider maps no_schema:true -> excludes:[schemaSynth] (RDR-007 P2)", () => {
+    const b: Backend = {
+      id: "reason-mac",
+      url: "http://mac.local:8084/v1",
+      model: "mlx-community/Qwen3.6-35B-A3B-4bit",
+      tier: "remote",
+      capacity: "heavy",
+      no_schema: true,
+    };
+    const p = backendToAgentProvider(b);
+    // P2 net-new: the MLX no-json_schema rule becomes an enforced exclusion.
+    expect(p.excludes).toEqual(["schemaSynth"]);
+  });
+
+  it("backendToAgentProvider omits the schemaSynth exclude when no_schema is unset/false (P2)", () => {
+    const unset: Backend = {
+      id: "coder-box",
+      url: "http://box:1235/v1",
+      model: "qwen",
+      tier: "remote",
+      capacity: "heavy",
+    };
+    const explicitFalse: Backend = { ...unset, id: "coder-box-2", no_schema: false };
+    // Only no_schema folds into excludes; no_agentic/vision_only still do NOT
+    // (they stay inline Backend-level filters — deliberate P2 scope: the bead
+    // is the MLX schemaSynth guard, not a migration of the other two flags).
+    expect(backendToAgentProvider(unset).excludes).toEqual([]);
+    expect(backendToAgentProvider(explicitFalse).excludes).toEqual([]);
+    expect(
+      backendToAgentProvider({ ...unset, no_agentic: true, vision_only: true }).excludes,
+    ).toEqual([]);
+  });
+
   it("classifyTask: json_schema present on the agentic surface -> schemaSynth", () => {
     expect(classifyTask({ opts: { json_schema: { type: "object" } } })).toBe(
       "schemaSynth",

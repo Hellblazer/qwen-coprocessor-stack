@@ -32,6 +32,7 @@ import type {
   SpawnOpts,
   SpawnResult,
 } from "./types.js";
+import { classifyTask } from "./types.js";
 import {
   chooseBackendByModality,
   chooseBackendByRole,
@@ -840,9 +841,20 @@ export function createToolHandlers(
       // ever carries json_schema, the exclude would NOT fire on this path.
       backend = await chooseBackendByRole(pool.backends, opts.role);
     } else {
+      // RDR-007 P2: a json_schema chat is a `schemaSynth` task, so classify and
+      // thread the kind into modality selection — this excludes `no_schema`
+      // (MLX) backends from the UNPINNED text/multimodal path (the rot the guard
+      // closes). Only pass `opts` when json_schema is present: classifyTask reads
+      // a bare `{opts:{}}` as the AGENTIC surface (→ agenticLoop); qwen_chat is a
+      // chat surface, so absent a schema we classify via modality (→ chat).
+      const kind = classifyTask(
+        opts?.json_schema !== undefined
+          ? { opts: { json_schema: opts.json_schema } }
+          : { modality: "text" },
+      );
       backend =
-        (await chooseBackendByModality(pool.backends, "text")) ??
-        (await chooseBackendByModality(pool.backends, "multimodal"));
+        (await chooseBackendByModality(pool.backends, "text", undefined, getCachedHealth, kind)) ??
+        (await chooseBackendByModality(pool.backends, "multimodal", undefined, getCachedHealth, kind));
     }
     if (!backend) {
       return {
