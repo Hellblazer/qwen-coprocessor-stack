@@ -5,6 +5,8 @@
     { "name": "json_schema -> schemaSynth", "signals": { "opts": { "json_schema": { "type": "object" } } }, "expected": "schemaSynth" },
     { "name": "json_schema beats agentic precedence", "signals": { "opts": { "json_schema": { "type": "object" } }, "modality": "text" }, "expected": "schemaSynth" },
     { "name": "opts present (no schema) -> agenticLoop", "signals": { "opts": {} }, "expected": "agenticLoop" },
+    { "name": "opts present beats embedding modality", "signals": { "opts": {}, "modality": "embedding" }, "expected": "agenticLoop" },
+    { "name": "opts present beats rerank modality", "signals": { "opts": {}, "modality": "rerank" }, "expected": "agenticLoop" },
     { "name": "embedding modality -> embed", "signals": { "modality": "embedding" }, "expected": "embed" },
     { "name": "rerank modality -> rerank", "signals": { "modality": "rerank" }, "expected": "rerank" },
     { "name": "text modality alone -> chat", "signals": { "modality": "text" }, "expected": "chat" },

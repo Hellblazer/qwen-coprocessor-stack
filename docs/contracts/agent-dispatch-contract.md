@@ -91,6 +91,13 @@ scope). So each surface declares its conformance scope:
 | **prompt-render** | the shared task-prompt template render | — | `build_prompt` | `prompt-render.json` | **Python** (normative-if-adopted) |
 | **task-classification** | precedence: `json_schema`→`schemaSynth`; `opts`→`agenticLoop`; modality `embedding`/`rerank`; else `chat` | `classifyTask` | — | `task-classification.json` | **TS** (normative-if-adopted) |
 
+> **`gold_test_globs` is deliberately not in this table.** RDR-007 §RF-1 lists
+> it alongside `classify_outcome` / `build_prompt` as Python pure logic, but it
+> computes test-file pathspecs from a gold `test_patch` that only the Python
+> eval spine ever sees (the TS dispatch host has no gold-patch concept). It is
+> therefore Python-eval-internal, not a cross-host contract surface — omitted
+> here rather than forgotten.
+
 The **classify-outcome** rule is a verbatim port across the two hosts — the one
 piece most prone to silent cross-language drift. Its golden fixture is the
 **drift tripwire** for RDR-007 Consequence Negative-1: if either host's rule
