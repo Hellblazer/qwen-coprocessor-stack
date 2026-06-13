@@ -1,9 +1,10 @@
 ---
 name: Multi-Qwen fleet management — declarative config, tmux-as-lifecycle, mosh-attached operator UX
 type: architecture
-status: draft
+status: deferred
 priority: high
 created: 2026-05-04
+deferred_date: 2026-06-13
 authors:
   - hal.hildebrand
 related:
@@ -15,6 +16,17 @@ related:
 # RDR-004 — Multi-Qwen fleet management: declarative config, tmux-as-lifecycle, mosh-attached operator UX
 
 ## Status
+
+> **DEFERRED INDEFINITELY (2026-06-13).** Never advanced past draft and has
+> **zero implementation** — no `qwenctl`, no `fleet.toml`, no fleet source; the
+> `scripts/setup-strix-halo.sh` referenced below was never committed. The
+> *runtime* control plane (multi-backend routing, health, KV-cache affinity)
+> already ships in the supervisor (RDR-001); what this RDR adds is the *operator*
+> control plane (declarative fleet bring-up/observe/teardown across hosts), for
+> which there is no current demand — fleets are managed ad-hoc via SSH + the
+> launchd keepalive today. Parked indefinitely; revive if/when hands-off
+> multi-host fleet ops become a real need. The design (Option D, tmux-as-
+> lifecycle) is retained as the starting point for that revival.
 
 **Draft** (2026-05-04). The supervisor's runtime control plane —
 `Backend[]`, the 6-step router, health cache, KV-cache affinity per

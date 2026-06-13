@@ -349,6 +349,8 @@ qwen-agent-server README.
 
 ```
 docs/rdr/                    Decision records (RDR-001 = primary design doc)
+docs/contracts/              Published cross-host contracts + golden fixtures
+                             (agent-dispatch-contract.md — RDR-007)
 mcp-bridges/
   qwen-agent-server/         MCP supervisor (TypeScript)
 extensions/                  Qwen Code extensions surface (see RDR-002)

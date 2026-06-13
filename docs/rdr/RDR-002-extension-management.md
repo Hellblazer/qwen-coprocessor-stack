@@ -1,11 +1,12 @@
 ---
 name: Extension management — exposing the inner Qwen's tool surface to the operator
 type: architecture
-status: accepted
+status: deferred
 priority: medium
 created: 2026-05-04
 accepted_date: 2026-05-04
 gate_passed_date: 2026-05-04
+deferred_date: 2026-06-13
 reviewed-by: self
 authors:
   - hal.hildebrand
@@ -18,6 +19,17 @@ related:
 # RDR-002 — Extension management: exposing the inner Qwen's tool surface to the operator
 
 ## Status
+
+> **DEFERRED INDEFINITELY (2026-06-13).** Layer 2 (the novel piece — per-spawn
+> extension override + the `pathToQwenExecutable` wrapper bridge) is **shipped
+> and pinned**: `extensions.ts`, `qwen_extensions` / `qwen_reload_extensions`,
+> `default_extensions` config, and Pin 4 of `tests/integration/sdk-behavior.test.ts`.
+> What remains is **Layer 1 lifecycle** (install / upgrade / remove / enable /
+> disable), which is read-only today (the `/qwen-stack:extensions` skill lists
+> only) and was slated for a future v0.4. No active demand, so the remaining
+> Layer 1 work is parked indefinitely rather than left as an open "accepted"
+> commitment. Revive when operator-driven extension install/upgrade is actually
+> needed. The shipped Layer 2 behavior is unaffected by this status change.
 
 **Accepted** with amendments 2026-05-09 (admin-gate removal + `default_extensions` config field; session budget caps + `context_pressure` event; live budget counters on `qwen_poll`; backend-declared `ctx_size` for budget-default derivation + `qwen_sessions` overview tool; `thinking_mode` + `json_schema` SpawnOpts + `qwen_oneshot` dispatch tool): see "Amendments" section at the end of this file.
 
