@@ -2,11 +2,12 @@
 title: "Unified agent dispatch contract — one AgentProvider registry + one dispatch interface across Claude and Qwen"
 id: RDR-007
 type: Design
-status: draft
+status: accepted
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-13
+accepted_date: 2026-06-13
 related_issues: []
 ---
 
