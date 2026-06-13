@@ -101,8 +101,8 @@ it. (Same restraint that kept us from rebuilding nexus's engine here.) Two axes,
 - **Dispatcher axis** — we ship **one** dispatcher (local Qwen). The registry stays a thin seam until
   a real second dispatcher appears; this axis is single-member by design for now.
 - **Host-effect axis** — the worktree strategy has a *proven* second member (the eval harness's
-  `materialize.py` mechanics) shipping as an immediate fast-follow, not the same instant. So this seam
-  is justified by an actual, already-written second strategy — not a speculative one.
+  `scripts/coding-eval/materialize.py` mechanics) shipping as an immediate fast-follow, not the same
+  instant. So this seam is justified by an actual, already-written second strategy — not a speculative one.
 
 ### Out of scope (deferred to a nexus proposal)
 
