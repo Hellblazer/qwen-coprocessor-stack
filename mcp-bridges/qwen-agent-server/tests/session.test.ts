@@ -421,7 +421,11 @@ describe("QwenSession", () => {
         qwenRealBin: "/some/bin",
         wrapperPath: "",
       });
-      expect(capturedOptions?.pathToQwenExecutable).toBeUndefined();
+      // The `= null` reset above narrows the inferred type to `null`; the
+      // constructor reassigns capturedOptions via the injected query mock, a
+      // side effect TS control-flow analysis cannot see. Restore the declared
+      // type for the read.
+      expect((capturedOptions as QueryOptions | null)?.pathToQwenExecutable).toBeUndefined();
 
       ctrl.end();
       ctrl2.end();

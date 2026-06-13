@@ -62,8 +62,8 @@ describe("setupShutdown", () => {
     const pool = makePool([]);
     const { isShuttingDown } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
     expect(isShuttingDown()).toBe(false);
   });
@@ -72,8 +72,8 @@ describe("setupShutdown", () => {
     const pool = makePool([]);
     const { isShuttingDown, handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
 
     void handleSignal("SIGTERM");
@@ -89,8 +89,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
 
     await handleSignal("SIGTERM");
@@ -104,8 +104,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
 
     const p = handleSignal("SIGTERM");
@@ -124,8 +124,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
 
     const p = handleSignal("SIGTERM");
@@ -141,8 +141,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
 
     await handleSignal("SIGTERM");
@@ -157,8 +157,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
 
     const p1 = handleSignal("SIGTERM");
@@ -177,8 +177,8 @@ describe("setupShutdown", () => {
 
     const { handleSignal } = setupShutdown(
       mockServer as Parameters<typeof setupShutdown>[0],
-      pool as Parameters<typeof setupShutdown>[1],
-      mockExit,
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as unknown as Parameters<typeof setupShutdown>[2],
     );
 
     await handleSignal("SIGTERM");

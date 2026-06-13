@@ -199,6 +199,7 @@ describe("types.ts compile-only assertions", () => {
       tier: "local",
       capacity: "fast",
       healthy: null,
+      active_sessions: 0,
     };
     const _pc: PriorContext = {
       conversation_summary: "we covered X",

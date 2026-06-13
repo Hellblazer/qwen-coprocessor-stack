@@ -157,7 +157,7 @@ describe("SessionPool", () => {
       // Two sessions, cap is 3 — no eviction yet
       expect(pool.sessions.size).toBe(2);
       const stoppedAny = [...pool.sessions.values()].some(
-        (s) => (s as InstanceType<typeof MockSession>).stopCalled
+        (s) => (s as unknown as InstanceType<typeof MockSession>).stopCalled
       );
       expect(stoppedAny).toBe(false);
     });
@@ -169,7 +169,7 @@ describe("SessionPool", () => {
       const s1 = await spawnSession(pool, "task A", {});
       const s2 = await spawnSession(pool, "task B", {});
       // Mark s1 as complete
-      (pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>).setState("complete");
+      (pool.sessions.get(s1.task_id) as unknown as InstanceType<typeof MockSession>).setState("complete");
 
       // Spawn third — s1 should be evicted (complete before LRU)
       await spawnSession(pool, "task C", {});
@@ -184,7 +184,7 @@ describe("SessionPool", () => {
       const s1 = await spawnSession(pool, "task A", {});
       const s2 = await spawnSession(pool, "task B", {});
       // Mark s2 as error
-      (pool.sessions.get(s2.task_id) as InstanceType<typeof MockSession>).setState("error");
+      (pool.sessions.get(s2.task_id) as unknown as InstanceType<typeof MockSession>).setState("error");
 
       await spawnSession(pool, "task C", {});
       // s2 should be evicted (error state)
@@ -201,8 +201,8 @@ describe("SessionPool", () => {
       vi.setSystemTime(Date.now() + 1000);
       const s2 = await spawnSession(pool, "task B", {});
       // s1 has older last_polled_at
-      const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
-      const session2 = pool.sessions.get(s2.task_id) as InstanceType<typeof MockSession>;
+      const session1 = pool.sessions.get(s1.task_id) as unknown as InstanceType<typeof MockSession>;
+      const session2 = pool.sessions.get(s2.task_id) as unknown as InstanceType<typeof MockSession>;
       // Force s1 to have older poll time
       session1.last_polled_at = Date.now() - 5000;
       session2.last_polled_at = Date.now();
@@ -217,7 +217,7 @@ describe("SessionPool", () => {
       const pool = createPool();
 
       const s1 = await spawnSession(pool, "task A", {});
-      const evicted = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
+      const evicted = pool.sessions.get(s1.task_id) as unknown as InstanceType<typeof MockSession>;
       expect(evicted).toBeDefined();
 
       await spawnSession(pool, "task B", {});
@@ -233,7 +233,7 @@ describe("SessionPool", () => {
       const pool = createPool();
 
       const s1 = await spawnSession(pool, "task A", {});
-      const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
+      const session1 = pool.sessions.get(s1.task_id) as unknown as InstanceType<typeof MockSession>;
 
       // Idle session past TTL — should be reaped.
       session1.setState("idle");
@@ -249,7 +249,7 @@ describe("SessionPool", () => {
       const pool = createPool();
 
       const s1 = await spawnSession(pool, "task A", {});
-      const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
+      const session1 = pool.sessions.get(s1.task_id) as unknown as InstanceType<typeof MockSession>;
 
       // Last polled 30 seconds ago (within 60s TTL)
       session1.setState("idle");
@@ -265,7 +265,7 @@ describe("SessionPool", () => {
       const pool = createPool();
 
       const s1 = await spawnSession(pool, "task A", {});
-      const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
+      const session1 = pool.sessions.get(s1.task_id) as unknown as InstanceType<typeof MockSession>;
 
       // Running session, not polled in 70s — the inner Qwen could be in
       // a long tool call. Reaper must skip it; lruEvict is the backstop
@@ -284,8 +284,8 @@ describe("SessionPool", () => {
 
       const s1 = await spawnSession(pool, "task A", {});
       const s2 = await spawnSession(pool, "task B", {});
-      const session1 = pool.sessions.get(s1.task_id) as InstanceType<typeof MockSession>;
-      const session2 = pool.sessions.get(s2.task_id) as InstanceType<typeof MockSession>;
+      const session1 = pool.sessions.get(s1.task_id) as unknown as InstanceType<typeof MockSession>;
+      const session2 = pool.sessions.get(s2.task_id) as unknown as InstanceType<typeof MockSession>;
 
       session1.setState("complete");
       session2.setState("error");

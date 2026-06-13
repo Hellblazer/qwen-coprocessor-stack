@@ -1,0 +1,21 @@
+{
+  // Type-check the test sources too (bead ahd). The build tsconfig scopes
+  // `rootDir` to `src` and excludes `tests/`, and vitest runs via esbuild which
+  // strips types — so the compile-only assertions in tests/*.test.ts were never
+  // type-checked. This config runs `tsc --noEmit` over BOTH src and tests so a
+  // test that constructs an invalid literal (e.g. a BackendInfo missing a
+  // required field) fails the type gate instead of passing silently.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  // `tests/integration/**` is the live-backend suite (excluded from the default
+  // `vitest run`); it is coupled to the @qwen-code/sdk message types and carries
+  // its own pre-existing type drift. Scoping the type gate to the unit suite
+  // matches what CI runs as `test`; integration type-checking is tracked
+  // separately (bead qwen-coprocessor-stack-h7v) so this gate stays green
+  // and meaningful.
+  "include": ["src/**/*", "tests/**/*"],
+  "exclude": ["dist", "node_modules", "tests/integration"]
+}
