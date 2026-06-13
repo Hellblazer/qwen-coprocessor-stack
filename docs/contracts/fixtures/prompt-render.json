@@ -1,0 +1,18 @@
+{
+  "$schema_note": "RDR-007 §4 golden conformance fixture — the shared task-prompt render. HOST-SCOPED (Python only): implemented by run_arm.build_prompt. The TS dispatch host RECEIVES AgentTask.prompt and has no renderer, so this fixture is consumed by pytest only. It is normative-if-adopted: any host that renders the shared task prompt MUST produce byte-identical output. expected is the FULL rendered string (exact match).",
+  "template_id": "run_arm.PROMPT_TEMPLATE",
+  "cases": [
+    {
+      "name": "embeds issue and repo verbatim",
+      "problemStatement": "the bug text",
+      "repo": "psf/requests",
+      "expected": "You are fixing a bug in the `psf/requests` repository. The repository is checked out in your current working directory.\n\nResolve the issue described below by editing the project's SOURCE files. Make the smallest change that correctly fixes the issue. Do NOT modify, add, or delete test files — the evaluation supplies its own tests; editing tests will not help and may invalidate your run. Save all edits to disk before finishing.\n\n--- ISSUE ---\nthe bug text\n"
+    },
+    {
+      "name": "multiline issue body preserved",
+      "problemStatement": "line one\nline two",
+      "repo": "django/django",
+      "expected": "You are fixing a bug in the `django/django` repository. The repository is checked out in your current working directory.\n\nResolve the issue described below by editing the project's SOURCE files. Make the smallest change that correctly fixes the issue. Do NOT modify, add, or delete test files — the evaluation supplies its own tests; editing tests will not help and may invalidate your run. Save all edits to disk before finishing.\n\n--- ISSUE ---\nline one\nline two\n"
+    }
+  ]
+}

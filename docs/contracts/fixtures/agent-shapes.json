@@ -1,0 +1,23 @@
+{
+  "$schema_note": "RDR-007 §4 golden conformance fixture — the AgentTask / AgentResult / AgentOutcome shapes. CROSS-HOST: both the TS host (interfaces in types.ts) and the Python host (TypedDicts in run_arm.py) assert these exact key sets and the AgentOutcome value set. Field names are the JSON contract keys (camelCase) — identical across hosts so a fixture is byte-identical. `timeout` is in MILLISECONDS; `cost` is USD (0 for free-local).",
+  "agentOutcomeValues": ["completed", "timeout", "turn_limit", "error"],
+  "agentTask": {
+    "requiredKeys": ["prompt", "worktree", "maxTurns", "minTokens", "timeout"],
+    "example": {
+      "prompt": "Fix the bug.",
+      "worktree": "/work/wt",
+      "maxTurns": 40,
+      "minTokens": 16384,
+      "timeout": 1800000
+    }
+  },
+  "agentResult": {
+    "requiredKeys": ["patch", "turns", "outcome", "cost"],
+    "example": {
+      "patch": "diff --git a/x b/x\n",
+      "turns": 4,
+      "outcome": "completed",
+      "cost": 0.717387
+    }
+  }
+}

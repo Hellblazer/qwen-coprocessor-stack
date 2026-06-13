@@ -1,0 +1,13 @@
+{
+  "$schema_note": "RDR-007 §2 golden conformance fixture — the task-classification precedence. HOST-SCOPED (TS only): implemented by classifyTask (types.ts). The Python eval host (run_arm) does NOT route backends and has no counterpart, so this fixture is consumed by vitest only. It is normative-if-adopted: any future host that classifies dispatch calls (e.g. nexus pick_dispatcher_for) MUST match this table. See the S2 reconciliation in agent-dispatch-contract.md.",
+  "rule": "Precedence top-to-bottom (RDR-007 Decision §2): 1) opts.json_schema present -> schemaSynth; 2) opts present -> agenticLoop; 3) modality embedding -> embed / rerank -> rerank; 4) otherwise -> chat.",
+  "cases": [
+    { "name": "json_schema -> schemaSynth", "signals": { "opts": { "json_schema": { "type": "object" } } }, "expected": "schemaSynth" },
+    { "name": "json_schema beats agentic precedence", "signals": { "opts": { "json_schema": { "type": "object" } }, "modality": "text" }, "expected": "schemaSynth" },
+    { "name": "opts present (no schema) -> agenticLoop", "signals": { "opts": {} }, "expected": "agenticLoop" },
+    { "name": "embedding modality -> embed", "signals": { "modality": "embedding" }, "expected": "embed" },
+    { "name": "rerank modality -> rerank", "signals": { "modality": "rerank" }, "expected": "rerank" },
+    { "name": "text modality alone -> chat", "signals": { "modality": "text" }, "expected": "chat" },
+    { "name": "no signals -> chat", "signals": {}, "expected": "chat" }
+  ]
+}

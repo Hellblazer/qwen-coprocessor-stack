@@ -1,0 +1,14 @@
+{
+  "$schema_note": "RDR-007 §4 golden conformance fixture — the classify-outcome rule. CROSS-HOST: consumed by BOTH the TS host (classifyOutcome, dispatch.ts) and the Python host (classify_outcome, run_arm.py). These are verbatim ports of one rule; this fixture is the cross-language drift tripwire (RDR-007 Consequence Negative-1). `turnsUsed: null` means the signal was not supplied (TS: undefined / omitted; Python: turns_used=None).",
+  "rule": "rc != 0 (or null) -> error; else turnsUsed >= maxTurns -> turn_limit; else completed. The wall-clock `timeout` outcome is owned by the runner, NOT this rule.",
+  "cases": [
+    { "name": "clean completion", "returncode": 0, "turnsUsed": null, "maxTurns": 40, "expected": "completed" },
+    { "name": "nonzero exit is error", "returncode": 3, "turnsUsed": null, "maxTurns": 40, "expected": "error" },
+    { "name": "null returncode is error", "returncode": null, "turnsUsed": null, "maxTurns": 40, "expected": "error" },
+    { "name": "turn limit reached at max", "returncode": 0, "turnsUsed": 40, "maxTurns": 40, "expected": "turn_limit" },
+    { "name": "turn limit exceeded", "returncode": 0, "turnsUsed": 45, "maxTurns": 40, "expected": "turn_limit" },
+    { "name": "one under the turn limit completes", "returncode": 0, "turnsUsed": 39, "maxTurns": 40, "expected": "completed" },
+    { "name": "turns absent completes on zero exit", "returncode": 0, "turnsUsed": null, "maxTurns": 40, "expected": "completed" },
+    { "name": "nonzero exit dominates turn count", "returncode": 1, "turnsUsed": 40, "maxTurns": 40, "expected": "error" }
+  ]
+}
