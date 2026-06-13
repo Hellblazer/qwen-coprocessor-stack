@@ -59,8 +59,32 @@ export function assertAgentCli(
   }
 }
 
-/** The agentic dispatch signature, uniform across providers. */
+/** The agentic dispatch signature, uniform across providers.
+ *
+ * PRECONDITION (RDR-007 §4): `dispatch()` drives a ONE-SHOT run to completion.
+ * A session that goes `idle` is treated as terminal (the agent finished its
+ * single self-contained task). It is NOT for multi-turn interactive sessions
+ * (`qwen_send`) — there, `idle` means "awaiting the next turn", and dispatch()
+ * would misclassify it as `completed` with a partial patch. */
 export type Dispatch = (task: AgentTask, provider: AgentProvider) => Promise<AgentResult>;
+
+/**
+ * The host's git-diff patch extraction off the worktree. RF-1 keeps this a
+ * HOST effect (dispatch.ts never runs git). Two invariants the host impl MUST
+ * honour, both carried from `run_arm` (scripts/coding-eval/run_arm.py):
+ *
+ *  1. **Diff against the task's `base_commit`, NOT `HEAD`** (`run_arm._git_diff`,
+ *     run_arm.py:179-188). If the agent COMMITS its edits, `git diff HEAD` is
+ *     empty and the run scores zero *silently*. The base is not a parameter
+ *     here (it is not part of the RDR §4 `AgentTask` shape); the host effect is
+ *     a closure that MUST capture the correct `base_commit` for this worktree.
+ *  2. **Return the SOURCE-ONLY patch** — test/fixture deltas stripped
+ *     (`run_arm.extract_source_patch`, run_arm.py:201-219). Contamination
+ *     detection (a model patch touching test files) is HOST-INTERNAL; the
+ *     dispatch contract surfaces only the stripped `AgentResult.patch`, so both
+ *     hosts (TS + Python) produce identical patch semantics.
+ */
+export type ExtractPatch = (worktree: string) => Promise<string>;
 
 // ── claude -p ───────────────────────────────────────────────────────────────
 
@@ -79,7 +103,8 @@ export interface ClaudeRunResult {
  *  and the `git diff` patch extraction). */
 export interface ClaudeCliEffects {
   run: (task: AgentTask, provider: AgentProvider) => Promise<ClaudeRunResult>;
-  extractPatch: (worktree: string) => Promise<string>;
+  /** See {@link ExtractPatch} — diff against base_commit (not HEAD), source-only. */
+  extractPatch: ExtractPatch;
 }
 
 /**
@@ -104,7 +129,9 @@ export function makeClaudeCliDispatch(effects: ClaudeCliEffects): Dispatch {
 // ── qwen_spawn (poll-to-completion) ─────────────────────────────────────────
 
 /** A single poll snapshot from the qwen supervisor (subset of PollResult the
- *  dispatcher needs). */
+ *  dispatcher needs). `turnsUsed` / `cost` may be absent on non-terminal
+ *  (`running`) snapshots; on timeout the dispatcher falls back to `0` for each
+ *  (it returns the last, possibly-running, snapshot). */
 export interface QwenPollSnapshot {
   state: SessionState;
   turnsUsed?: number;
@@ -116,7 +143,8 @@ export interface QwenPollSnapshot {
 export interface QwenSpawnEffects {
   spawn: (task: AgentTask, provider: AgentProvider) => Promise<string>;
   poll: (taskId: string) => Promise<QwenPollSnapshot>;
-  extractPatch: (worktree: string) => Promise<string>;
+  /** See {@link ExtractPatch} — diff against base_commit (not HEAD), source-only. */
+  extractPatch: ExtractPatch;
   /** Delay between polls. Injected so tests resolve immediately. */
   sleep: (ms: number) => Promise<void>;
   /** Monotonic clock in ms. Injected for deterministic deadline tests. */

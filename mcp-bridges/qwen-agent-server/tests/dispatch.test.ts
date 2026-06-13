@@ -164,7 +164,7 @@ describe("makeQwenSpawnDispatch", () => {
     expect(r).toEqual({ patch: "qwen-diff", turns: 7, outcome: "completed", cost: 0 });
   });
 
-  it("error terminal state → outcome error", async () => {
+  it("error terminal state → outcome error (turns/cost carried through)", async () => {
     const dispatch = makeQwenSpawnDispatch({
       spawn: async () => "t",
       poll: async () => ({ state: "error", turnsUsed: 2 }),
@@ -172,7 +172,19 @@ describe("makeQwenSpawnDispatch", () => {
       sleep: async () => {},
       now: () => 0,
     });
-    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("error");
+    const r = await dispatch(TASK, qwenProvider);
+    expect(r).toEqual({ patch: "", turns: 2, outcome: "error", cost: 0 });
+  });
+
+  it("idle at the turn budget → turn_limit (compound idle + turns>=max)", async () => {
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "t",
+      poll: async () => ({ state: "idle", turnsUsed: TASK.maxTurns, cost: 0 }),
+      extractPatch: async () => "p",
+      sleep: async () => {},
+      now: () => 0,
+    });
+    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("turn_limit");
   });
 
   it("idle is a terminal state for a one-shot agentic run", async () => {
