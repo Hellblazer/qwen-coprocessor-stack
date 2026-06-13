@@ -1,0 +1,95 @@
+# Tag-triggered release: publish the supervisor (qwen-agent-server) to npm via
+# OIDC Trusted Publishing, then cut a GitHub Release from the CHANGELOG.
+#
+# Bead: qwen-coprocessor-stack-0lw. Before this, npm publish was a manual,
+# auth-gated step that had to land BEFORE the tag was consumed (or
+# `npx qwen-agent-server@<v>` in plugin.json failed to resolve). Now the tag
+# push IS the publish trigger — atomic, no held tag, no stored npm token.
+#
+# RELEASER IS STILL HUMAN: a human runs scripts/bump-version.sh, opens/merges
+# the release PR, and pushes the `vX.Y.Z` tag. This workflow only reacts to it.
+#
+# ONE-TIME SETUP on npmjs.com: qwen-agent-server → Settings → Trusted Publisher
+# → GitHub Actions, with repo `Hellblazer/qwen-coprocessor-stack` and workflow
+# filename `release.yml`. No NPM_TOKEN secret is used or needed.
+#
+# Trusted Publishing requires npm CLI >= 11.5.1 (Node >= 22.14); Node 24 ships
+# it. Provenance attestation is generated automatically under trusted
+# publishing — no --provenance flag or token required.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write # OIDC token for npm Trusted Publishing
+  contents: write # create the GitHub Release
+
+jobs:
+  publish:
+    name: publish supervisor to npm + GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24" # npm >= 11.5.1 for Trusted Publishing
+          registry-url: "https://registry.npmjs.org"
+
+      # Parity guard at the publish boundary: the pushed tag MUST match the
+      # package version. `npm test` (below) additionally asserts that
+      # SUPERVISOR_VERSION, plugin.json, and both marketplace.json fields all
+      # equal package.json — so this one check transitively pins every site to
+      # the tag. A drift fails the release instead of shipping a stale npx pin.
+      - name: version parity (tag == package.json)
+        working-directory: mcp-bridges/qwen-agent-server
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match package.json version $PKG"
+            exit 1
+          fi
+
+      - name: install
+        working-directory: mcp-bridges/qwen-agent-server
+        run: npm ci
+
+      - name: typecheck + build
+        working-directory: mcp-bridges/qwen-agent-server
+        run: npm run build
+
+      # Full unit gate, including version.test.ts which cross-checks
+      # SUPERVISOR_VERSION == plugin.json == marketplace (metadata + plugin).
+      - name: unit tests (incl. version parity across all sites)
+        working-directory: mcp-bridges/qwen-agent-server
+        run: npm test
+
+      # Bare publish: under Trusted Publishing npm mints an OIDC token from the
+      # id-token permission above — no NODE_AUTH_TOKEN — and attaches provenance
+      # automatically.
+      - name: npm publish (Trusted Publishing / OIDC)
+        working-directory: mcp-bridges/qwen-agent-server
+        run: npm publish
+
+      # Cut the GitHub Release using this version's CHANGELOG section as notes.
+      - name: GitHub Release from CHANGELOG section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          NOTES="$(awk -v v="$VER" '
+            $0 ~ "^## \\[" v "\\]" {f=1; next}
+            /^## \[/ {f=0}
+            f' CHANGELOG.md)"
+          if [ -z "$NOTES" ]; then
+            echo "::warning::no CHANGELOG section for $VER; using auto-generated notes"
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          else
+            printf '%s\n' "$NOTES" | gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file -
+          fi
