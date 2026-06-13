@@ -128,8 +128,15 @@ Implementation phases, each closed by a bead (`ItemN=<closing-bead>`; beads file
   heavy workflow nodes (e.g. `/accept`'s planner/audit/enrich) to local Qwen instead of metered Claude.
   Not Parmar token-elimination (our spines are trivial). T2:
   `RDR-008-research-04-value-probe-and-nexus-substrate`.
-- **RF-5 — Worktree/base_commit ownership. OPEN, OURS.** Caller(nexus)-supplied worktree+base vs
-  executor-created worktree. Iterate; `base_commit`-not-`HEAD` is non-negotiable regardless.
+- **RF-5 — Worktree/base_commit ownership. RESOLVED (2026-06-13).** `base_commit` is **always
+  caller-supplied and explicit in the `qwen_dispatch` task payload** (across the MCP boundary it can't
+  be the closure-captured value RDR-007 used in-process). `extractPatch` always diffs against it, never
+  `HEAD`, source-only. **Worktree handling is a pluggable host-effect strategy**: default
+  *caller-supplied worktree path* (executor just runs + extracts; lifecycle is the caller's), with an
+  optional *executor-managed worktree* (a TS port of the eval harness's bare-mirror + detached-worktree
+  + cleanup mechanics, `materialize.py`) as a second strategy. Ship the default first; the managed
+  strategy is the natural second host-effect plugin — meaning the pluggable seam has a concrete second
+  member on day one (not speculative). T2: `RDR-008-research-05-worktree-base-commit-ownership`.
 - **RF-6 — Build-new vs extend-nexus. RESOLVED: extend nexus (Option B).** Engine + capture live in
   nexus; this repo contributes only the executor (as a pluggable framework). The strategic
   "build substrate, capture use cases declaratively without a framework per case" bet rides on nexus's
