@@ -22,3 +22,4 @@ namespace) for cross-session discoverability.
 | 005 | deferred              | architecture | [Supervisor process lifecycle — layered cleanup model](RDR-005-supervisor-process-lifecycle.md) |
 | 006 | closed (implemented)  | research     | [Coding-agent evaluation — Qwen3.6-35B-A3B vs Claude on SWE-bench Lite, three arms](RDR-006-coding-agent-eval.md) |
 | 007 | closed (implemented)  | design       | [Unified agent dispatch contract — one AgentProvider registry + one dispatch interface across Claude and Qwen](RDR-007-unified-agent-dispatch-contract.md) |
+| 008 | draft                 | design       | [Suspendable MCP workflow engine — agentic dispatch as step executor with injectable choice](RDR-008-suspendable-mcp-workflow-engine.md) |
