@@ -10,12 +10,11 @@
     "noEmit": true,
     "rootDir": "."
   },
-  // `tests/integration/**` is the live-backend suite (excluded from the default
-  // `vitest run`); it is coupled to the @qwen-code/sdk message types and carries
-  // its own pre-existing type drift. Scoping the type gate to the unit suite
-  // matches what CI runs as `test`; integration type-checking is tracked
-  // separately (bead qwen-coprocessor-stack-h7v) so this gate stays green
-  // and meaningful.
+  // Covers src + ALL test sources, including the live-backend integration suite
+  // (tests/integration/**). The integration tests are type-checked here even
+  // though they only RUN against a live backend — type drift in their
+  // @qwen-code/sdk message-shape assertions is exactly what this gate should
+  // catch (bead h7v reconciled them onto the SDK's exported types).
   "include": ["src/**/*", "tests/**/*"],
-  "exclude": ["dist", "node_modules", "tests/integration"]
+  "exclude": ["dist", "node_modules"]
 }

@@ -23,10 +23,17 @@
 //   the original deny-with-message path; see RDR-001 §Q1).
 //   /tmp/qwen-bridge-spike/spike.mjs (wrapper bridge proof; RDR-002).
 
-import "./epipe-guard"; // swallow benign SDK-teardown EPIPE (see module)
+import "./epipe-guard.js"; // swallow benign SDK-teardown EPIPE (see module)
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { query } from "@qwen-code/sdk";
-import type { SDKMessage } from "@qwen-code/sdk";
+import type {
+  ContentBlock,
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKResultMessageSuccess,
+  TextBlock,
+  ToolUseBlock,
+} from "@qwen-code/sdk";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -237,17 +244,13 @@ describe("Pin 2 — ask_user_question ToolUseBlock shape", () => {
         40,
       );
 
-      // Find any assistant message that contains a ToolUseBlock named ask_user_question.
-      type ToolUseBlock = { type: "tool_use"; name: string; id: string; input: Record<string, unknown> };
-      type AssistantMsg = { type: "assistant"; message: { role: string; content: Array<{ type: string } & Partial<ToolUseBlock>> } };
-
+      // Find any assistant message that contains a ToolUseBlock named
+      // ask_user_question. Uses the SDK's own message/block types so this pins
+      // the real @qwen-code/sdk shape (the point of these tests).
       const toolUseBlock = messages
-        .filter((m): m is AssistantMsg => m.type === "assistant")
-        .flatMap((m) => m.message.content)
-        .find(
-          (b): b is ToolUseBlock =>
-            b.type === "tool_use" && (b as ToolUseBlock).name === "ask_user_question",
-        );
+        .filter((m): m is SDKAssistantMessage => m.type === "assistant")
+        .flatMap((m): ContentBlock[] => m.message.content)
+        .find((b): b is ToolUseBlock => b.type === "tool_use" && b.name === "ask_user_question");
 
       expect(
         toolUseBlock,
@@ -255,8 +258,10 @@ describe("Pin 2 — ask_user_question ToolUseBlock shape", () => {
       ).toBeDefined();
 
       // The input must have a questions array with at least one entry,
-      // each entry having a non-empty "question" string field.
-      const questions = toolUseBlock!.input["questions"];
+      // each entry having a non-empty "question" string field. The SDK types
+      // ToolUseBlock.input as `unknown`; this test asserts its shape, so cast
+      // to an indexable record before probing.
+      const questions = (toolUseBlock!.input as Record<string, unknown>)["questions"];
       expect(
         Array.isArray(questions),
         "ask_user_question input.questions must be an array",
@@ -395,22 +400,18 @@ describe("Pin 3 — streamInput multi-turn answer delivery", () => {
       const firstResultIdx = messages.findIndex((m) => m.type === "result");
       const turn2Messages = messages.slice(firstResultIdx + 1);
 
-      type AssistantMsg = {
-        type: "assistant";
-        message: { content: Array<{ type: string; text?: string }> };
-      };
-      type ResultMsg = { type: "result"; result?: string };
-
       const turn2AssistantText = turn2Messages
-        .filter((m): m is AssistantMsg => m.type === "assistant")
-        .flatMap((m) => m.message.content)
-        .filter((b) => b.type === "text")
-        .map((b) => b.text ?? "")
+        .filter((m): m is SDKAssistantMessage => m.type === "assistant")
+        .flatMap((m): ContentBlock[] => m.message.content)
+        .filter((b): b is TextBlock => b.type === "text")
+        .map((b) => b.text)
         .join(" ");
 
+      // Only the success result carries a `result` string (the error variant
+      // has no result text); narrow to it via subtype.
       const turn2ResultText = turn2Messages
-        .filter((m): m is ResultMsg => m.type === "result")
-        .map((m) => m.result ?? "")
+        .filter((m): m is SDKResultMessageSuccess => m.type === "result" && m.subtype === "success")
+        .map((m) => m.result)
         .join(" ");
 
       const combined = `${turn2AssistantText} ${turn2ResultText}`;
