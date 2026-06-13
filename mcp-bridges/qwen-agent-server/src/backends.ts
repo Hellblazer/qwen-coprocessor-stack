@@ -14,7 +14,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "./log.js";
-import type { Backend, SpawnOpts } from "./types.js";
+import type { AgentProvider, Backend, SpawnOpts, TaskKind } from "./types.js";
+import { backendToAgentProvider, classifyTask } from "./types.js";
 
 const log = createLogger("qwen-backends");
 
@@ -434,7 +435,7 @@ export function _seedHealth(backend_id: string, healthy: boolean | null): void {
 
 const rrCounters = new Map<string, number>();
 
-function roundRobin(key: string, candidates: Backend[]): Backend {
+function roundRobin<T extends { weight?: number }>(key: string, candidates: T[]): T {
   if (candidates.length === 0) {
     throw new Error("roundRobin called with empty candidates");
   }
@@ -453,6 +454,57 @@ function roundRobin(key: string, candidates: Backend[]): Backend {
   const i = (rrCounters.get(key) ?? 0) % candidates.length;
   rrCounters.set(key, i + 1);
   return candidates[i]!;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Shared selection spine (RDR-007 P1)
+
+/**
+ * The provider-agnostic selection spine shared by all three public selectors
+ * (RDR-007 P1, bead azf.3). Operates over the `AgentProvider` registry
+ * projection of an already-capability-filtered candidate list, then:
+ *
+ *   1. `excludes` filter — drop any provider whose `excludes` contains `kind`.
+ *      This is the RDR-007 hard-exclusion slot. It is BEHAVIOR-NEUTRAL in P1:
+ *      `backendToAgentProvider` emits `excludes: []` for every backend, so the
+ *      filter removes nothing. P2 (azf.5) is the sole phase that populates it.
+ *      Pass `kind === null` to skip the slot entirely (the role selector — a
+ *      soft hint, NOT a capability gate; see `chooseBackendByRole`).
+ *   2. Health filter — optimistic: `null` (unprobed/timeout) is treated as
+ *      healthy, only an explicit `false` is excluded.
+ *   3. Weighted round-robin keyed by `rrKey` (the pooling mechanism).
+ *
+ * `healthy_lookup` receives the ORIGINAL `Backend` (via `byId`), preserving the
+ * injected-lookup contract the callers depend on. The chosen provider is mapped
+ * back to its `Backend` so the public return type is unchanged.
+ *
+ * Returns the selected `Backend`, or `null` when the candidate list is empty,
+ * fully excluded, or has no live members.
+ */
+async function select(
+  registry: AgentProvider[],
+  kind: TaskKind | null,
+  rrKey: string,
+  healthy_lookup: (b: Backend) => Promise<boolean | null>,
+  byId: Map<string, Backend>,
+): Promise<Backend | null> {
+  if (registry.length === 0) return null;
+
+  // 1. Hard-exclusion slot (behavior-neutral in P1; skipped when kind === null).
+  const afterExcludes =
+    kind === null ? registry : registry.filter((p) => !p.excludes.includes(kind));
+  if (afterExcludes.length === 0) return null;
+
+  // 2. Health filter — treat null (unprobed/timeout) as healthy (optimistic).
+  const healthChecks = await Promise.all(
+    afterExcludes.map(async (p) => ({ p, healthy: await healthy_lookup(byId.get(p.id)!) })),
+  );
+  const live = healthChecks.filter((h) => h.healthy !== false).map((h) => h.p);
+  if (live.length === 0) return null;
+
+  // 3. Weighted round-robin (pooling).
+  const chosen = roundRobin(rrKey, live);
+  return byId.get(chosen.id)!;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -479,6 +531,17 @@ export async function chooseBackend(
     const pinned = pool.find((b) => b.id === opts.backend);
     return pinned ?? null;
   }
+
+  // RDR-007 P1: project the pool to the provider registry once (one-registry
+  // pass) and classify the task. The capability filters below stay on `Backend`
+  // (they read backend-only fields: vision_only / no_agentic), then survivors
+  // are projected per-step and the shared `select()` spine runs excludes (P1:
+  // empty) + health + weighted round-robin. `kind` is `agenticLoop` here, or
+  // `schemaSynth` when the agentic call carries a json_schema.
+  const byId = new Map(pool.map((b) => [b.id, b] as const));
+  const kind = classifyTask({
+    opts: opts.json_schema !== undefined ? { json_schema: opts.json_schema } : {},
+  });
 
   // 1b. Chat-compatibility filter — qwen_spawn / qwen_oneshot go
   // through /v1/chat/completions, which embedding/rerank backends
@@ -510,28 +573,20 @@ export async function chooseBackend(
   // sub-optimally than to fail.
   if (capFiltered.length > 0) candidates = capFiltered;
 
-  // 4. Health filter
-  const healthChecks = await Promise.all(
-    candidates.map(async (b) => ({ b, healthy: await healthy_lookup(b) })),
+  // 4–5. excludes (P1: empty) + health + weighted round-robin, via the shared
+  // spine. Returns null when no candidate survives health.
+  const main = await select(
+    candidates.map(backendToAgentProvider),
+    kind,
+    `${opts.tier ?? "any"}:${capacity}`,
+    healthy_lookup,
+    byId,
   );
-  // Treat null (unprobed/timeout) as healthy — optimistic; first real
-  // call will mark it false if the backend's actually down.
-  const live = healthChecks.filter((h) => h.healthy !== false).map((h) => h.b);
+  if (main) return main;
 
-  if (live.length > 0) {
-    // 5. Round-robin / weighted
-    return roundRobin(`${opts.tier ?? "any"}:${capacity}`, live);
-  }
-
-  // 6. No survivors after health: fall back to local (chat-compatible only)
+  // 6. No survivors after health: fall back to local (chat-compatible only).
   const local = chatPool.filter((b) => b.tier === "local");
-  const localHealthy = await Promise.all(
-    local.map(async (b) => ({ b, healthy: await healthy_lookup(b) })),
-  );
-  const localLive = localHealthy.filter((h) => h.healthy !== false).map((h) => h.b);
-  if (localLive.length > 0) return roundRobin("fallback:local", localLive);
-
-  return null;
+  return select(local.map(backendToAgentProvider), kind, "fallback:local", healthy_lookup, byId);
 }
 
 /**
@@ -556,16 +611,14 @@ export async function chooseBackendByModality(
     return pool.find((b) => b.id === pinned_id) ?? null;
   }
 
+  // RDR-007 P1: modality is a Backend-only field, so the capability filter
+  // stays on Backend; survivors go through the shared spine (excludes empty in
+  // P1, health, RR). `kind` follows from the wanted modality (embed/rerank/chat).
+  const byId = new Map(pool.map((b) => [b.id, b] as const));
   const candidates = pool.filter((b) => (b.modality ?? "text") === wanted);
-  if (candidates.length === 0) return null;
+  const kind = classifyTask({ modality: wanted });
 
-  const healthChecks = await Promise.all(
-    candidates.map(async (b) => ({ b, healthy: await healthy_lookup(b) })),
-  );
-  const live = healthChecks.filter((h) => h.healthy !== false).map((h) => h.b);
-  if (live.length === 0) return null;
-
-  return roundRobin(`modality:${wanted}`, live);
+  return select(candidates.map(backendToAgentProvider), kind, `modality:${wanted}`, healthy_lookup, byId);
 }
 
 /**
@@ -596,14 +649,12 @@ export async function chooseBackendByRole(
     return pool.find((b) => b.id === pinned_id) ?? null;
   }
 
+  // RDR-007 P1: role is a SOFT hint, explicitly NOT a capability gate (it does
+  // not check modality), so the shared spine runs with `kind = null` — the
+  // `excludes` slot is skipped here by design. This keeps role selection a soft
+  // hint when `excludes` becomes non-empty in P2. Health + RR are shared.
+  const byId = new Map(pool.map((b) => [b.id, b] as const));
   const candidates = pool.filter((b) => b.roles?.includes(wanted) ?? false);
-  if (candidates.length === 0) return null;
 
-  const healthChecks = await Promise.all(
-    candidates.map(async (b) => ({ b, healthy: await healthy_lookup(b) })),
-  );
-  const live = healthChecks.filter((h) => h.healthy !== false).map((h) => h.b);
-  if (live.length === 0) return null;
-
-  return roundRobin(`role:${wanted}`, live);
+  return select(candidates.map(backendToAgentProvider), null, `role:${wanted}`, healthy_lookup, byId);
 }
