@@ -15,8 +15,10 @@
 import { describe, expect, it } from "vitest";
 
 import type {
+  AgentProvider,
   Backend,
   BackendInfo,
+  CostClass,
   Event,
   EventType,
   LastKnown,
@@ -26,7 +28,9 @@ import type {
   SessionState,
   SpawnOpts,
   SpawnResult,
+  TaskKind,
 } from "../src/types.js";
+import { backendToAgentProvider, classifyTask } from "../src/types.js";
 
 describe("types.ts compile-only assertions", () => {
   it("Backend literal satisfies the type", () => {
@@ -203,5 +207,126 @@ describe("types.ts compile-only assertions", () => {
     void _b;
     void _pc;
     expect(true).toBe(true);
+  });
+});
+
+// ── Agent dispatch contract (RDR-007 P0 / azf.1) ───────────────────────────
+//
+// Behavior-neutral type surface + two pure functions. No router wiring, no
+// excludes enforcement (that is Phase 2 / azf.5).
+
+describe("agent dispatch contract (RDR-007)", () => {
+  it("TaskKind is a closed set of exactly five members", () => {
+    // RF-2: closed union (mirrors Backend.modality), NOT an open string set
+    // like Backend.roles — so the excludes-parity test (P2) is exhaustive.
+    const kinds: TaskKind[] = [
+      "schemaSynth",
+      "agenticLoop",
+      "embed",
+      "rerank",
+      "chat",
+    ];
+    expect(kinds.length).toBe(5);
+  });
+
+  it("CostClass is a closed union", () => {
+    const classes: CostClass[] = ["free-local", "metered"];
+    expect(classes.length).toBe(2);
+  });
+
+  it("AgentProvider model-endpoint literal satisfies the type", () => {
+    const _p: AgentProvider = {
+      id: "qwen-coder-box",
+      kind: "model-endpoint",
+      modalities: ["text"],
+      url: "http://qwentescence:1235/v1",
+      model: "qwen",
+      tier: "remote",
+      capacity: "heavy",
+      strengths: ["agenticLoop", "schemaSynth"],
+      latencyMult: 4.0,
+      costClass: "free-local",
+    };
+    void _p;
+    expect(true).toBe(true);
+  });
+
+  it("AgentProvider agent-cli literal needs no endpoint fields", () => {
+    const _p: AgentProvider = {
+      id: "claude-sonnet",
+      kind: "agent-cli",
+      modalities: ["text"],
+      latencyMult: 1.0,
+      costClass: "metered",
+    };
+    void _p;
+    expect(true).toBe(true);
+  });
+
+  it("backendToAgentProvider defaults missing modality to [text]", () => {
+    const b: Backend = {
+      id: "local-27b",
+      url: "http://localhost:8080/v1",
+      model: "qwen3.6-27b-instruct",
+      tier: "local",
+      capacity: "fast",
+    };
+    const p = backendToAgentProvider(b);
+    expect(p.kind).toBe("model-endpoint");
+    expect(p.modalities).toEqual(["text"]);
+    expect(p.id).toBe("local-27b");
+    expect(p.tier).toBe("local");
+  });
+
+  it("backendToAgentProvider maps an explicit modality through (singular -> plural)", () => {
+    const b: Backend = {
+      id: "vision-mac",
+      url: "http://localhost:8083/v1",
+      model: "qwen2.5-vl-7b",
+      tier: "remote",
+      capacity: "fast",
+      modality: "multimodal",
+    };
+    const p = backendToAgentProvider(b);
+    expect(p.modalities).toEqual(["multimodal"]);
+  });
+
+  it("backendToAgentProvider does NOT translate no_agentic/vision_only into excludes (deferred to P2)", () => {
+    const b: Backend = {
+      id: "coder-box",
+      url: "http://qwentescence:1235/v1",
+      model: "qwen",
+      tier: "remote",
+      capacity: "heavy",
+      no_agentic: true,
+      vision_only: false,
+    };
+    const p = backendToAgentProvider(b);
+    // P0 is behavior-neutral: excludes stays unset here.
+    expect(p.excludes).toBeUndefined();
+  });
+
+  it("classifyTask: json_schema present on the agentic surface -> schemaSynth", () => {
+    expect(classifyTask({ opts: { json_schema: { type: "object" } } })).toBe(
+      "schemaSynth",
+    );
+  });
+
+  it("classifyTask: agentic surface without a schema -> agenticLoop", () => {
+    expect(classifyTask({ opts: {} })).toBe("agenticLoop");
+  });
+
+  it("classifyTask: embedding modality -> embed", () => {
+    expect(classifyTask({ modality: "embedding" })).toBe("embed");
+  });
+
+  it("classifyTask: rerank modality -> rerank", () => {
+    expect(classifyTask({ modality: "rerank" })).toBe("rerank");
+  });
+
+  it("classifyTask: no agentic opts and a text/plain modality -> chat", () => {
+    expect(classifyTask({})).toBe("chat");
+    expect(classifyTask({ modality: "text" })).toBe("chat");
+    expect(classifyTask({ modality: "multimodal" })).toBe("chat");
   });
 });

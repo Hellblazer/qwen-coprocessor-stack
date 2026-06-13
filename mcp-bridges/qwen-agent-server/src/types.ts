@@ -513,3 +513,145 @@ export interface SessionInfo {
   turns_completed: number;
   budget: SessionBudgetStats;
 }
+
+// ── Agent dispatch contract (RDR-007) ──────────────────────────────────────
+//
+// One provider-agnostic capability descriptor + one task classifier, so the
+// in-repo routers (chooseBackend* and the run_arm spine) select over a single
+// shape and Claude and Qwen are interchangeable providers. This module
+// contributes the type surface and two PURE functions only; the `select()`
+// refactor (P1) and `excludes` enforcement (P2) land in backends.ts.
+
+/**
+ * Closed set of task kinds the dispatch contract routes over (RDR-007 RF-2).
+ *
+ * Modeled as a CLOSED union — mirroring `Backend.modality` (a hard capability)
+ * — and deliberately NOT an open string set like `Backend.roles` (a soft
+ * hint). `AgentProvider.excludes` is a hard safety constraint, and the
+ * excludes-parity test (P2) must assert exhaustively over this set; an open
+ * set would make that assertion impossible.
+ *
+ * - `schemaSynth` — JSON-schema / GBNF grammar synthesis. Works only on
+ *   llama.cpp backends; MLX backends ignore `response_format.json_schema`.
+ *   The MLX exclusion is enforced in P2 (azf.5), not here.
+ * - `agenticLoop` — multi-turn agentic coding (`qwen_spawn` / `qwen_oneshot`).
+ * - `embed` — embedding generation (`qwen_embed`).
+ * - `rerank` — reranking (`qwen_rerank`).
+ * - `chat` — plain single/multi-turn text chat.
+ */
+export type TaskKind =
+  | "schemaSynth"
+  | "agenticLoop"
+  | "embed"
+  | "rerank"
+  | "chat";
+
+/**
+ * Provider cost class — a closed union, not an open string. `free-local` is a
+ * model served on owned hardware (no per-token cost); `metered` is a billed
+ * remote API (e.g. `claude -p`).
+ */
+export type CostClass = "free-local" | "metered";
+
+/**
+ * Provider-agnostic capability descriptor (RDR-007). A superset of `Backend`:
+ * a `Backend` is the `kind:"model-endpoint"` projection of this shape (see
+ * `backendToAgentProvider`). `kind:"agent-cli"` providers (`claude -p`,
+ * `qwen_spawn`) are NOT in the backend registry and carry none of the
+ * endpoint-only fields.
+ *
+ * NOTE the plurality shift: `Backend.modality` is singular/optional, but
+ * `AgentProvider.modalities` is a (non-empty) array. The projection
+ * normalizes `undefined → ["text"]`.
+ */
+export interface AgentProvider {
+  id: string;
+  /** Which selection/dispatch family this provider belongs to. */
+  kind: "model-endpoint" | "agent-cli";
+  /** Hard capabilities. Plural; `Backend.modality` (singular) maps to a
+   *  single-element array via `backendToAgentProvider`. */
+  modalities: NonNullable<Backend["modality"]>[];
+  /** Advisory/soft hint — what this provider is good at. NOT used for hard
+   *  filtering (that is `excludes`). */
+  strengths?: TaskKind[];
+  /** HARD exclusions: a provider is never routed a `TaskKind` in this list.
+   *  Populated/enforced in P2 (azf.5); unset here in P0 to stay
+   *  behavior-neutral. */
+  excludes?: TaskKind[];
+  /** Relative decode latency vs the Claude baseline (1.0). Advisory. */
+  latencyMult?: number;
+  costClass?: CostClass;
+  // ── endpoint-only fields (kind:"model-endpoint"), carried from Backend ──
+  url?: string;
+  model?: string;
+  tier?: Backend["tier"];
+  capacity?: Backend["capacity"];
+  ctx_size?: number;
+  weight?: number;
+}
+
+/**
+ * Signals available at a dispatch call site, used to classify the call into a
+ * `TaskKind` (RDR-007 Decision §2).
+ *
+ * Each call site carries only the signals it actually has. There is NO single
+ * `SpawnOpts.modality` field — embed/rerank route through `qwen_embed` /
+ * `qwen_rerank` (which know their modality), while the agentic surface
+ * (`qwen_spawn` / `qwen_oneshot`) passes `SpawnOpts`. This input unifies the
+ * heterogeneous signals rather than assuming a field that does not exist.
+ */
+export interface TaskSignals {
+  /** The agentic-surface opts (`qwen_spawn` / `qwen_oneshot`). Presence of
+   *  this field marks the call as the agentic path; `json_schema` within it
+   *  upgrades the kind to `schemaSynth`. */
+  opts?: Pick<SpawnOpts, "json_schema">;
+  /** Modality at modality-routed surfaces (`qwen_embed` / `qwen_rerank`, or a
+   *  direct `chooseBackendByModality` call). */
+  modality?: Backend["modality"];
+}
+
+/**
+ * Classify a dispatch call into its `TaskKind` (RDR-007 Decision §2). Pure.
+ *
+ * Precedence (a single call site supplies one signal class, so these are
+ * effectively disjoint; the order only disambiguates the degenerate case of
+ * an input carrying several):
+ *   1. `modality` embedding/rerank → `embed` / `rerank` (hard capability path)
+ *   2. `opts.json_schema` present  → `schemaSynth`
+ *   3. `opts` present (agentic)    → `agenticLoop`
+ *   4. otherwise                   → `chat`
+ */
+export function classifyTask(sig: TaskSignals): TaskKind {
+  if (sig.modality === "embedding") return "embed";
+  if (sig.modality === "rerank") return "rerank";
+  if (sig.opts?.json_schema !== undefined) return "schemaSynth";
+  if (sig.opts !== undefined) return "agenticLoop";
+  return "chat";
+}
+
+/**
+ * Project a `Backend` (model endpoint) into the `AgentProvider` superset
+ * (RDR-007). Read-side only — this does NOT migrate `config.json`; the on-disk
+ * `Backend` shape is unchanged. Normalizes the singular/optional `modality`
+ * (default `"text"`, per `Backend.modality`) into the plural `modalities`.
+ *
+ * Behavior-neutral (P0): it does NOT translate `no_agentic` / `vision_only`
+ * into `excludes`. Generalizing those flags into the exclusion model is
+ * Phase 2 (azf.5), the sole behavior-change phase.
+ */
+export function backendToAgentProvider(b: Backend): AgentProvider {
+  // `ctx_size` / `weight` are optional on both sides; under
+  // exactOptionalPropertyTypes we must OMIT them when absent rather than
+  // assign `undefined`, so the projection round-trips "field unset" exactly.
+  return {
+    id: b.id,
+    kind: "model-endpoint",
+    modalities: [b.modality ?? "text"],
+    url: b.url,
+    model: b.model,
+    tier: b.tier,
+    capacity: b.capacity,
+    ...(b.ctx_size !== undefined ? { ctx_size: b.ctx_size } : {}),
+    ...(b.weight !== undefined ? { weight: b.weight } : {}),
+  };
+}
