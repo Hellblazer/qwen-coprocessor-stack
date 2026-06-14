@@ -2,13 +2,15 @@
 title: "Agentic dispatch executor — a pluggable dispatcher framework exposing dispatch() as a nexus-callable MCP operator"
 id: RDR-008
 type: Design
-status: accepted
+status: closed
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-13
 accepted_date: 2026-06-13
-related_issues: []
+closed_date: 2026-06-14
+close_reason: implemented
+related_issues: ["Hellblazer/nexus#1174"]
 ---
 
 # RDR-008: Agentic dispatch executor — a pluggable dispatcher framework
