@@ -100,11 +100,15 @@ the agent finished its single self-contained task. There is **no resume path**.
 
 ### What the executor REQUIRES from the caller (engine)
 
-- A ready **worktree** + the **`base_commit`** for it. Worktree lifecycle
-  (create/cleanup) is the **caller's** — the default strategy is "caller-supplied
-  worktree" (the executor only runs + extracts). An executor-managed strategy (a
-  port of the eval harness's `materialize.py` mirror+detached-worktree mechanics)
-  is a host-internal fast-follow, not part of this contract.
+- A ready **worktree** + the **`base_commit`** for it. Worktree provisioning is a
+  pluggable **host-effect strategy** (`src/worktree.ts`), invisible to this wire
+  contract — the request shape is the same either way:
+  - **caller-supplied** (default): the caller passes a ready worktree and owns its
+    lifecycle; the executor only runs + extracts.
+  - **executor-managed** (`executorManagedWorktree`, the `materialize.py` port): a
+    shared bare mirror + a per-instance detached worktree at `base_commit`, torn
+    down after the run — for a host that wants isolation handled.
+  Either way `base_commit` is **caller-supplied** (never inferred).
 - A declared `agent-cli` provider (see registration ceremony).
 
 ## Registration ceremony

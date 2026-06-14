@@ -86,6 +86,63 @@ describe("runQwenDispatch", () => {
     ).rejects.toMatchObject({ code: "no_provider" });
   });
 
+  it("prepares the worktree strategy, runs on its path, and cleans up after", async () => {
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    const prepare = vi.fn().mockResolvedValue({ worktree: "/managed/wt", cleanup });
+    const dispatch = vi.fn().mockResolvedValue(RESULT);
+
+    await runQwenDispatch(INPUT, {
+      loadProviders: () => [qwenProvider],
+      resolveDispatch: () => dispatch,
+      resolveWorktree: () => ({ prepare }),
+    });
+
+    // The task runs on the PREPARED worktree, not input.worktree directly.
+    const task = (dispatch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AgentTask;
+    expect(task.worktree).toBe("/managed/wt");
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("cleans up the worktree even when dispatch throws (finally)", async () => {
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    await expect(
+      runQwenDispatch(INPUT, {
+        loadProviders: () => [qwenProvider],
+        resolveDispatch: () => async () => {
+          throw new Error("boom");
+        },
+        resolveWorktree: () => ({ prepare: async () => ({ worktree: "/m", cleanup }) }),
+      }),
+    ).rejects.toThrow("boom");
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("a cleanup failure does NOT mask a successful dispatch result", async () => {
+    const dispatch = vi.fn().mockResolvedValue(RESULT);
+    const cleanup = vi.fn().mockRejectedValue(new Error("prune failed"));
+    const r = await runQwenDispatch(INPUT, {
+      loadProviders: () => [qwenProvider],
+      resolveDispatch: () => dispatch,
+      resolveWorktree: () => ({ prepare: async () => ({ worktree: "/m", cleanup }) }),
+    });
+    expect(r).toEqual(RESULT); // cleanup error logged + swallowed, result preserved
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("a cleanup failure does NOT mask the original dispatch error", async () => {
+    const cleanup = vi.fn().mockRejectedValue(new Error("prune failed"));
+    await expect(
+      runQwenDispatch(INPUT, {
+        loadProviders: () => [qwenProvider],
+        resolveDispatch: () => async () => {
+          throw new Error("dispatch boom");
+        },
+        resolveWorktree: () => ({ prepare: async () => ({ worktree: "/m", cleanup }) }),
+      }),
+    ).rejects.toThrow("dispatch boom"); // NOT "prune failed"
+  });
+
   it("maps a registry resolution failure to unregistered_kind", async () => {
     await expect(
       runQwenDispatch(INPUT, {
