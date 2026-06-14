@@ -1,5 +1,5 @@
 ---
-title: "Live /accept spine — the PUSH producer that populates RunContext.emitted/finalMessage and wires acceptHarvester into a dispatched run"
+title: "Executor value-harvest — a dispatched leaf returns its structured finalMessage as a {kind:value} artifact"
 id: RDR-010
 type: Design
 status: draft
@@ -10,30 +10,39 @@ created: 2026-06-14
 related_issues: ["Hellblazer/nexus#1174"]
 ---
 
-# RDR-010: Live /accept spine — the PUSH producer for the harvest envelope
+# RDR-010: Executor value-harvest — a dispatched leaf returns its structured `finalMessage` as a `value`
 
 > Revise during planning; lock at implementation. If wrong, abandon code and iterate the RDR.
+>
+> **Retargeted 2026-06-14 (post-research).** This RDR began as "the live `/accept` spine" (the
+> RDR-009-deferred PUSH producer). Research (RF-1..RF-4) showed that framing was wrong for this repo:
+> the production `/accept` is a conexus skill that does not call `qwen_dispatch` (RF-2), and the
+> executor structurally cannot emit the spine's `entity`/`tier` artifacts (RF-3). The honest,
+> in-repo, valuable deliverable is narrower and concrete: let a dispatched **leaf** surface its own
+> structured return (`finalMessage`) as a `{kind:"value"}` artifact. The spine / `entity`+`tier`
+> emission stays orchestrator scope. See §Out of scope.
 
 ## Problem Statement
 
 RDR-009 generalized the dispatch result to a typed `Artifact[]` and shipped both harvesters: the
 git-diff harvester (PULL, reads `RunContext.environment`) and `acceptHarvester` (PUSH, reads
-`RunContext.emitted` + `finalMessage`). But it shipped only the **consumer half**. The R2 stacked
-review flagged this precisely: `acceptHarvester` is correct and RF-1-clean, yet **unreachable in
-production** because:
+`RunContext.emitted` + `finalMessage`). The R2 stacked review flagged that the PUSH path is
+**unreachable in production**. Of its three causes, exactly one is the executor's to fix; the other
+two are orchestrator scope (see §Out of scope):
 
-1. `runContextFor` (`src/dispatch.ts`) hardcodes `emitted: []` and never sets `finalMessage` — so a
-   dispatched run always produces an empty PUSH channel.
-2. No dispatcher injects `acceptHarvester` as its `harvest` effect — the default supervisor wiring
-   only ever installs the git-diff harvester.
-3. There is no **producer**: no code path emits `entity`/`tier` artifacts into a run, and the leaf's
-   structured return (`finalMessage`) is never captured from the qwen session and threaded into
-   `RunContext`.
+1. **(This RDR.)** The leaf's structured return (`finalMessage`) is never captured from the qwen
+   session and threaded into `RunContext`, and a run cannot ask for a value harvest. So a dispatched
+   leaf that produces a *value* (a plan, a verdict, a JSON answer) rather than a *diff* has no way to
+   return it — the executor can only ever emit a `patch`.
+2. (Orchestrator scope.) `RunContext.emitted` is empty because the spine's `entity`/`tier` emissions
+   accumulate at the orchestrator across calls, not inside a single one-shot dispatch (RF-3).
+3. (Orchestrator scope.) The deterministic `/accept` spine is a conexus skill that does not dispatch
+   through `qwen_dispatch` at all (RF-2).
 
-The MVV in RDR-009 ("a non-patch artifact flows end-to-end and is consumed downstream") was therefore
-demonstrated only over a **hand-built** `RunContext` in an integration test, never through a live
-dispatched run. RDR-009 recorded this as an explicit deferral (engine/host scope) rather than
-overclaiming. This RDR is that deferred work: make the PUSH path **reachable through a real producer**.
+Concretely: today every `qwen_dispatch` run returns `[{kind:"patch"}]` (or `[]`). A non-code leaf
+(e.g. a planner returning plan JSON, the canonical RDR-009 `/accept` example) cannot return its work
+product. This RDR closes that: a dispatched leaf can return `[{kind:"value", value: <its
+finalMessage>}]`.
 
 ### Enumerated gaps to close
 
@@ -44,18 +53,16 @@ final message, but the supervisor adapter (`makeSupervisorQwenSpawnEffects`) onl
 `turns_completed` from the poll result. The leaf's `last_message` is discarded, so
 `RunContext.finalMessage` is always absent and a dispatched leaf can never surface a `{kind:"value"}`.
 
-#### Gap 2: A run cannot select a non-git harvester
+#### Gap 2: A run cannot select a value harvester
 
 `qwen_dispatch` always wires the git-diff harvester. A non-code leaf (a planner returning a plan, not
 a diff) has no way to ask the executor to harvest its `finalMessage` as a `value` instead of (or in
 addition to) a worktree diff.
 
-#### Gap 3: There is no spine, so spine-emitted entity/tier artifacts have no origin
-
-The deterministic `/accept` spine (the host code that mints beads, writes T2, edits frontmatter) is
-the thing that emits `entity`/`tier` artifacts "directly at the time it writes them" (RF-1). Today no
-such spine exists as dispatchable/composable host code. The `rdr-accept` capability is a conexus skill
-orchestrated by the main conversation, not a producer that emits `Artifact[]` into a ledger.
+> **Retargeted out (was Gap 3): the spine that emits `entity`/`tier`.** The deterministic `/accept`
+> spine is a conexus skill that does not dispatch through `qwen_dispatch` (RF-2), and a single one-shot
+> dispatch cannot accumulate the spine's cross-call emissions (RF-3). That channel is orchestrator
+> scope, not the executor's. See §Out of scope.
 
 ## Context
 
@@ -63,36 +70,26 @@ orchestrated by the main conversation, not a producer that emits `Artifact[]` in
 
 RDR-009's driving counter-example was `/accept` of an RDR as a dispatchable workflow: a deterministic
 **spine** (mint beads, write T2, edit files) plus dispatchable heavy **leaves** (strategic-planner,
-`nx_plan_audit`, `nx_enrich_beads`). RDR-009 built the envelope to carry that workflow's output; it
-deferred building the workflow itself. The deferral was correct (envelope first, producer second), but
-it leaves the harvest envelope a seam with no production traffic.
+`nx_plan_audit`, `nx_enrich_beads`). RDR-009 built the result envelope (`Artifact[]` + both harvesters)
+but deferred the producer. This RDR delivers the one producer piece that is genuinely the executor's:
+a dispatched leaf returning its structured output as a `value`.
 
-### The ownership question this RDR must settle
+### Why the scope is the leaf, not the spine (settled by research)
 
-RDR-009 said "nexus owns the ledger; the `/accept` orchestration is an engine concern." That leaves a
-real fork this RDR must resolve, **not** assume:
+RDR-009 said "nexus owns the ledger; the `/accept` orchestration is an engine concern." Research
+confirmed where the executor boundary actually falls:
 
-- **What is buildable in qwen-coprocessor-stack (the executor):** capturing a dispatched leaf's
-  `finalMessage` and surfacing it as a `value` artifact (Gap 1 + Gap 2) is squarely executor-side and
-  in-repo testable. A single `qwen_dispatch` call returns one leaf's `Artifact[]`.
-- **What may belong to the orchestrator (nexus, or a host spine):** the multi-step spine that
-  accumulates `entity`/`tier` emissions across the workflow. A single dispatch cannot emit the spine's
-  artifacts because the spine spans multiple dispatches plus deterministic host work. This is the
-  `plan_run` ledger's job (RDR-009 RF-4) OR a reference spine built here as a demonstrator.
+- **The executor's to fix:** capturing a dispatched leaf's `finalMessage` and surfacing it as a
+  `value` artifact (Gap 1 + Gap 2) is squarely executor-side and in-repo testable. A single
+  `qwen_dispatch` call returns one leaf's `Artifact[]`, and the leaf's structured return is available
+  at terminal state (RF-1).
+- **NOT the executor's:** the multi-step spine that accumulates `entity`/`tier` across the workflow. A
+  single dispatch cannot emit the spine's artifacts (it spans multiple dispatches + deterministic host
+  work), and the real `/accept` does not use `qwen_dispatch` at all (RF-2/RF-3). That is the `plan_run`
+  ledger's job (RDR-009 RF-4) / the orchestrator's, out of this repo.
 
-The honest scope question for THIS repo: do we (a) close Gaps 1-2 in the executor + build a **reference
-`/accept` spine demonstrator** that proves the full PUSH path end-to-end against a real (local) dispatch,
-or (b) close Gaps 1-2 only and leave the spine entirely to nexus? This RDR must pick one explicitly.
-
-**Resolved by research (RF-2, RF-3):** the production `/accept` is a conexus skill that does **not**
-call `qwen_dispatch`, and the executor structurally cannot populate `RunContext.emitted` with the
-spine's `entity`/`tier` (those accumulate at the orchestrator across calls). So the executor's only
-reachable PUSH artifact is `value`-from-`finalMessage` (Gaps 1-2). Gap 3's `entity`/`tier` emission +
-`acceptHarvester` wiring is confirmed **orchestrator scope** — a demonstrator here would have to *fake*
-the spine. This RDR therefore leans toward **(b)**: ship the executor `finalMessage`/value-harvest, and
-treat any demonstrator as explicitly-fake-spine illustration, not a production `/accept`. The title's
-"live `/accept` spine" is partly a misnomer; the real deliverable is **the executor's value-harvest +
-`finalMessage` capture**.
+So this RDR ships **only** the executor value-harvest. No spine, no demonstrator-that-fakes-a-spine
+(the RDR-009 P2 integration test already exercises `acceptHarvester` over a populated `RunContext`).
 
 ### Technical Environment
 
@@ -161,14 +158,12 @@ channel is confirmed orchestrator scope (RDR-009's "engine owns it" holds at the
 
 ## Proposed Solution
 
-> Revised after `/conexus:rdr-research` (RF-1..RF-4). The two executor-side gaps are the real in-repo
-> deliverable; Gap 3 is confirmed orchestrator scope.
+> Retargeted after `/conexus:rdr-research` (RF-1..RF-4) to the executor value-harvest only.
 
 ### Approach
 
-Close the two executor-side gaps so a dispatched leaf can return its structured `value`; leave the
-spine's `entity`/`tier` emission + `acceptHarvester` wiring to the orchestrator (nexus / the conexus
-skill), per RF-2/RF-3.
+Two small, additive executor changes so a dispatched leaf can return its structured `value`. Nothing
+about the spine, `emitted`, or the production `/accept` is touched.
 
 1. **Capture the leaf's `finalMessage` (Gap 1, feasible per RF-1).** Add a `lastMessage` field to
    `QwenPollSnapshot`; map `PollResult.last_message` in `makeSupervisorQwenSpawnEffects`; thread
@@ -176,19 +171,16 @@ skill), per RF-2/RF-3.
    never sets today).
 2. **Make the harvester selectable (Gap 2, mechanism per RF-4).** Add an optional `qwen_dispatch` input
    `harvest: "patch" | "value" | "both"` defaulting to `"patch"` (additive — coding runs stay
-   byte-identical, no v4 break). `"value"` surfaces `finalMessage` as a single `{kind:"value"}` (reuse
-   the `acceptHarvester` value-parse path); `"both"` composes git-diff + value. The dispatcher selects
-   the harvester from the input.
-3. **(Optional) explicitly-fake-spine demonstrator (Gap 3 is orchestrator scope — RF-2/RF-3).** Only if
-   it earns its keep at the gate: an integration test where a *fake* spine hand-emits an `entity`(bead)
-   + `tier`(T2), a real (fake-backed) dispatch contributes the leaf `value`, and `acceptHarvester`
-   composes the full `Artifact[]` a reader consumes — an illustration of the orchestrator pattern, NOT
-   a production `/accept`. Default lean: **skip** — the RDR-009 P2 integration test already proves
-   `acceptHarvester` over a populated `RunContext`; add only if it demonstrates something that test
-   does not.
+   byte-identical, no breaking change). `"value"` surfaces `finalMessage` as a single `{kind:"value"}`
+   (reuse the existing `acceptHarvester` value-parse path — `null` → no value, JSON parsed, else raw
+   string); `"both"` composes git-diff + value. The dispatcher selects the harvester from the input.
 
-### Out of scope (carried from RDR-009, do not re-open)
+### Out of scope (retargeted out + carried from RDR-009, do not re-open)
 
+- **The spine / `entity`+`tier` emission + `acceptHarvester` wiring** (was Gap 3): orchestrator scope
+  per RF-2/RF-3. The real `/accept` is a conexus skill that does not use `qwen_dispatch`.
+- **A spine demonstrator**: the RDR-009 P2 integration test already exercises `acceptHarvester` over a
+  populated `RunContext`; a fake-spine demonstrator would add nothing.
 - The production `/accept` workflow living in nexus (engine concern); building the nexus ledger.
 - Mid-run artifact streaming / continuations (still the engine's suspend/resume channel).
 - A fifth `Artifact` kind. Environment-axis generalization (container/remote).
@@ -207,32 +199,30 @@ own structured `value`. The R2 gap (Gap 1) persists indefinitely.
 
 **Description**: implement the real `/accept`-of-an-RDR spine as dispatchable host code here.
 
-**Reason for likely rejection**: contradicts RDR-009's ledger-ownership decision (nexus owns
+**Reason for rejection**: contradicts RDR-009's ledger-ownership decision (nexus owns
 accumulation/persistence) and re-opens the build-vs-extend fork; far larger than closing the executor
-gaps. A *demonstrator* spine (Alt-in-Approach) gets the end-to-end proof without owning production.
+gap. RF-2 also shows the real `/accept` does not use `qwen_dispatch`, so a spine here would be fake.
 
 ## Trade-offs
 
 ### Consequences
 
-- (+) The harvest envelope gains real production traffic; a dispatched leaf can return structured
-  non-code output.
-- (+) The RDR-009 MVV becomes a live end-to-end proof, not a hand-built fixture.
-- (−) Possibly a v4 contract evolution (harvester selection / `finalMessage` capture surfaced) — a
-  cross-repo coordination on #1174.
+- (+) A dispatched leaf can return structured non-code output (`value`); the harvest envelope gains its
+  first reachable non-`patch` production path.
+- (+) Coding runs are byte-identical (default `harvest: "patch"`), so the SWE-bench path is untouched.
+- (−) An additive contract surface (`harvest` input) — a v4-additive bump on #1174, no migration.
 
 ### Risks and Mitigations
 
-- **Risk**: scope creep into building production `/accept` in this repo. **Mitigation**: RF-2 shows the
-  real `/accept` is a conexus skill that does not use `qwen_dispatch`; this RDR ships only the executor
-  value-harvest. Any demonstrator is explicitly-fake and optional.
+- **Risk**: a coding leaf's chatter in `last_message` becomes a spurious `value`. **Mitigation**: the
+  default is `"patch"`; `value` is opt-in. `null`/empty `finalMessage` yields no value (reused
+  `acceptHarvester` rule).
 - **Risk (RETIRED)**: `last_message` truncated/unavailable. RF-1 verified the full terminal text is in
   `PollResult.last_message` (not the 120-char summary). Gap 1 is feasible as designed.
 
 ## Implementation Plan
 
-> Reshaped by research. The deliverable is the executor value-harvest (Gaps 1-2); Gap 3 is orchestrator
-> scope and the demonstrator is optional.
+> Retargeted to the executor value-harvest (Gaps 1-2). The spine / demonstrator is out of scope.
 
 ### Minimum Viable Validation
 
@@ -251,15 +241,12 @@ dispatchers. Unit tests: the adapter maps `last_message`; the dispatcher sets `f
 
 Add the optional `harvest` input (default `"patch"`), select the harvester in the dispatcher/wiring,
 and reuse `acceptHarvester`'s value-parse for `"value"`. Update `qwen-dispatch-shapes.json` (additive
-request field) + both conformance suites + the operator contract (v4-additive, default unchanged).
-Integration test: a fake-backed dispatch with `harvest: "value"` yields the `{kind:"value"}`; with the
-default, the patch path is unchanged.
+request field) + both conformance suites + the operator contract (v4-additive, default unchanged) +
+the #1174 note. Integration test: a fake-backed dispatch with `harvest: "value"` yields the
+`{kind:"value"}`; with the default, the patch path is unchanged.
 
-### Phase 3 (optional, gate-decided): explicitly-fake-spine demonstrator
-
-Only if it adds beyond the RDR-009 P2 test. A fake spine emits `entity`+`tier`, a fake-backed dispatch
-contributes the leaf `value`, `acceptHarvester` composes them; a reader consumes the entity. Labeled a
-demonstrator of the orchestrator pattern, not a production `/accept`.
+Each phase boundary runs the stacked review (code-review-expert + substantive-critic) per repo
+discipline.
 
 ## References
 
@@ -273,7 +260,10 @@ demonstrator of the orchestrator pattern, not a production `/accept`.
 
 - 2026-06-14: created (draft). Scaffolds the RDR-009-deferred PUSH producer.
 - 2026-06-14: research complete (RF-1..RF-4, T2 `RDR-010-research-01-push-producer-feasibility`). Two
-  Critical Assumptions verified at source; the scope reshaped: the in-repo deliverable is the executor
-  value-harvest + `finalMessage` capture (Gaps 1-2), Gap 3 (`entity`/`tier` emission) is confirmed
-  orchestrator scope (the real `/accept` is a conexus skill that does not call `qwen_dispatch`). Gate
-  pending (`/conexus:rdr-gate`).
+  Critical Assumptions verified at source.
+- 2026-06-14: **retargeted** (file renamed `RDR-010-accept-spine-push-producer.md` →
+  `RDR-010-executor-value-harvest.md`). Research showed the original "live `/accept` spine" framing was
+  wrong for this repo (the real `/accept` is a conexus skill that does not call `qwen_dispatch`; the
+  executor cannot emit the spine's `entity`/`tier`). New target: the executor value-harvest only —
+  capture `finalMessage`, add a selectable `harvest` input. Gap 3 (spine) + the demonstrator moved to
+  out-of-scope. Gate pending (`/conexus:rdr-gate`).
