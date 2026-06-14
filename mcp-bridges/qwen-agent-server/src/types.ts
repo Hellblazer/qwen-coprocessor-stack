@@ -597,6 +597,20 @@ export type Modality = NonNullable<Backend["modality"]>;
 export type CostClass = "free-local" | "metered";
 
 /**
+ * The dispatcher-family discriminant for `kind:"agent-cli"` providers (RDR-008
+ * P1). Both the qwen-spawn and the claude-cli dispatchers serve `kind:"agent-cli"`,
+ * so `kind` alone cannot pick WHICH dispatcher drives a provider; `agentKind`
+ * is the finer key the dispatcher registry resolves over.
+ *
+ * CLOSED union, SINGLE MEMBER BY DESIGN (RDR-008 discipline): the dispatcher
+ * axis stays one member until a real second dispatcher appears. `qwen-local` is
+ * the first (and only) dispatcher — local Qwen via `makeQwenSpawnDispatch`,
+ * one-shot poll-to-completion. Adding a kind here is the registration ceremony:
+ * extend this union, then `register()` the new `Dispatch` against it.
+ */
+export type DispatcherKind = "qwen-local";
+
+/**
  * Provider-agnostic capability descriptor (RDR-007). A superset of `Backend`:
  * a `Backend` is the `kind:"model-endpoint"` projection of this shape (see
  * `backendToAgentProvider`). `kind:"agent-cli"` providers (`claude -p`,
@@ -611,6 +625,12 @@ export interface AgentProvider {
   id: string;
   /** Which selection/dispatch family this provider belongs to. */
   kind: "model-endpoint" | "agent-cli";
+  /** For `kind:"agent-cli"` providers: which registered dispatcher drives this
+   *  provider (RDR-008 P1). The dispatcher registry resolves a `Dispatch` over
+   *  this key. Absent on `kind:"model-endpoint"` providers (they are invoked via
+   *  their tool path, not `dispatch()`); an agent-cli provider that omits it
+   *  cannot be resolved (registry throws). */
+  agentKind?: DispatcherKind;
   /** Hard capabilities. Non-empty by type (`[Modality, ...Modality[]]`) so a
    *  provider can never be silently un-selectable. `Backend.modality`
    *  (singular) maps to a single-element array via `backendToAgentProvider`. */

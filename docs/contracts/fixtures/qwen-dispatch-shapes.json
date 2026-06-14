@@ -1,0 +1,56 @@
+{
+  "$schema_note": "RDR-008 P3 golden conformance fixture — the qwen_dispatch OPERATOR I/O contract (request shape, response shape, structured error envelope). TS host asserts it in mcp-bridges/qwen-agent-server/tests/contract-conformance.test.ts. This is the fixture-pinnable half of the nexus dispatch-operator spec (the prose half — continuation requirements + one-shot semantics — lives in docs/contracts/qwen-dispatch-operator-contract.md). The RESPONSE is AgentResult, reused VERBATIM from agent-shapes.json (RDR-007) — a qwen_dispatch run returns an AgentResult, nothing new. NOTE: `turns` is 0 on a qwen-local SUCCESS run until bead qwen-coprocessor-stack-j2r lands (the supervisor's success poll carries no turn count today); the example pins turns=0 so the conformance test does not vacuously accept a meaningful value.",
+  "request": {
+    "requiredKeys": ["prompt", "worktree", "base_commit"],
+    "optionalKeys": ["max_turns", "min_tokens", "timeout_ms", "provider_id", "agent_kind"],
+    "example": {
+      "prompt": "Fix the off-by-one in calc.add.",
+      "worktree": "/work/wt",
+      "base_commit": "9f1c0de2b7a4c5e6f8091a2b3c4d5e6f70819203",
+      "max_turns": 50,
+      "min_tokens": 16384,
+      "timeout_ms": 1800000,
+      "agent_kind": "qwen-local"
+    },
+    "notes": {
+      "base_commit": "REQUIRED. extractPatch ALWAYS diffs against this, never HEAD (a committed agent edit must still be captured). Carried at the tool-input + ExtractPatch parameter boundary, NOT on AgentTask.",
+      "worktree": "Caller-supplied worktree strategy (default): the caller owns lifecycle (create/cleanup); the executor only runs + extracts.",
+      "agent_kind": "Selects the dispatcher family (default \"qwen-local\"). provider_id pins a specific declared provider and overrides agent_kind."
+    }
+  },
+  "response": {
+    "requiredKeys": ["patch", "turns", "outcome", "cost"],
+    "example": {
+      "patch": "diff --git a/calc.py b/calc.py\n",
+      "turns": 0,
+      "outcome": "completed",
+      "cost": 0
+    },
+    "notes": {
+      "shape": "AgentResult (RDR-007, agent-shapes.json) — reused verbatim. A qwen_dispatch run is one agentic run; its result IS an AgentResult.",
+      "patch": "SOURCE-ONLY (test paths stripped). Contamination stays host-internal — NOT a field of AgentResult (RDR-007 P4b).",
+      "turns": "0 on qwen-local success until bead qwen-coprocessor-stack-j2r emits turns_completed on the success poll.",
+      "cost": "0 for free-local qwen-local."
+    }
+  },
+  "error": {
+    "codes": ["no_provider", "missing_agent_kind", "unregistered_kind", "shutting_down"],
+    "envelope": {
+      "error": {
+        "code": "no_provider",
+        "message": "qwen_dispatch: no agent-cli provider matches agentKind=\"qwen-local\"."
+      }
+    },
+    "notes": {
+      "no_provider": "No declared agent-cli provider matches the selector (provider_id pin or agent_kind family).",
+      "missing_agent_kind": "The selected provider declares no agentKind — a config fix (add agentKind), distinct from unregistered_kind so the caller is not misdirected to register a dispatcher.",
+      "unregistered_kind": "The provider's agentKind has no registered dispatcher.",
+      "shutting_down": "Server is shutting down; cannot dispatch (mirrors the spawn-initiating tools' envelope)."
+    }
+  },
+  "executor": {
+    "oneShot": true,
+    "idleTerminal": true,
+    "notes": "STRICTLY ONE-SHOT: a session reaching idle is TERMINAL (the agent finished its single self-contained task). Nexus MUST NOT build a resume-the-executor path against this operator. Suspend/resume/continuations are a nexus ENGINE concern, not an executor capability."
+  }
+}

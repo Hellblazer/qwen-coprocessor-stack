@@ -1,0 +1,13 @@
+{
+  "_comment": "RDR-008 P1 example — declaring kind:\"agent-cli\" providers. These are NOT model endpoints: they carry no url/model and never enter the `backends` registry. Each entry declares an `agentKind` — the dispatcher-family discriminant the dispatcher registry (src/dispatch-registry.ts) resolves to a Dispatch. P1 ships ONE dispatcher: \"qwen-local\" (local Qwen via makeQwenSpawnDispatch, one-shot poll-to-completion). Merge `agent_providers` into your ~/.qwen-coprocessor-stack/config.json alongside `backends`. Env override: QWEN_AGENT_PROVIDERS (JSON array).",
+  "agent_providers": [
+    {
+      "_comment": "Local Qwen agentic dispatcher target — the coder on the Mac (MLX), driven via the qwen-spawn dispatcher. `modalities`/`excludes`/`strengths`/`costClass`/`latencyMult` are optional and default (modalities -> [\"text\"], excludes -> []).",
+      "id": "qwen-coder-mac",
+      "agentKind": "qwen-local",
+      "modalities": ["text"],
+      "strengths": ["agenticLoop"],
+      "costClass": "free-local"
+    }
+  ]
+}

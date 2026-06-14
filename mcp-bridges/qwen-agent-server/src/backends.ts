@@ -14,7 +14,14 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "./log.js";
-import type { AgentProvider, Backend, SpawnOpts, TaskKind } from "./types.js";
+import type {
+  AgentProvider,
+  Backend,
+  DispatcherKind,
+  Modality,
+  SpawnOpts,
+  TaskKind,
+} from "./types.js";
 import { backendToAgentProvider, classifyTask } from "./types.js";
 
 const log = createLogger("qwen-backends");
@@ -67,6 +74,30 @@ export interface ConfigFileShape {
     max_context_tokens?: number;
     max_tool_calls?: number;
   };
+  /**
+   * Declared `kind:"agent-cli"` providers (RDR-008 P1). These are NOT model
+   * endpoints — they carry no `url`/`model` and never enter the `backends`
+   * registry. Each declares an `agentKind` (the dispatcher-family discriminant
+   * the dispatcher registry resolves over). Parsed by `loadAgentProviders`.
+   */
+  agent_providers?: AgentCliProviderConfig[];
+}
+
+/**
+ * On-disk declaration of an `kind:"agent-cli"` provider (RDR-008 P1, Approach
+ * item 3). `id` + `agentKind` are required; the rest mirror the optional
+ * `AgentProvider` fields and default on load (`modalities → ["text"]`,
+ * `excludes → []`). The `kind:"agent-cli"` discriminant is implied — it is set
+ * by `loadAgentProviders`, not declared in the file.
+ */
+export interface AgentCliProviderConfig {
+  id?: string;
+  agentKind?: DispatcherKind;
+  modalities?: Modality[];
+  strengths?: TaskKind[];
+  excludes?: TaskKind[];
+  costClass?: AgentProvider["costClass"];
+  latencyMult?: number;
 }
 
 interface ConfigCache {
@@ -277,6 +308,105 @@ export function loadBackends(): Backend[] {
 
   // 3. default
   return [DEFAULT_BACKEND];
+}
+
+// ─────────────────────────────────────────────────────────────────
+// agent-cli providers (RDR-008 P1)
+
+/**
+ * Normalize one on-disk `AgentCliProviderConfig` into an `AgentProvider`
+ * (`kind:"agent-cli"`). Returns null (and logs) for an entry missing the two
+ * required fields (`id`, `agentKind`) — a misdeclared provider is skipped, not
+ * fatal, mirroring the backends loader's tolerance of partial config.
+ */
+function normalizeAgentProvider(raw: AgentCliProviderConfig): AgentProvider | null {
+  if (typeof raw.id !== "string" || raw.id.trim() === "" || raw.agentKind === undefined) {
+    log.warn(
+      { event_type: "config_invalid", source: "agent_providers", id: raw.id ?? "<missing>" },
+      "agent_providers entry missing required id/agentKind; skipping",
+    );
+    return null;
+  }
+  return {
+    id: raw.id,
+    kind: "agent-cli",
+    agentKind: raw.agentKind,
+    modalities:
+      Array.isArray(raw.modalities) && raw.modalities.length > 0
+        ? (raw.modalities as [Modality, ...Modality[]])
+        : ["text"],
+    excludes: Array.isArray(raw.excludes) ? raw.excludes : [],
+    ...(raw.strengths !== undefined ? { strengths: raw.strengths } : {}),
+    ...(raw.costClass !== undefined ? { costClass: raw.costClass } : {}),
+    ...(raw.latencyMult !== undefined ? { latencyMult: raw.latencyMult } : {}),
+  };
+}
+
+/**
+ * Read the declared `kind:"agent-cli"` providers (RDR-008 P1, Approach item 3).
+ * These are NOT backends — they live in their own `agent_providers` config
+ * section and never enter the model-endpoint registry.
+ *
+ * Resolution priority (mirrors `loadBackends`):
+ *   1. `QWEN_AGENT_PROVIDERS` env var (JSON array) — shell override
+ *   2. `~/.qwen-coprocessor-stack/config.json` `agent_providers` array
+ *   3. `[]` (no agent-cli providers declared)
+ *
+ * Invalid JSON at either source is logged and the next tier is consulted;
+ * individual malformed entries are skipped (see `normalizeAgentProvider`).
+ */
+export function loadAgentProviders(): AgentProvider[] {
+  const normalizeAll = (entries: AgentCliProviderConfig[]): AgentProvider[] =>
+    entries.map(normalizeAgentProvider).filter((p): p is AgentProvider => p !== null);
+
+  // 1. env override
+  const raw = process.env["QWEN_AGENT_PROVIDERS"];
+  if (raw && raw.trim() !== "") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return normalizeAll(parsed as AgentCliProviderConfig[]);
+      // Valid JSON but not an array (e.g. "null", "{}", "42"): the operator set
+      // the var intentionally, so a silent fallthrough would be surprising.
+      log.warn(
+        { event_type: "config_invalid", source: "env", var: "QWEN_AGENT_PROVIDERS" },
+        "QWEN_AGENT_PROVIDERS is valid JSON but not an array; falling through to config file",
+      );
+    } catch {
+      log.warn(
+        { event_type: "config_invalid", source: "env", var: "QWEN_AGENT_PROVIDERS" },
+        "QWEN_AGENT_PROVIDERS is not valid JSON; falling through to config file",
+      );
+    }
+  }
+
+  // 2. config file
+  const cfg = readConfig();
+  if (cfg && Array.isArray(cfg.agent_providers)) return normalizeAll(cfg.agent_providers);
+
+  // 3. none declared
+  return [];
+}
+
+/**
+ * Pick one agent-cli provider from a loaded list (RDR-008 P1). Selection is
+ * deliberately minimal — agent-cli providers are NOT health-probed endpoints,
+ * so there is no modality/capacity/round-robin spine here:
+ *   - `id` set    → exact id match (caller-authoritative pin);
+ *   - `agentKind` → the FIRST provider declaring that dispatcher family, in
+ *                   config-declaration order. This is an "any available of this
+ *                   family" semantic, NOT a load-balancer — to target a
+ *                   specific instance (e.g. `qwen-coder-box` vs `qwen-coder-mac`)
+ *                   pass `id`. P2 must not build weighting on the FIFO order;
+ *                   add an explicit policy if round-robin is ever wanted.
+ * Returns undefined when nothing matches (including an empty `by`).
+ */
+export function selectAgentProvider(
+  providers: AgentProvider[],
+  by: { id?: string; agentKind?: DispatcherKind },
+): AgentProvider | undefined {
+  if (by.id !== undefined) return providers.find((p) => p.id === by.id);
+  if (by.agentKind !== undefined) return providers.find((p) => p.agentKind === by.agentKind);
+  return undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────

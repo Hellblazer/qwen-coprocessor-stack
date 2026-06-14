@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { classifyOutcome } from "../src/dispatch.js";
+import { DISPATCH_ERROR_CODES, qwenDispatchInputShape } from "../src/dispatch-tool.js";
 import { classifyTask } from "../src/types.js";
 import type { AgentResult, AgentTask, TaskKind, TaskSignals } from "../src/types.js";
 
@@ -119,4 +120,69 @@ describe("task-classification golden fixture (TS-host-scoped)", () => {
       expect(classifyTask(c.signals)).toBe(c.expected);
     });
   }
+});
+
+// ── TS-host-scoped: qwen_dispatch operator I/O shape (RDR-008 P3) ────────────
+//
+// The fixture-pinnable half of the nexus dispatch-operator spec
+// (docs/contracts/qwen-dispatch-operator-contract.md is the prose half). This
+// is the NON-WAIVABLE enforcement hook (bead pwa item (b)): the request/response
+// shapes and the error-code set are asserted against the REAL code, so a drift
+// in qwenDispatchInputShape / AgentResult / the error codes fails here.
+
+interface DispatchShapesFixture {
+  request: { requiredKeys: string[]; optionalKeys: string[]; example: Record<string, unknown> };
+  response: { requiredKeys: string[]; example: Record<string, unknown> };
+  error: { codes: string[]; envelope: { error: { code: string; message: string } } };
+  executor: { oneShot: boolean; idleTerminal: boolean };
+}
+
+describe("qwen-dispatch-shapes golden fixture (TS-host-scoped)", () => {
+  const fx = load<DispatchShapesFixture>("qwen-dispatch-shapes.json");
+
+  it("request key set matches the real qwenDispatchInputShape", () => {
+    const shapeKeys = Object.keys(qwenDispatchInputShape);
+    const fixtureKeys = [...fx.request.requiredKeys, ...fx.request.optionalKeys];
+    expect(shapeKeys.sort()).toEqual([...fixtureKeys].sort());
+  });
+
+  it("required/optional split matches the schema's zod optionality", () => {
+    const shape = qwenDispatchInputShape as Record<string, { isOptional: () => boolean }>;
+    for (const k of fx.request.requiredKeys) expect(shape[k]!.isOptional()).toBe(false);
+    for (const k of fx.request.optionalKeys) expect(shape[k]!.isOptional()).toBe(true);
+  });
+
+  it("the request example carries every required key", () => {
+    for (const k of fx.request.requiredKeys) {
+      expect(Object.prototype.hasOwnProperty.call(fx.request.example, k)).toBe(true);
+    }
+  });
+
+  it("response shape is AgentResult (reused verbatim from RDR-007)", () => {
+    // A literal typed as AgentResult: a REMOVED/renamed required field fails at
+    // compile time (typecheck:tests); this runtime check pins that the fixture's
+    // requiredKeys match the literal's keys (no fixture-only stray key).
+    const result: AgentResult = {
+      patch: String(fx.response.example.patch),
+      turns: Number(fx.response.example.turns),
+      outcome: fx.response.example.outcome as AgentResult["outcome"],
+      cost: Number(fx.response.example.cost),
+    };
+    expect(Object.keys(result).sort()).toEqual([...fx.response.requiredKeys].sort());
+  });
+
+  it("error-code set is the contract surface (the 3 QwenDispatchError codes + shutting_down)", () => {
+    // Bound to the REAL exported code set (DISPATCH_ERROR_CODES) so a renamed /
+    // added class code fails here; `shutting_down` is the server-boundary
+    // envelope (not a class code), appended explicitly.
+    const codes = [...DISPATCH_ERROR_CODES, "shutting_down"];
+    expect([...fx.error.codes].sort()).toEqual([...codes].sort());
+    expect(fx.error.codes).toContain(fx.error.envelope.error.code);
+  });
+
+  it("pins the executor as strictly one-shot (idle terminal)", () => {
+    // Load-bearing for nexus: it must NOT design a resume-the-executor path.
+    expect(fx.executor.oneShot).toBe(true);
+    expect(fx.executor.idleTerminal).toBe(true);
+  });
 });
