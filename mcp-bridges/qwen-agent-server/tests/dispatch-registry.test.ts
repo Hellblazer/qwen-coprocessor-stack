@@ -113,19 +113,19 @@ describe("createDispatcherRegistry", () => {
 describe("createDefaultDispatcherRegistry", () => {
   it("registers qwen-local as the sole dispatcher", () => {
     const effects = fakeQwenSpawnEffects();
-    const registry = createDefaultDispatcherRegistry({ qwenSpawn: effects });
+    const registry = createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit: "base-sha" });
     expect(registry.kinds()).toEqual(["qwen-local"]);
     expect(registry.has("qwen-local")).toBe(true);
   });
 
   it("resolve(qwen-local provider) drives makeQwenSpawnDispatch to completion", async () => {
     const effects = fakeQwenSpawnEffects();
-    const registry = createDefaultDispatcherRegistry({ qwenSpawn: effects });
+    const registry = createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit: "base-sha" });
 
     const r = await registry.resolve(qwenProvider)(TASK, qwenProvider);
 
     expect(effects.spawn).toHaveBeenCalledWith(TASK, qwenProvider);
-    expect(effects.extractPatch).toHaveBeenCalledWith(TASK.worktree);
+    expect(effects.extractPatch).toHaveBeenCalledWith(TASK.worktree, "base-sha");
     expect(r).toEqual({ patch: "real-diff", turns: 5, outcome: "completed", cost: 0 });
   });
 });

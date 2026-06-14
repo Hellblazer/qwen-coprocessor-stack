@@ -37,8 +37,17 @@ import {
   chooseBackendByModality,
   chooseBackendByRole,
   getCachedHealth,
+  loadAgentProviders,
   refreshPoolBackends,
 } from "./backends.js";
+import { createDefaultDispatcherRegistry } from "./dispatch-registry.js";
+import {
+  gitExtractPatch,
+  makeSupervisorQwenSpawnEffects,
+  qwenDispatchInputShape,
+  QwenDispatchError,
+  runQwenDispatch,
+} from "./dispatch-tool.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -1314,6 +1323,45 @@ async function main(): Promise<void> {
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
+    },
+  );
+
+  // ── qwen_dispatch (RDR-008 P2) ──
+  //
+  // The agentic-dispatch operator: resolve a dispatcher from the P1 registry,
+  // run a one-shot task in the caller-supplied worktree, return AgentResult.
+  // base_commit is explicit at this boundary and threaded to extractPatch (which
+  // always diffs vs base, never HEAD; source-only). The registry is built
+  // per-call because base_commit is per-call (see dispatch-registry.ts).
+  mcpServer.tool(
+    "qwen_dispatch",
+    "Agentic dispatch (RDR-008): run a one-shot coding task on a local-Qwen agent in a caller-supplied worktree, return {patch, turns, outcome, cost}. Resolves a dispatcher from the registry by the agent-cli provider's agentKind. base_commit is required — extractPatch diffs against it (never HEAD) and returns the source-only patch. The caller owns worktree lifecycle.",
+    qwenDispatchInputShape,
+    async (args) => {
+      const effects = makeSupervisorQwenSpawnEffects(
+        { qwen_spawn: handlers.qwen_spawn, qwen_poll: handlers.qwen_poll },
+        gitExtractPatch,
+      );
+      try {
+        const result = await runQwenDispatch(args, {
+          loadProviders: loadAgentProviders,
+          resolveDispatch: (provider, baseCommit) =>
+            createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit }).resolve(provider),
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      } catch (err) {
+        if (err instanceof QwenDispatchError) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ error: { code: err.code, message: err.message } }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
     },
   );
 

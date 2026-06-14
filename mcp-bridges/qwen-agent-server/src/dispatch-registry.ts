@@ -77,25 +77,34 @@ export function createDispatcherRegistry(): DispatcherRegistry {
 }
 
 /**
- * Host effects for the default (P1) dispatcher loadout. Only `qwen-local` is
+ * Host effects for the default dispatcher loadout. Only `qwen-local` is
  * registered — the single member of the `DispatcherKind` axis. The caller owns
  * the (injected) `QwenSpawnEffects` (supervisor spawn/poll client, git-diff,
  * clock, sleep): P2's server wiring supplies the real effects; tests supply
  * fakes. This module never imports child_process / git / the SDK.
+ *
+ * `baseCommit` (RDR-008 P2) is the caller-supplied base for THIS run's worktree
+ * — the `qwen_dispatch` tool-input value. It is REQUIRED and threaded into the
+ * dispatcher so `extractPatch` always diffs against the base, never `HEAD`.
+ * Because the base is per-run, the registry is constructed per dispatch call
+ * (the registry still owns kind→dispatcher resolution; only the bound base
+ * differs per call).
  */
 export interface DefaultDispatcherEffects {
   qwenSpawn: QwenSpawnEffects;
+  baseCommit: string;
   /** Forwarded to `makeQwenSpawnDispatch` (e.g. `pollIntervalMs`). */
   qwenSpawnOpts?: { pollIntervalMs?: number };
 }
 
 /**
- * Build a registry pre-loaded with the P1 dispatcher set — the REGISTRATION
+ * Build a registry pre-loaded with the dispatcher set — the REGISTRATION
  * CEREMONY (RDR-008 Approach item 1, part 2). Registers `qwen-local` →
- * `makeQwenSpawnDispatch(effects.qwenSpawn)` (local Qwen, one-shot
- * poll-to-completion; idle is terminal). This is the production producer for
- * the seam: `resolve()` of a `kind:"agent-cli"` provider declaring
- * `agentKind:"qwen-local"` returns the real RDR-007 dispatcher.
+ * `makeQwenSpawnDispatch(effects.qwenSpawn, { baseCommit })` (local Qwen,
+ * one-shot poll-to-completion; idle is terminal). This is the production
+ * producer for the seam: `resolve()` of a `kind:"agent-cli"` provider declaring
+ * `agentKind:"qwen-local"` returns the real RDR-007 dispatcher bound to this
+ * run's `baseCommit`.
  *
  * Adding a second dispatcher is a one-line `register()` here plus a new
  * `DispatcherKind` member — no rewrite. Single-member by design until that
@@ -107,7 +116,12 @@ export function createDefaultDispatcherRegistry(
   const registry = createDispatcherRegistry();
   registry.register(
     "qwen-local",
-    makeQwenSpawnDispatch(effects.qwenSpawn, effects.qwenSpawnOpts ?? {}),
+    makeQwenSpawnDispatch(effects.qwenSpawn, {
+      baseCommit: effects.baseCommit,
+      ...(effects.qwenSpawnOpts?.pollIntervalMs !== undefined
+        ? { pollIntervalMs: effects.qwenSpawnOpts.pollIntervalMs }
+        : {}),
+    }),
   );
   return registry;
 }

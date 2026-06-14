@@ -24,6 +24,11 @@ const TASK: AgentTask = {
   timeout: 600_000,
 };
 
+// RDR-008 P2: base_commit is threaded into the dispatcher (opts), then to
+// extractPatch — never carried on the fixture-locked AgentTask.
+const BASE = "base-sha";
+const OPTS = { baseCommit: BASE };
+
 const claudeProvider: AgentProvider = {
   id: "claude-sonnet",
   kind: "agent-cli",
@@ -93,7 +98,7 @@ describe("makeClaudeCliDispatch", () => {
       timedOut: false,
     });
     const extractPatch = vi.fn().mockResolvedValue("diff --git a/x b/x\n+real");
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch });
+    const dispatch = makeClaudeCliDispatch({ run, extractPatch }, OPTS);
 
     const r = await dispatch(TASK, claudeProvider);
 
@@ -104,7 +109,7 @@ describe("makeClaudeCliDispatch", () => {
       cost: 0.42,
     });
     expect(run).toHaveBeenCalledWith(TASK, claudeProvider);
-    expect(extractPatch).toHaveBeenCalledWith("/tmp/wt");
+    expect(extractPatch).toHaveBeenCalledWith("/tmp/wt", BASE);
   });
 
   it("timedOut from the runner → outcome timeout (patch still extracted)", async () => {
@@ -115,7 +120,7 @@ describe("makeClaudeCliDispatch", () => {
       timedOut: true,
     });
     const extractPatch = vi.fn().mockResolvedValue("partial");
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch });
+    const dispatch = makeClaudeCliDispatch({ run, extractPatch }, OPTS);
 
     const r = await dispatch(TASK, claudeProvider);
     expect(r.outcome).toBe("timeout");
@@ -129,13 +134,13 @@ describe("makeClaudeCliDispatch", () => {
       cost: 1,
       timedOut: false,
     });
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch: async () => "" });
+    const dispatch = makeClaudeCliDispatch({ run, extractPatch: async () => "" }, OPTS);
     expect((await dispatch(TASK, claudeProvider)).outcome).toBe("turn_limit");
   });
 
   it("rejects a model-endpoint provider before running anything", async () => {
     const run = vi.fn();
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch: async () => "" });
+    const dispatch = makeClaudeCliDispatch({ run, extractPatch: async () => "" }, OPTS);
     await expect(dispatch(TASK, endpointProvider)).rejects.toThrow(/model-endpoint/);
     expect(run).not.toHaveBeenCalled();
   });
@@ -154,7 +159,7 @@ describe("makeQwenSpawnDispatch", () => {
       .mockResolvedValueOnce({ state: "complete", turnsUsed: 7, cost: 0 });
     const extractPatch = vi.fn().mockResolvedValue("qwen-diff");
     const sleep = vi.fn().mockResolvedValue(undefined);
-    const dispatch = makeQwenSpawnDispatch({ spawn, poll, extractPatch, sleep, now: () => 0 });
+    const dispatch = makeQwenSpawnDispatch({ spawn, poll, extractPatch, sleep, now: () => 0 }, OPTS);
 
     const r = await dispatch(TASK, qwenProvider);
 
@@ -171,7 +176,7 @@ describe("makeQwenSpawnDispatch", () => {
       extractPatch: async () => "",
       sleep: async () => {},
       now: () => 0,
-    });
+    }, OPTS);
     const r = await dispatch(TASK, qwenProvider);
     expect(r).toEqual({ patch: "", turns: 2, outcome: "error", cost: 0 });
   });
@@ -183,7 +188,7 @@ describe("makeQwenSpawnDispatch", () => {
       extractPatch: async () => "p",
       sleep: async () => {},
       now: () => 0,
-    });
+    }, OPTS);
     expect((await dispatch(TASK, qwenProvider)).outcome).toBe("turn_limit");
   });
 
@@ -194,7 +199,7 @@ describe("makeQwenSpawnDispatch", () => {
       extractPatch: async () => "p",
       sleep: async () => {},
       now: () => 0,
-    });
+    }, OPTS);
     const r = await dispatch(TASK, qwenProvider);
     expect(r.outcome).toBe("completed");
     expect(r.turns).toBe(4);
@@ -210,7 +215,7 @@ describe("makeQwenSpawnDispatch", () => {
       extractPatch,
       sleep: async () => {},
       now,
-    });
+    }, OPTS);
     const r = await dispatch(TASK, qwenProvider);
     expect(r.outcome).toBe("timeout");
     expect(extractPatch).toHaveBeenCalledTimes(1);
@@ -224,7 +229,7 @@ describe("makeQwenSpawnDispatch", () => {
       extractPatch: async () => "",
       sleep: async () => {},
       now: () => 0,
-    });
+    }, OPTS);
     await expect(dispatch(TASK, endpointProvider)).rejects.toThrow(/model-endpoint/);
     expect(spawn).not.toHaveBeenCalled();
   });

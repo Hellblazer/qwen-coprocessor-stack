@@ -73,18 +73,22 @@ export type Dispatch = (task: AgentTask, provider: AgentProvider) => Promise<Age
  * HOST effect (dispatch.ts never runs git). Two invariants the host impl MUST
  * honour, both carried from `run_arm` (scripts/coding-eval/run_arm.py):
  *
- *  1. **Diff against the task's `base_commit`, NOT `HEAD`** (`run_arm._git_diff`,
+ *  1. **Diff against `baseCommit`, NOT `HEAD`** (`run_arm._git_diff`,
  *     run_arm.py:179-188). If the agent COMMITS its edits, `git diff HEAD` is
- *     empty and the run scores zero *silently*. The base is not a parameter
- *     here (it is not part of the RDR §4 `AgentTask` shape); the host effect is
- *     a closure that MUST capture the correct `base_commit` for this worktree.
+ *     empty and the run scores zero *silently*. RDR-008 P2 makes `baseCommit` an
+ *     EXPLICIT PARAMETER (not a closure-captured value as in RDR-007's
+ *     in-process form): a closure can't cross the `qwen_dispatch` MCP boundary,
+ *     and a required parameter makes it impossible to silently forget the base
+ *     and fall back to `HEAD`. `base_commit` is carried as a `qwen_dispatch`
+ *     tool-input + this parameter — NOT by mutating the fixture-locked
+ *     `AgentTask` (RDR-008 §Decision item 4).
  *  2. **Return the SOURCE-ONLY patch** — test/fixture deltas stripped
  *     (`run_arm.extract_source_patch`, run_arm.py:201-219). Contamination
  *     detection (a model patch touching test files) is HOST-INTERNAL; the
  *     dispatch contract surfaces only the stripped `AgentResult.patch`, so both
  *     hosts (TS + Python) produce identical patch semantics.
  */
-export type ExtractPatch = (worktree: string) => Promise<string>;
+export type ExtractPatch = (worktree: string, baseCommit: string) => Promise<string>;
 
 // ── claude -p ───────────────────────────────────────────────────────────────
 
@@ -107,21 +111,31 @@ export interface ClaudeCliEffects {
   extractPatch: ExtractPatch;
 }
 
+/** Per-construction options shared by the dispatchers (RDR-008 P2). `baseCommit`
+ *  is REQUIRED: `extractPatch` always diffs against it (never `HEAD`), and a
+ *  required field makes the silent-`HEAD`-zero path unrepresentable. It is the
+ *  caller-supplied base for THIS run's worktree (the `qwen_dispatch` tool-input
+ *  value), threaded to `extractPatch` rather than carried on the fixture-locked
+ *  `AgentTask`. */
+export interface DispatchBaseOpts {
+  baseCommit: string;
+}
+
 /**
  * Build a `claude -p` dispatcher. Blocking: `run` resolves only when the host
  * process has terminated (or been killed at the cutoff). The patch is the
- * host's git-diff off the worktree — NEVER claude's self-reported patch field
- * (run_arm's locked invariant). `minTokens` is not consumed here: claude
- * self-manages generation.
+ * host's git-diff off the worktree (vs `opts.baseCommit`) — NEVER claude's
+ * self-reported patch field (run_arm's locked invariant). `minTokens` is not
+ * consumed here: claude self-manages generation.
  */
-export function makeClaudeCliDispatch(effects: ClaudeCliEffects): Dispatch {
+export function makeClaudeCliDispatch(effects: ClaudeCliEffects, opts: DispatchBaseOpts): Dispatch {
   return async (task, provider) => {
     assertAgentCli(provider);
     const res = await effects.run(task, provider);
     const outcome: AgentOutcome = res.timedOut
       ? "timeout"
       : classifyOutcome(res.returncode, { turnsUsed: res.turnsUsed, maxTurns: task.maxTurns });
-    const patch = await effects.extractPatch(task.worktree);
+    const patch = await effects.extractPatch(task.worktree, opts.baseCommit);
     return { patch, turns: res.turnsUsed, outcome, cost: res.cost };
   };
 }
@@ -167,7 +181,7 @@ function isTerminal(state: SessionState): boolean {
  */
 export function makeQwenSpawnDispatch(
   effects: QwenSpawnEffects,
-  opts: { pollIntervalMs?: number } = {},
+  opts: DispatchBaseOpts & { pollIntervalMs?: number },
 ): Dispatch {
   const pollIntervalMs = opts.pollIntervalMs ?? 1_000;
   return async (task, provider) => {
@@ -196,7 +210,7 @@ export function makeQwenSpawnDispatch(
           maxTurns: task.maxTurns,
           ...(last.turnsUsed !== undefined ? { turnsUsed: last.turnsUsed } : {}),
         });
-    const patch = await effects.extractPatch(task.worktree);
+    const patch = await effects.extractPatch(task.worktree, opts.baseCommit);
     return { patch, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
   };
 }
