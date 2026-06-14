@@ -60,10 +60,9 @@ No new fields.
   worktree held at the cutoff (possibly partial). **The worktree state is
   indeterminate.** A retry must run against a **fresh** worktree at `base_commit`,
   not the timed-out one — worktree lifecycle is the caller's (see below).
-- `turns` — **`0` on a qwen-local success run today.** The supervisor's success
-  poll carries no turn count (`PollResult.last_known` is populated only on the
-  error path). Tracked by **qwen-coprocessor-stack-j2r**; until it lands, an
-  adopter must treat `turns` as `0`-on-success, not a meaningful count.
+- `turns` — the real completed-turn count, including on a qwen-local **success**
+  run (`PollResult.turns_completed` is the always-present live counter — bead
+  **qwen-coprocessor-stack-j2r**).
 - `cost` — `0` for free-local `qwen-local`.
 
 ### Errors

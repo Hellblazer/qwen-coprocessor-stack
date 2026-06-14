@@ -14,7 +14,7 @@ import {
   runQwenDispatch,
   type QwenDispatchInput,
 } from "../src/dispatch-tool.js";
-import type { Dispatch } from "../src/dispatch.js";
+import { makeQwenSpawnDispatch, type Dispatch } from "../src/dispatch.js";
 import type { AgentProvider, AgentResult, AgentTask } from "../src/types.js";
 
 const qwenProvider: AgentProvider = {
@@ -157,19 +157,53 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     await expect(effects.poll("gone")).rejects.toThrow(/evicted/);
   });
 
-  it("poll maps state and (when present) turns from last_known", async () => {
+  it("poll maps turns from the always-present turns_completed on a SUCCESS poll (j2r)", async () => {
     const qwen_poll = vi
       .fn()
-      .mockResolvedValueOnce({ state: "running", recent_events: [], more_events_available: false, latest_event_id: "0" })
+      .mockResolvedValueOnce({ state: "running", recent_events: [], more_events_available: false, latest_event_id: "0", turns_completed: 0 })
       .mockResolvedValueOnce({
         state: "complete",
         recent_events: [],
         more_events_available: false,
         latest_event_id: "1",
-        last_known: { turns_completed: 6 },
+        turns_completed: 4, // success path now carries the real count, not 0
       });
     const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
-    expect(await effects.poll("t")).toEqual({ state: "running" });
-    expect(await effects.poll("t")).toEqual({ state: "complete", turnsUsed: 6 });
+    expect(await effects.poll("t")).toEqual({ state: "running", turnsUsed: 0 });
+    expect(await effects.poll("t")).toEqual({ state: "complete", turnsUsed: 4 });
+  });
+
+  it("poll falls back to last_known.turns_completed for a pre-j2r supervisor", async () => {
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "error",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "1",
+      last_known: { turns_completed: 6 },
+    });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    expect(await effects.poll("t")).toEqual({ state: "error", turnsUsed: 6 });
+  });
+
+  // End-to-end TRIPWIRE for the retired "turns=0 on success" caveat (R-review):
+  // proves turns_completed flows PollResult -> adapter -> dispatcher ->
+  // AgentResult.turns. If the mapping regresses to 0, this fails (the conformance
+  // fixture only checks key presence, not the value).
+  it("turns_completed flows end-to-end to AgentResult.turns on a SUCCESS run (j2r)", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t", chosen_backend: "mac" });
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "complete",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "1",
+      turns_completed: 4, // success path carries the real count
+    });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn, qwen_poll }, async () => "diff");
+    const dispatch = makeQwenSpawnDispatch(effects, { baseCommit: "base-sha" });
+
+    const result = await dispatch(TASK, qwenProvider);
+
+    expect(result.outcome).toBe("completed");
+    expect(result.turns).toBe(4); // NOT 0 — the caveat is genuinely retired
   });
 });

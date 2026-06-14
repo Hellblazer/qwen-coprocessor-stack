@@ -1,5 +1,5 @@
 {
-  "$schema_note": "RDR-008 P3 golden conformance fixture — the qwen_dispatch OPERATOR I/O contract (request shape, response shape, structured error envelope). TS host asserts it in mcp-bridges/qwen-agent-server/tests/contract-conformance.test.ts. This is the fixture-pinnable half of the nexus dispatch-operator spec (the prose half — continuation requirements + one-shot semantics — lives in docs/contracts/qwen-dispatch-operator-contract.md). The RESPONSE is AgentResult, reused VERBATIM from agent-shapes.json (RDR-007) — a qwen_dispatch run returns an AgentResult, nothing new. NOTE: `turns` is 0 on a qwen-local SUCCESS run until bead qwen-coprocessor-stack-j2r lands (the supervisor's success poll carries no turn count today); the example pins turns=0 so the conformance test does not vacuously accept a meaningful value.",
+  "$schema_note": "RDR-008 P3 golden conformance fixture — the qwen_dispatch OPERATOR I/O contract (request shape, response shape, structured error envelope). TS host asserts it in mcp-bridges/qwen-agent-server/tests/contract-conformance.test.ts. This is the fixture-pinnable half of the nexus dispatch-operator spec (the prose half — continuation requirements + one-shot semantics — lives in docs/contracts/qwen-dispatch-operator-contract.md). The RESPONSE is AgentResult, reused VERBATIM from agent-shapes.json (RDR-007) — a qwen_dispatch run returns an AgentResult, nothing new. `turns` now carries the real completed-turn count on a qwen-local SUCCESS run (bead qwen-coprocessor-stack-j2r — PollResult.turns_completed is always-present).",
   "request": {
     "requiredKeys": ["prompt", "worktree", "base_commit"],
     "optionalKeys": ["max_turns", "min_tokens", "timeout_ms", "provider_id", "agent_kind"],
@@ -22,14 +22,14 @@
     "requiredKeys": ["patch", "turns", "outcome", "cost"],
     "example": {
       "patch": "diff --git a/calc.py b/calc.py\n",
-      "turns": 0,
+      "turns": 4,
       "outcome": "completed",
       "cost": 0
     },
     "notes": {
       "shape": "AgentResult (RDR-007, agent-shapes.json) — reused verbatim. A qwen_dispatch run is one agentic run; its result IS an AgentResult.",
       "patch": "SOURCE-ONLY (test paths stripped). Contamination stays host-internal — NOT a field of AgentResult (RDR-007 P4b).",
-      "turns": "0 on qwen-local success until bead qwen-coprocessor-stack-j2r emits turns_completed on the success poll.",
+      "turns": "Real completed-turn count on qwen-local success (j2r: PollResult.turns_completed is always-present).",
       "cost": "0 for free-local qwen-local."
     }
   },
