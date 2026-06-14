@@ -108,9 +108,10 @@ nexus step-output probe. Findings recorded in T2 (`RDR-009-research-01..04`).
 - **RF-2 — the four-kind union covers `/accept`; no new kind. Verified (source).** Inventory of the
   rdr-accept skill: T2 status write → `tier:T2`; frontmatter + README edits → `patch`; strategic-planner
   bead creation → `entity:bead`; plan JSON → `value`; catalog links → `entity:link` (already in the
-  union). `nx_plan_audit` / `nx_enrich_beads` results are tool outputs — fold into the planner's `value`
-  return, or treat as side-effects (deferred). A "status transition" is adequately `tier`+`patch` — no
-  `transition` kind.
+  union). `nx_plan_audit` / `nx_enrich_beads` run in the natural order (plan → audit → enrich) as
+  **separate leaf dispatches**, each returning its own `{kind:"value"}` — the union covers each.
+  (Folding them into the planner's `value` would need an inverted dispatch order; noted, not required.)
+  A "status transition" is adequately `tier`+`patch` — no `transition` kind.
 - **RF-3 — `patch→artifacts` blast radius is bounded; the SWE-bench scorer is decoupled. Verified
   (source).** `arm_a.py`/`arm_b.py` call `extract_source_patch()` directly and write the SWE-bench
   predictions JSONL (`model_patch`) **before** the `run_result_to_agent_result` projection — the scorer
@@ -145,9 +146,10 @@ One seam change on the executor side delivers the generalization; nexus owns the
 
 1. **Generalize the harvest seam.** Replace `ExtractPatch(worktree, base) => string` with
    `Harvest(run: RunContext) => Promise<Artifact[]>`, where `RunContext` exposes **both** sources:
-   `run.events` (the agent's emitted/observed event stream — PUSH) and `run.environment` (the
-   end-state, e.g. the worktree — PULL). The pluggable harvester decides what to surface. The current
-   git-diff logic becomes one harvester emitting `[{kind:"patch"}]`.
+   `run.emitted` (artifacts the spine emitted + the leaf's `finalMessage` — PUSH; NOT raw
+   event-log scraping, per RF-1) and `run.environment` (the end-state, e.g. the worktree — PULL). The
+   pluggable harvester decides what to surface. The current git-diff logic becomes one harvester
+   emitting `[{kind:"patch"}]`.
 
 2. **Generalize the result envelope.** `AgentResult.patch: string` becomes
    `AgentResult.artifacts: Artifact[]`. `turns` / `outcome` / `cost` stay as run metadata. A
@@ -269,23 +271,39 @@ that consumers must special-case. A single typed `Artifact[]` with `patch` as on
 
 ### Minimum Viable Validation
 
-`/accept`-shaped run: a dispatched leaf returns an `Artifact[]` containing `entity` (a created bead)
-+ `value` (the plan), and a consumer reads the created-bead entity from the result — proving a
-non-patch artifact flows end-to-end. The SWE-bench case still yields a `patch` artifact. **In scope,
-not deferred.**
+`/accept`-shaped run: the dispatched planner **leaf** returns `[{kind:"value", value: planJson}]`
+(via its `finalMessage`); the deterministic **spine** emits `{kind:"entity", type:"bead", op:"created"}`
+into `RunContext.emitted` at the time it creates the bead; the harvester combines both, and a consumer
+reads the created-bead `entity` from the harvested `Artifact[]` — proving a non-patch artifact flows
+end-to-end. The SWE-bench case still yields a `patch` artifact (PULL). **In scope, not deferred.**
+
+> **Phase 1 and Phase 3 ship as ONE unit (Significant-1).** The `patchArtifact(result)` back-compat
+> accessor is TS-internal only — it does NOT preserve the MCP wire shape. The moment Phase 1 changes
+> the `qwen_dispatch` response from `{patch,…}` to `{artifacts,…}`, any nexus plan referencing
+> `$stepN.patch` breaks. The published spec + conformance fixture (Phase 3) and the wire change
+> (Phase 1) must land together. (Mitigating fact: #1174 is *pending sign-off* — no live nexus plan is
+> known to consume `qwen_dispatch` yet, so the coordination is "land together," not "migrate live
+> consumers." Confirm zero live consumers before shipping.)
 
 ### Phase 1: The `Artifact` union + `Harvest` seam + `AgentResult.artifacts`
 
 Replace `ExtractPatch` with `Harvest(RunContext)`, define the `Artifact` union, migrate
-`AgentResult.patch → artifacts` (+ back-compat accessor). The git-diff harvester emits `{kind:"patch"}`.
-Update `agent-shapes.json` / conformance + the threading through `makeQwenSpawnDispatch`.
+`AgentResult.patch → artifacts` (+ `patchArtifact(result)` back-compat accessor). The git-diff
+harvester emits `{kind:"patch"}` from `RunContext.environment`. Update `agent-shapes.json` /
+conformance (TS + Python) + the threading through `makeQwenSpawnDispatch`.
 
 ### Phase 2: The `/accept` harvester (the push path)
 
-A harvester that reads `RunContext.events` for `entity`/`tier` artifacts and the leaf return value for
-`value`. Integration test against a real `/accept`-shaped run (or a faithful fixture).
+A harvester that reads `RunContext.emitted` for `entity`/`tier` artifacts (the deterministic spine —
+host code — emits these directly at the time it creates the bead / writes T2; the harvester does NOT
+scrape the supervisor's raw event log, per RF-1) and `RunContext.finalMessage` parsed to a `value` for
+the leaf's structured output. Integration test over a `RunContext` carrying two emitted artifacts
+(`entity`(bead, created) + `tier`(T2)) and a `finalMessage` with plan JSON. NOTE (Significant-2): in
+the natural `/accept` order (plan → audit → enrich), `nx_plan_audit` / `nx_enrich_beads` results are
+separate leaf dispatches, each returning their own `{kind:"value"}` — the four-kind union covers each;
+the "fold into the planner's value" shortcut would need an inverted dispatch order and is not required.
 
-### Phase 3: Published spec update for nexus
+### Phase 3: Published spec update for nexus (lands WITH Phase 1 — see note above)
 
 Evolve `qwen-dispatch-operator-contract.md` + `qwen-dispatch-shapes.json`: operator output becomes
 `Artifact[]`; document ledger = nexus step output; add the `Artifact`-union conformance fixture.
@@ -305,8 +323,10 @@ None.
 
 - **Scenario**: git-diff harvester on a worktree with a committed edit — **Verify**: returns
   `[{kind:"patch", diff≠"", base}]` (the RDR-008 base-commit invariant, re-expressed as an artifact).
-- **Scenario**: `/accept` harvester over an event stream with bead-create + T2-write + a plan return —
-  **Verify**: `entity`(bead, created) + `tier`(T2) + `value`(plan) artifacts present.
+- **Scenario**: `/accept` harvester over a `RunContext` with two emitted artifacts
+  (`entity`(bead, created), `tier`(T2, key)) and a `finalMessage` containing plan JSON —
+  **Verify**: `entity`(bead, created) + `tier`(T2) + `value`(plan) all present in the harvested
+  `Artifact[]`. (Reads `emitted` + `finalMessage`, NOT a raw event log — RF-1.)
 - **Scenario**: harvester reading neither source — **Verify**: `[]`, no throw.
 - **Scenario**: conformance — **Verify**: `AgentResult.artifacts` + the `Artifact` union assert against
   the golden fixture on-host (the #1174 enforcement-hook pattern).
@@ -315,8 +335,9 @@ None.
 
 ### Testing Strategy
 
-1. **Scenario**: end-to-end `/accept`-shaped dispatch → `Artifact[]` with a non-patch entity consumed
-   by a downstream reader. **Expected**: the MVV holds.
+1. **Scenario**: end-to-end `/accept`-shaped dispatch — the leaf returns a `value`, the spine emits an
+   `entity`, the harvester combines them into one `Artifact[]`, and a downstream reader consumes the
+   non-patch `entity`. **Expected**: the MVV holds.
 
 ## Finalization Gate
 
@@ -355,4 +376,22 @@ published-spec update. Environment-axis generalization and mid-run streaming are
 
 ## Revision History
 
-[Gate findings appended here.]
+### Gate round 1 — 2026-06-14 (BLOCKED → fixed, re-gated)
+
+substantive-critic (Layer 3): 1 Critical + 2 Significant + 2 Observations.
+
+- **Critical** — Phase 2, its test scenario, and Approach §1 still referenced `RunContext.events`, a
+  field the RF-1 correction dropped from `RunContext` (which has `emitted` / `finalMessage` /
+  `environment`). The implementation spec contradicted its own research finding and would have produced
+  the brittle event-scraping architecture RF-1 rejected. **Fixed**: Approach §1, Phase 2, the Phase 2
+  test scenario, and the MVV/Validation now consistently use `emitted` (spine emissions) +
+  `finalMessage` (leaf return); no raw event log.
+- **Significant-1** — `patchArtifact` is TS-internal only; it does not preserve the MCP wire shape.
+  **Fixed**: added a note that Phase 1 (wire change) and Phase 3 (spec + fixture) ship as one unit;
+  #1174 is pending sign-off so no live consumer migration is expected (confirm zero live consumers).
+- **Significant-2** — RF-2's "fold audit/enrich into the planner's value" assumed an inverted dispatch
+  order. **Fixed**: stated they are separate leaf dispatches in the natural plan→audit→enrich order,
+  each returning its own `{kind:"value"}`; the union covers each.
+- **Observation-1** (MVV conflated leaf-return vs spine-emission) — folded into the Critical fix.
+- **Observation-2** (nexus JMESPath list-projection open on #1174) — left as a noted pre-Phase-2
+  dependency, already tracked in the second Critical Assumption.
