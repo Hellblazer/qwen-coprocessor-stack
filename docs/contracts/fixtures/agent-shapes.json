@@ -1,5 +1,5 @@
 {
-  "$schema_note": "RDR-007 §4 golden conformance fixture — the AgentTask / AgentResult / AgentOutcome shapes. CROSS-HOST: both the TS host (interfaces in types.ts) and the Python host (TypedDicts in run_arm.py) assert these exact key sets and the AgentOutcome value set. Field names are the JSON contract keys (camelCase) — identical across hosts so a fixture is byte-identical. `timeout` is in MILLISECONDS; `cost` is USD (0 for free-local).",
+  "$schema_note": "RDR-007 §4 golden conformance fixture, generalized by RDR-009 — the AgentTask / AgentResult / AgentOutcome / Artifact shapes. CROSS-HOST: both the TS host (interfaces in types.ts) and the Python host (TypedDicts in run_arm.py) assert these exact key sets, the AgentOutcome value set, and the Artifact union (four kinds). Field names are the JSON contract keys (camelCase) — identical across hosts so a fixture is byte-identical. `timeout` is in MILLISECONDS; `cost` is USD (0 for free-local). RDR-009: AgentResult.patch (string) is replaced by AgentResult.artifacts (Artifact[]); the git-diff harvester wraps the source diff into a {kind:'patch'} artifact. patchArtifact(result) is a TS-internal accessor and does NOT preserve the old wire shape.",
   "agentOutcomeValues": ["completed", "timeout", "turn_limit", "error"],
   "agentTask": {
     "requiredKeys": ["prompt", "worktree", "maxTurns", "minTokens", "timeout"],
@@ -12,12 +12,37 @@
     }
   },
   "agentResult": {
-    "requiredKeys": ["patch", "turns", "outcome", "cost"],
+    "requiredKeys": ["artifacts", "turns", "outcome", "cost"],
     "example": {
-      "patch": "diff --git a/x b/x\n",
+      "artifacts": [
+        {
+          "kind": "patch",
+          "diff": "diff --git a/x b/x\n",
+          "base": "9f1c0de2b7a4c5e6f8091a2b3c4d5e6f70819203"
+        }
+      ],
       "turns": 4,
       "outcome": "completed",
       "cost": 0.717387
+    }
+  },
+  "artifact": {
+    "$note": "RDR-009 Artifact union — exactly FOUR kinds (do NOT add a fifth without a real consumer). The git-diff harvester (PULL channel) produces `patch`; the /accept harvester (PUSH channel: emitted + finalMessage, RDR-009 Phase 2) produces `value`/`entity`/`tier`. Both conformance suites assert this `kinds` set; `examples` carries one canonical literal per kind.",
+    "kinds": ["patch", "value", "entity", "tier"],
+    "examples": {
+      "patch": {
+        "kind": "patch",
+        "diff": "diff --git a/x b/x\n",
+        "base": "9f1c0de2b7a4c5e6f8091a2b3c4d5e6f70819203"
+      },
+      "value": { "kind": "value", "value": { "ranked": ["a", "b"] } },
+      "entity": {
+        "kind": "entity",
+        "type": "bead",
+        "id": "qwen-coprocessor-stack-nh9.1",
+        "op": "created"
+      },
+      "tier": { "kind": "tier", "tier": "T2", "key": "RDR-009" }
     }
   }
 }

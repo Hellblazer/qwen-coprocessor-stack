@@ -85,7 +85,7 @@ export function createDispatcherRegistry(): DispatcherRegistry {
  *
  * `baseCommit` (RDR-008 P2) is the caller-supplied base for THIS run's worktree
  * — the `qwen_dispatch` tool-input value. It is REQUIRED and threaded into the
- * dispatcher so `extractPatch` always diffs against the base, never `HEAD`.
+ * dispatcher so the git-diff harvester always diffs against the base, never `HEAD`.
  * Because the base is per-run, the registry is constructed per dispatch call
  * (the registry still owns kind→dispatcher resolution; only the bound base
  * differs per call).

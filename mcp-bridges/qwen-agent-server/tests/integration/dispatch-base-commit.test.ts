@@ -23,8 +23,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { loadAgentProviders, selectAgentProvider } from "../../src/backends.js";
 import { createDefaultDispatcherRegistry } from "../../src/dispatch-registry.js";
-import { gitExtractPatch, runQwenDispatch } from "../../src/dispatch-tool.js";
+import { gitDiffHarvester, gitExtractPatch, runQwenDispatch } from "../../src/dispatch-tool.js";
 import type { QwenSpawnEffects } from "../../src/dispatch.js";
+import { patchArtifact } from "../../src/types.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
@@ -66,12 +67,13 @@ afterEach(() => {
 });
 
 /** Fake spawn/poll: the agent is "done" immediately (its edit was committed
- *  above). extractPatch is the REAL gitExtractPatch — that is what's under test. */
+ *  above). harvest is the REAL git-diff harvester over gitExtractPatch — that is
+ *  what's under test. */
 function fakeEffects(): QwenSpawnEffects {
   return {
     spawn: async () => "task-1",
     poll: async () => ({ state: "complete", turnsUsed: 1, cost: 0 }),
-    extractPatch: (worktree, bc) => gitExtractPatch(worktree, bc),
+    harvest: gitDiffHarvester(gitExtractPatch),
     sleep: async () => {},
     now: () => 0,
   };
@@ -96,12 +98,15 @@ describe("qwen_dispatch base_commit contract (agent commits its edits)", () => {
     );
 
     expect(result.outcome).toBe("completed");
-    // Captured the committed source change (vs base, NOT HEAD).
-    expect(result.patch.trim()).not.toBe("");
-    expect(result.patch).toContain("calc.py");
-    expect(result.patch).toContain("return a + b");
+    // Captured the committed source change (vs base, NOT HEAD) as a patch artifact.
+    const patch = patchArtifact(result);
+    expect(patch).toBeDefined();
+    expect(patch!.base).toBe(base);
+    expect(patch!.diff.trim()).not.toBe("");
+    expect(patch!.diff).toContain("calc.py");
+    expect(patch!.diff).toContain("return a + b");
     // Source-only: the test-file edit is stripped.
-    expect(result.patch).not.toContain("test_calc.py");
+    expect(patch!.diff).not.toContain("test_calc.py");
   });
 
   it("gitExtractPatch diffs vs base, not HEAD (direct effect check)", async () => {

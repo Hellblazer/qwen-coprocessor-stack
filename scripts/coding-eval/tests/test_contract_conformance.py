@@ -77,16 +77,31 @@ def test_agent_task_shape_and_example_match_golden_fixture():
 def test_agent_result_shape_matches_golden_fixture():
     fx = _load("agent-shapes.json")["agentResult"]
     ex = fx["example"]
+    # RDR-009: the result carries a single {kind:"patch"} artifact wrapping the
+    # git extraction; the Python host reproduces the canonical example byte-for-byte.
+    patch_artifact = ex["artifacts"][0]
     rr = RunResult(
         instance_id="psf__requests-2148",
         arm="arm-x",
         outcome=Outcome(ex["outcome"]),
-        model_patch=ex["patch"],
+        model_patch=patch_artifact["diff"],
+        base_commit=patch_artifact["base"],
         telemetry={"num_turns": ex["turns"], "total_cost_usd": ex["cost"]},
     )
     projected = run_result_to_agent_result(rr)
     assert set(projected) == set(fx["requiredKeys"])
     assert projected == ex
+
+
+def test_artifact_union_kinds_match_golden_fixture():
+    # RDR-009: the four-kind union is the cross-host contract. Each example
+    # carries its discriminant; the eval host emits the `patch` kind.
+    fx = _load("agent-shapes.json")["artifact"]
+    # Set-membership, matching the TS conformance suite (the cross-host contract
+    # is the set of kinds, not their fixture ordering).
+    assert set(fx["kinds"]) == {"patch", "value", "entity", "tier"}
+    for kind in fx["kinds"]:
+        assert fx["examples"][kind]["kind"] == kind
 
 
 # ── Python-host-scoped: prompt render ────────────────────────────────────────

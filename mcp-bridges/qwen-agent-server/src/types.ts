@@ -773,7 +773,7 @@ export type AgentOutcome = "completed" | "timeout" | "turn_limit" | "error";
  *
  * - `prompt`    — the task/problem statement given to the agent.
  * - `worktree`  — absolute path to the isolated working tree the agent edits;
- *                 also the target the host's `extractPatch` effect diffs.
+ *                 also the target the host's git-diff harvester (`Harvest`) diffs.
  * - `maxTurns`  — turn budget; `turns >= maxTurns` classifies as `turn_limit`.
  * - `minTokens` — per-turn output-token floor (the reasoning-clearing floor;
  *                 run_arm 4yx). Forwarded to the qwen spawn's
@@ -790,21 +790,87 @@ export interface AgentTask {
 }
 
 /**
- * Result of an agentic run (RDR-007 §4).
+ * A typed unit of work product harvested from an agentic run (RDR-009). The
+ * union is exactly FOUR kinds — do NOT add a fifth without a real consumer
+ * (RDR-009 §Decision, locked). Two channels produce them (RF-1):
  *
- * - `patch`   — the source diff, produced by the HOST's `extractPatch` effect
- *               off `worktree` (a `git diff <base>`), NEVER the agent's own
- *               self-reported patch field (run_arm's locked invariant: the
- *               `claude -p --output-format json` `model_patch` is telemetry
- *               only). RF-1 keeps git-diff a host effect, not centralized.
- * - `turns`   — turns the agent used (driver-specific signal: claude's
- *               `num_turns`, qwen's poll-reported turn count).
- * - `outcome` — see {@link AgentOutcome}.
- * - `cost`    — USD cost (metered providers; `0` for free-local).
+ *  - PUSH: `kind:"entity"` / `kind:"tier"` / `kind:"value"` — emitted by the
+ *    deterministic host-code spine (which knows what it wrote) and the leaf's
+ *    structured `finalMessage`. NEVER derived by scraping the raw supervisor
+ *    event log (lossy/brittle: no explicit "created" signal, truncated summaries).
+ *  - PULL: `kind:"patch"` — read from the worktree end-state (`git diff <base>`).
+ *
+ * - `patch`  — a source-only diff against `base` (test paths stripped); the
+ *              git-diff harvester (the generalized `ExtractPatch`) produces it.
+ * - `value`  — an arbitrary structured return (e.g. a leaf planner's JSON);
+ *              optional `schema` names the shape for a downstream consumer.
+ * - `entity` — a bead/link/rdr created or updated by the run.
+ * - `tier`   — a write to a memory tier (T1 scratch / T2 memory / T3 store).
+ */
+export type Artifact =
+  | { kind: "patch"; diff: string; base: string }
+  | { kind: "value"; value: unknown; schema?: string }
+  | { kind: "entity"; type: "bead" | "link" | "rdr"; id: string; op: "created" | "updated" }
+  | { kind: "tier"; tier: "T1" | "T2" | "T3"; key: string };
+
+/**
+ * The end-of-run context a {@link Harvest} reads to produce `Artifact[]`
+ * (RDR-009, RF-1). Generalizes the `(worktree, baseCommit)` pair the old
+ * `ExtractPatch` took.
+ *
+ * - `emitted`      — artifacts the deterministic host-code spine emitted DURING
+ *                    the run (the PUSH channel; empty for a pure git-diff run).
+ * - `finalMessage` — the leaf's structured return text, parsed to a `value`
+ *                    artifact by a harvester that wants it (the /accept path,
+ *                    RDR-009 Phase 2; unused by the git-diff harvester).
+ * - `environment`  — the worktree end-state (the PULL channel): the worktree
+ *                    the agent edited and the base commit to diff against.
+ */
+export interface RunContext {
+  emitted: ReadonlyArray<Artifact>;
+  finalMessage?: string;
+  environment: { worktree?: string; baseCommit?: string };
+}
+
+/**
+ * Harvest a completed run into its typed work product (RDR-009 — the
+ * generalization of {@link AgentResult}'s old single `patch` string). A
+ * harvester is a HOST effect (RF-1): the git-diff harvester runs `git`, the
+ * /accept harvester reads `emitted` + `finalMessage`. `dispatch.ts` never runs
+ * git itself; it injects a `Harvest` and attaches the result to `AgentResult`.
+ */
+export type Harvest = (run: RunContext) => Promise<Artifact[]>;
+
+/**
+ * Result of an agentic run (RDR-007 §4, generalized by RDR-009).
+ *
+ * - `artifacts` — the typed work product of the run, produced by the HOST's
+ *                 {@link Harvest} effect (RDR-009). The git-diff harvester
+ *                 emits a single `{kind:"patch"}` reading the worktree end-state
+ *                 — NEVER the agent's own self-reported patch field (run_arm's
+ *                 locked invariant). RF-1 keeps harvesting a host effect.
+ * - `turns`     — turns the agent used (driver-specific signal: claude's
+ *                 `num_turns`, qwen's poll-reported turn count).
+ * - `outcome`   — see {@link AgentOutcome}.
+ * - `cost`      — USD cost (metered providers; `0` for free-local).
  */
 export interface AgentResult {
-  patch: string;
+  artifacts: Artifact[];
   turns: number;
   outcome: AgentOutcome;
   cost: number;
+}
+
+/**
+ * The patch artifact of a result, if any (RDR-009 back-compat accessor). A
+ * TS-INTERNAL convenience for call sites that want "the one diff" — it does NOT
+ * preserve the old `{patch: string}` MCP wire shape (the wire now carries
+ * `artifacts`). Returns `undefined` when the run produced no patch artifact.
+ */
+export function patchArtifact(
+  result: AgentResult,
+): Extract<Artifact, { kind: "patch" }> | undefined {
+  return result.artifacts.find(
+    (a): a is Extract<Artifact, { kind: "patch" }> => a.kind === "patch",
+  );
 }

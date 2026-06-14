@@ -187,6 +187,7 @@ def run_instance(
             arm=ARM,
             outcome=outcome,
             model_patch=model_patch,
+            base_commit=base_commit,
             test_edit_contamination=contaminated,
             duration_seconds=duration,
             returncode=returncode,

@@ -26,7 +26,12 @@ const TASK: AgentTask = {
   timeout: 600_000,
 };
 
-const RESULT: AgentResult = { patch: "diff", turns: 3, outcome: "completed", cost: 0 };
+const RESULT: AgentResult = {
+  artifacts: [{ kind: "patch", diff: "diff", base: "base-sha" }],
+  turns: 3,
+  outcome: "completed",
+  cost: 0,
+};
 
 const qwenProvider: AgentProvider = {
   id: "qwen-coder-mac",
@@ -125,20 +130,32 @@ describe("createDefaultDispatcherRegistry", () => {
     const r = await registry.resolve(qwenProvider)(TASK, qwenProvider);
 
     expect(effects.spawn).toHaveBeenCalledWith(TASK, qwenProvider);
-    expect(effects.extractPatch).toHaveBeenCalledWith(TASK.worktree, "base-sha");
-    expect(r).toEqual({ patch: "real-diff", turns: 5, outcome: "completed", cost: 0 });
+    // harvest receives the one-shot RunContext (PULL channel = the worktree
+    // end-state); it returns the patch artifact the registry's dispatcher attaches.
+    expect(effects.harvest).toHaveBeenCalledWith({
+      emitted: [],
+      environment: { worktree: TASK.worktree, baseCommit: "base-sha" },
+    });
+    expect(r).toEqual({
+      artifacts: [{ kind: "patch", diff: "real-diff", base: "base-sha" }],
+      turns: 5,
+      outcome: "completed",
+      cost: 0,
+    });
   });
 });
 
-/** Fake QwenSpawnEffects: spawn → one terminal `complete` poll → patch. No
- *  real process/network/clock. */
+/** Fake QwenSpawnEffects: spawn → one terminal `complete` poll → patch-artifact
+ *  harvest. No real process/network/clock. */
 function fakeQwenSpawnEffects(): {
   [K in keyof QwenSpawnEffects]: ReturnType<typeof vi.fn> & QwenSpawnEffects[K];
 } {
   return {
     spawn: vi.fn().mockResolvedValue("task-1"),
     poll: vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 5, cost: 0 }),
-    extractPatch: vi.fn().mockResolvedValue("real-diff"),
+    harvest: vi.fn(async (run) => [
+      { kind: "patch", diff: "real-diff", base: run.environment.baseCommit ?? "" },
+    ]),
     sleep: vi.fn().mockResolvedValue(undefined),
     now: vi.fn().mockReturnValue(0),
   } as never;

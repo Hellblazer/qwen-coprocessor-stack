@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 import { classifyOutcome } from "../src/dispatch.js";
 import { DISPATCH_ERROR_CODES, qwenDispatchInputShape } from "../src/dispatch-tool.js";
 import { classifyTask } from "../src/types.js";
-import type { AgentResult, AgentTask, TaskKind, TaskSignals } from "../src/types.js";
+import type { AgentResult, AgentTask, Artifact, TaskKind, TaskSignals } from "../src/types.js";
 
 // tests/ -> qwen-agent-server -> mcp-bridges -> repo root.
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "../../../docs/contracts/fixtures");
@@ -60,6 +60,7 @@ interface ShapesFixture {
   agentOutcomeValues: string[];
   agentTask: { requiredKeys: string[]; example: Record<string, unknown> };
   agentResult: { requiredKeys: string[]; example: Record<string, unknown> };
+  artifact: { kinds: string[]; examples: Record<string, Record<string, unknown>> };
 }
 
 describe("agent-shapes golden fixture (cross-host)", () => {
@@ -78,14 +79,31 @@ describe("agent-shapes golden fixture (cross-host)", () => {
     expect(Object.keys(task).sort()).toEqual([...fx.agentTask.requiredKeys].sort());
   });
 
-  it("AgentResult key set matches the contract", () => {
+  it("AgentResult key set matches the contract (RDR-009: artifacts, not patch)", () => {
     const result: AgentResult = {
-      patch: String(fx.agentResult.example.patch),
+      artifacts: fx.agentResult.example.artifacts as Artifact[],
       turns: Number(fx.agentResult.example.turns),
       outcome: fx.agentResult.example.outcome as AgentResult["outcome"],
       cost: Number(fx.agentResult.example.cost),
     };
     expect(Object.keys(result).sort()).toEqual([...fx.agentResult.requiredKeys].sort());
+  });
+
+  it("Artifact union is the four contract kinds (RDR-009)", () => {
+    // One literal per kind, each typed as Artifact: a REMOVED/renamed kind fails
+    // at compile time (typecheck:tests); the runtime check pins the fixture's
+    // `kinds` set to the union (an added kind without a fixture update fails here).
+    const examples: Artifact[] = [
+      { kind: "patch", diff: "diff --git a/x b/x\n", base: "deadbeef" },
+      { kind: "value", value: { ranked: ["a", "b"] } },
+      { kind: "entity", type: "bead", id: "x-1", op: "created" },
+      { kind: "tier", tier: "T2", key: "RDR-009" },
+    ];
+    expect(examples.map((a) => a.kind).sort()).toEqual([...fx.artifact.kinds].sort());
+    // The fixture's per-kind examples carry their discriminant.
+    for (const kind of fx.artifact.kinds) {
+      expect(fx.artifact.examples[kind]!.kind).toBe(kind);
+    }
   });
 
   it("AgentOutcome value set is the contract union", () => {
@@ -158,12 +176,12 @@ describe("qwen-dispatch-shapes golden fixture (TS-host-scoped)", () => {
     }
   });
 
-  it("response shape is AgentResult (reused verbatim from RDR-007)", () => {
+  it("response shape is AgentResult (reused verbatim from RDR-007, RDR-009 artifacts)", () => {
     // A literal typed as AgentResult: a REMOVED/renamed required field fails at
     // compile time (typecheck:tests); this runtime check pins that the fixture's
     // requiredKeys match the literal's keys (no fixture-only stray key).
     const result: AgentResult = {
-      patch: String(fx.response.example.patch),
+      artifacts: fx.response.example.artifacts as Artifact[],
       turns: Number(fx.response.example.turns),
       outcome: fx.response.example.outcome as AgentResult["outcome"],
       cost: Number(fx.response.example.cost),

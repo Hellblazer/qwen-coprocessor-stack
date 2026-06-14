@@ -3,12 +3,14 @@
 // `qwen_dispatch` MCP tool (RDR-008 P2, bead qwen-coprocessor-stack-exn). The
 // operator surface nexus (or any orchestrator) calls: resolve a dispatcher from
 // the registry, run a one-shot agentic task in a caller-supplied worktree,
-// return `{patch, turns, outcome, cost}` (= `AgentResult`).
+// return `{artifacts, turns, outcome, cost}` (= `AgentResult`; RDR-009 — a
+// coding run's artifacts are one `{kind:"patch", diff, base}`).
 //
 // base_commit is EXPLICIT at this boundary (RDR-008 §Decision item 4): the tool
-// input carries `base_commit`; it is threaded into the dispatcher and to
-// `extractPatch`, which ALWAYS diffs against the base (never `HEAD`) and returns
-// the SOURCE-ONLY patch. It is NOT carried on the fixture-locked `AgentTask`.
+// input carries `base_commit`; it is threaded into the dispatcher and to the
+// git-diff harvester, which ALWAYS diffs against the base (never `HEAD`) and
+// emits the SOURCE-ONLY patch artifact. It is NOT carried on the fixture-locked
+// `AgentTask`.
 //
 // Worktree handling is the caller-supplied strategy (RF-5 default): the caller
 // passes a ready worktree + base_commit; the executor runs + extracts and leaves
@@ -28,7 +30,9 @@ import type {
   AgentProvider,
   AgentResult,
   AgentTask,
+  Artifact,
   DispatcherKind,
+  Harvest,
   PollOpts,
   PollResult,
   SpawnOpts,
@@ -78,6 +82,36 @@ export async function gitExtractPatch(
   return stdout;
 }
 
+/**
+ * The git-diff {@link Harvest}: the PULL channel of RDR-009. Reads the worktree
+ * end-state from `run.environment` and emits a single `{kind:"patch"}` artifact
+ * — the generalization of RDR-008's `ExtractPatch`. The base-commit invariant
+ * (diff vs `baseCommit`, never `HEAD`) is re-expressed as the artifact's `base`
+ * field. Always emits the patch artifact when an environment is present (an
+ * empty diff → an empty-`diff` patch, preserving the old `patch:""` semantics);
+ * with no worktree/base (a non-environment run) it emits nothing.
+ *
+ * `extract` is injected (defaults to {@link gitExtractPatch}) so tests drive it
+ * without a real repo; `extraTestPaths` are per-instance test globs stripped in
+ * addition to the generic patterns.
+ */
+export function gitDiffHarvester(
+  extract: (
+    worktree: string,
+    baseCommit: string,
+    opts?: { extraTestPaths?: readonly string[] },
+  ) => Promise<string> = gitExtractPatch,
+  opts: { extraTestPaths?: readonly string[] } = {},
+): Harvest {
+  return async (run) => {
+    const { worktree, baseCommit } = run.environment;
+    if (worktree === undefined || baseCommit === undefined) return [];
+    const diff = await extract(worktree, baseCommit, opts);
+    const patch: Artifact = { kind: "patch", diff, base: baseCommit };
+    return [patch];
+  };
+}
+
 /** Zod shape for the `qwen_dispatch` MCP tool input. Kept as a raw shape object
  *  so it plugs into `mcpServer.tool(name, desc, shape, cb)` like the other
  *  qwen_* tools. */
@@ -87,11 +121,11 @@ export const qwenDispatchInputShape = {
     .string()
     .min(1)
     .optional()
-    .describe("Absolute path to a caller-supplied worktree the agent edits and that extractPatch diffs. Mutually exclusive with `repo`; supply exactly one."),
+    .describe("Absolute path to a caller-supplied worktree the agent edits and that the git-diff harvester diffs. Mutually exclusive with `repo`; supply exactly one."),
   base_commit: z
     .string()
     .min(1)
-    .describe("Caller-supplied base commit. extractPatch ALWAYS diffs against this, never HEAD."),
+    .describe("Caller-supplied base commit. The git-diff harvester ALWAYS diffs against this, never HEAD."),
   repo: z
     .string()
     .regex(/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/, "repo must be an owner/name slug")
@@ -331,7 +365,10 @@ export interface SupervisorSpawnPoll {
  * output floor (`task.minTokens`) maps to `max_output_tokens`.
  *
  * `extractPatch` is supplied separately (the real `gitExtractPatch` in
- * production) so the worktree/base_commit strategy stays pluggable.
+ * production) so the worktree/base_commit strategy stays pluggable. It is
+ * wrapped here into the git-diff {@link Harvest} (RDR-009) the dispatcher
+ * consumes — this adapter's job is "git-diff is the host effect", so it owns
+ * the PULL-channel harvester. The adapter API stays `extractPatch`-shaped.
  *
  * Turn/cost fidelity: `turnsUsed` maps from `PollResult.turns_completed` — the
  * always-present live counter (RDR-008 j2r) — so a normally-completed qwen-local
@@ -372,7 +409,7 @@ export function makeSupervisorQwenSpawnEffects(
       if (turns !== undefined) snap.turnsUsed = turns;
       return snap;
     },
-    extractPatch,
+    harvest: gitDiffHarvester(extractPatch),
     sleep: clock.sleep,
     now: clock.now,
   };
