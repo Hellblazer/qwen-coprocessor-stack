@@ -12,7 +12,12 @@
 // dispatcher appears. This file runs NO side effects: it holds a map and a
 // lookup; the dispatchers it stores own their (injected) effects.
 
-import { assertAgentCli, type Dispatch } from "./dispatch.js";
+import {
+  assertAgentCli,
+  makeQwenSpawnDispatch,
+  type Dispatch,
+  type QwenSpawnEffects,
+} from "./dispatch.js";
 import type { AgentProvider, DispatcherKind } from "./types.js";
 
 /**
@@ -69,4 +74,40 @@ export function createDispatcherRegistry(): DispatcherRegistry {
       return dispatch;
     },
   };
+}
+
+/**
+ * Host effects for the default (P1) dispatcher loadout. Only `qwen-local` is
+ * registered — the single member of the `DispatcherKind` axis. The caller owns
+ * the (injected) `QwenSpawnEffects` (supervisor spawn/poll client, git-diff,
+ * clock, sleep): P2's server wiring supplies the real effects; tests supply
+ * fakes. This module never imports child_process / git / the SDK.
+ */
+export interface DefaultDispatcherEffects {
+  qwenSpawn: QwenSpawnEffects;
+  /** Forwarded to `makeQwenSpawnDispatch` (e.g. `pollIntervalMs`). */
+  qwenSpawnOpts?: { pollIntervalMs?: number };
+}
+
+/**
+ * Build a registry pre-loaded with the P1 dispatcher set — the REGISTRATION
+ * CEREMONY (RDR-008 Approach item 1, part 2). Registers `qwen-local` →
+ * `makeQwenSpawnDispatch(effects.qwenSpawn)` (local Qwen, one-shot
+ * poll-to-completion; idle is terminal). This is the production producer for
+ * the seam: `resolve()` of a `kind:"agent-cli"` provider declaring
+ * `agentKind:"qwen-local"` returns the real RDR-007 dispatcher.
+ *
+ * Adding a second dispatcher is a one-line `register()` here plus a new
+ * `DispatcherKind` member — no rewrite. Single-member by design until that
+ * second dispatcher is real.
+ */
+export function createDefaultDispatcherRegistry(
+  effects: DefaultDispatcherEffects,
+): DispatcherRegistry {
+  const registry = createDispatcherRegistry();
+  registry.register(
+    "qwen-local",
+    makeQwenSpawnDispatch(effects.qwenSpawn, effects.qwenSpawnOpts ?? {}),
+  );
+  return registry;
 }

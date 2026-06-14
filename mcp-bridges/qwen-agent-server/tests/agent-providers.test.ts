@@ -115,6 +115,16 @@ describe("loadAgentProviders", () => {
     process.env["QWEN_AGENT_PROVIDERS"] = "{not-json";
     expect(loadAgentProviders().map((p) => p.id)).toEqual(["from-file"]);
   });
+
+  it("falls through to config when QWEN_AGENT_PROVIDERS is valid JSON but not an array", () => {
+    writeConfig({
+      agent_providers: [{ id: "from-file", agentKind: "qwen-local" }],
+    });
+    process.env["QWEN_AGENT_PROVIDERS"] = "null";
+    expect(loadAgentProviders().map((p) => p.id)).toEqual(["from-file"]);
+    process.env["QWEN_AGENT_PROVIDERS"] = "{}";
+    expect(loadAgentProviders().map((p) => p.id)).toEqual(["from-file"]);
+  });
 });
 
 describe("selectAgentProvider", () => {

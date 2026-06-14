@@ -11,8 +11,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createDispatcherRegistry } from "../src/dispatch-registry.js";
-import type { Dispatch } from "../src/dispatch.js";
+import {
+  createDefaultDispatcherRegistry,
+  createDispatcherRegistry,
+} from "../src/dispatch-registry.js";
+import type { Dispatch, QwenSpawnEffects } from "../src/dispatch.js";
 import type { AgentProvider, AgentResult, AgentTask } from "../src/types.js";
 
 const TASK: AgentTask = {
@@ -98,3 +101,45 @@ describe("createDispatcherRegistry", () => {
     expect(first).not.toHaveBeenCalled();
   });
 });
+
+// ── createDefaultDispatcherRegistry (the P1 registration ceremony) ──────────
+//
+// Proves the seam composes with the REAL RDR-007 dispatcher
+// (makeQwenSpawnDispatch), not just anonymous fakes: a qwen-local provider
+// resolves to a Dispatch that drives the injected QwenSpawnEffects to
+// completion. This is bead part (2) — the first dispatcher — exercised
+// end-to-end through the registry.
+
+describe("createDefaultDispatcherRegistry", () => {
+  it("registers qwen-local as the sole dispatcher", () => {
+    const effects = fakeQwenSpawnEffects();
+    const registry = createDefaultDispatcherRegistry({ qwenSpawn: effects });
+    expect(registry.kinds()).toEqual(["qwen-local"]);
+    expect(registry.has("qwen-local")).toBe(true);
+  });
+
+  it("resolve(qwen-local provider) drives makeQwenSpawnDispatch to completion", async () => {
+    const effects = fakeQwenSpawnEffects();
+    const registry = createDefaultDispatcherRegistry({ qwenSpawn: effects });
+
+    const r = await registry.resolve(qwenProvider)(TASK, qwenProvider);
+
+    expect(effects.spawn).toHaveBeenCalledWith(TASK, qwenProvider);
+    expect(effects.extractPatch).toHaveBeenCalledWith(TASK.worktree);
+    expect(r).toEqual({ patch: "real-diff", turns: 5, outcome: "completed", cost: 0 });
+  });
+});
+
+/** Fake QwenSpawnEffects: spawn → one terminal `complete` poll → patch. No
+ *  real process/network/clock. */
+function fakeQwenSpawnEffects(): {
+  [K in keyof QwenSpawnEffects]: ReturnType<typeof vi.fn> & QwenSpawnEffects[K];
+} {
+  return {
+    spawn: vi.fn().mockResolvedValue("task-1"),
+    poll: vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 5, cost: 0 }),
+    extractPatch: vi.fn().mockResolvedValue("real-diff"),
+    sleep: vi.fn().mockResolvedValue(undefined),
+    now: vi.fn().mockReturnValue(0),
+  } as never;
+}

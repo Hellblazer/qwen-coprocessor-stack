@@ -322,7 +322,7 @@ export function loadBackends(): Backend[] {
 function normalizeAgentProvider(raw: AgentCliProviderConfig): AgentProvider | null {
   if (typeof raw.id !== "string" || raw.id.trim() === "" || raw.agentKind === undefined) {
     log.warn(
-      { event_type: "config_invalid", source: "agent_providers", id: raw.id },
+      { event_type: "config_invalid", source: "agent_providers", id: raw.id ?? "<missing>" },
       "agent_providers entry missing required id/agentKind; skipping",
     );
     return null;
@@ -365,6 +365,12 @@ export function loadAgentProviders(): AgentProvider[] {
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return normalizeAll(parsed as AgentCliProviderConfig[]);
+      // Valid JSON but not an array (e.g. "null", "{}", "42"): the operator set
+      // the var intentionally, so a silent fallthrough would be surprising.
+      log.warn(
+        { event_type: "config_invalid", source: "env", var: "QWEN_AGENT_PROVIDERS" },
+        "QWEN_AGENT_PROVIDERS is valid JSON but not an array; falling through to config file",
+      );
     } catch {
       log.warn(
         { event_type: "config_invalid", source: "env", var: "QWEN_AGENT_PROVIDERS" },
@@ -386,8 +392,13 @@ export function loadAgentProviders(): AgentProvider[] {
  * deliberately minimal — agent-cli providers are NOT health-probed endpoints,
  * so there is no modality/capacity/round-robin spine here:
  *   - `id` set    → exact id match (caller-authoritative pin);
- *   - `agentKind` → the FIRST provider declaring that dispatcher family.
- * Returns undefined when nothing matches.
+ *   - `agentKind` → the FIRST provider declaring that dispatcher family, in
+ *                   config-declaration order. This is an "any available of this
+ *                   family" semantic, NOT a load-balancer — to target a
+ *                   specific instance (e.g. `qwen-coder-box` vs `qwen-coder-mac`)
+ *                   pass `id`. P2 must not build weighting on the FIFO order;
+ *                   add an explicit policy if round-robin is ever wanted.
+ * Returns undefined when nothing matches (including an empty `by`).
  */
 export function selectAgentProvider(
   providers: AgentProvider[],
