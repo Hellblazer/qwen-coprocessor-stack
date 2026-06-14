@@ -56,7 +56,10 @@ bd close <id>         # Complete work
   - `npm run build` (tsc; must be clean) · `npx vitest run` (unit; excludes `tests/integration/**`).
   - Run a single suite: `npx vitest run tests/backends.test.ts`.
 - **Coprocessor shakeout** (end-to-end against a live endpoint): `QWEN_URL=http://<host>:<port> python3 scripts/shakeout.py` — tests chat, JSON-schema synthesis, tool-calling, vision/OCR, tokenize, embed, rerank. Vision tests FAIL on text-only models by design.
-- **Coding-agent eval** (Python) — `scripts/coding-eval/`: `.venv/bin/python -m pytest tests/ -q` (offline). Live eval needs Docker + a served backend.
+- **Coding-agent eval** (Python) — `scripts/coding-eval/`:
+  - **Setup** (the venv is gitignored — create it once): `cd scripts/coding-eval && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`. The spine is pure stdlib, so the offline floor is just `pytest` (any pytest-equipped interpreter works — `.venv/bin/python` is the convention, not a hard requirement).
+  - **Offline suites** (conformance + projection + decoupling — the gate for contract changes): `.venv/bin/python -m pytest tests/test_contract_conformance.py tests/test_run_arm.py tests/test_swebench_decoupling.py -q`.
+  - `pytest tests/ -q` is NOT fully offline: `tests/test_subset.py` needs `datasets` (SWE-bench snapshot, network). Live eval needs Docker + a served backend + `swebench`.
 
 ## Architecture Overview
 
