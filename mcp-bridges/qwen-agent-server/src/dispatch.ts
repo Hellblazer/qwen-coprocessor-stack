@@ -20,6 +20,7 @@ import type {
   AgentProvider,
   AgentResult,
   AgentTask,
+  Artifact,
   Harvest,
   RunContext,
   SessionState,
@@ -134,6 +135,45 @@ function runContextFor(task: AgentTask, opts: DispatchBaseOpts): RunContext {
     emitted: [],
     environment: { worktree: task.worktree, baseCommit: opts.baseCommit },
   };
+}
+
+// ── /accept harvester (RDR-009 Phase 2 — the PUSH path) ─────────────────────
+
+/**
+ * The `/accept` harvester: the PUSH-channel {@link Harvest}. Surfaces non-patch
+ * artifacts WITHOUT touching git or the raw supervisor event log (RF-1) —
+ *
+ *  - passes `run.emitted` through **verbatim**: the deterministic `/accept` spine
+ *    is host code that KNOWS what it wrote and emits its `entity`/`tier`
+ *    artifacts DIRECTLY at the time it creates the bead / writes the tier;
+ *  - parses `run.finalMessage` (the leaf agent's structured return) into a single
+ *    `{kind:"value"}` — JSON when it parses, else the raw string (never dropped).
+ *
+ * Reading neither source yields `[]` (no throw). It NEVER scrapes the raw event
+ * log: that stream has no explicit "created" signal, no success confirmation,
+ * and truncates the agent's structured output to 120 chars (RF-1, verified at
+ * source). Pure — no I/O — so it composes with the git-diff (PULL) harvester
+ * without ordering constraints.
+ */
+export const acceptHarvester: Harvest = async (run) => {
+  const artifacts: Artifact[] = [...run.emitted];
+  const value = parseFinalMessageValue(run.finalMessage);
+  if (value !== undefined) artifacts.push(value);
+  return artifacts;
+};
+
+/** Parse the leaf's `finalMessage` into a `value` artifact, or `undefined` when
+ *  there was no structured return (absent / whitespace-only). JSON is parsed;
+ *  non-JSON text is surfaced raw rather than discarded. */
+function parseFinalMessageValue(
+  finalMessage: string | undefined,
+): Extract<Artifact, { kind: "value" }> | undefined {
+  if (finalMessage === undefined || finalMessage.trim() === "") return undefined;
+  try {
+    return { kind: "value", value: JSON.parse(finalMessage) };
+  } catch {
+    return { kind: "value", value: finalMessage };
+  }
 }
 
 // ── qwen_spawn (poll-to-completion) ─────────────────────────────────────────
