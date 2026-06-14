@@ -1,0 +1,12 @@
+# Dev/test dependencies for the coding-eval OFFLINE suites
+# (conformance, run_arm projection, swebench-decoupling). The spine
+# (run_arm.py) is pure stdlib, so pytest is the only dependency these
+# suites need.
+#
+# Create the venv the project commands assume:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+#
+# NOTE: the LIVE eval (tests/test_subset.py + arm_a/b/c end-to-end) also
+# needs `datasets` (SWE-bench snapshot, network) and `swebench` + Docker.
+# Those are intentionally NOT pinned here — this file is the offline floor.
+pytest>=8
