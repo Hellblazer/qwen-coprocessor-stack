@@ -92,25 +92,50 @@ effects against the patch envelope. Two ownership questions were settled with th
 
 ### Key Discoveries
 
-- **Documented** — `ExtractPatch` is the only harvest seam today and is pull-only
-  (`src/dispatch-tool.ts:gitExtractPatch`, a `git diff <base>` against the worktree end-state).
-- **Documented** — `AgentResult` is pinned by `agent-shapes.json` and the #1174 operator output type;
-  both must evolve to carry `artifacts`.
-- **Documented** — nexus `plan_run` already accumulates and references typed step outputs; a leaf's
-  `Artifact[]` is a natural step-output value. (RDR-008 RF-4 / RF-6 Option B.)
-- **Assumed** — the executor stays one-shot; each step (deterministic spine or agentic leaf) returns
-  its `Artifact[]` at completion; there is **no mid-run streaming** of artifacts to nexus (that needs
-  the suspend/continuation channel RDR-008 deliberately punted to the nexus engine). Needs no spike —
-  it is a deliberate scope line, validated by `/accept`'s spine being host code that returns directly.
+Two parallel `Explore` investigations (executor/`/accept` side; `patch→artifacts` blast radius) plus a
+nexus step-output probe. Findings recorded in T2 (`RDR-009-research-01..04`).
+
+- **RF-1 — the PUSH channel must be explicit emission + the leaf's structured return, NOT raw
+  event-log scraping. Verified (source).** `Event` is `{id,type,ts,summary,data?}` with
+  `tool_call.data={name,id,input}` and `tool_result.data=<full block>` (`src/session.ts` ~605–625),
+  so deriving `entity`/`tier` by parsing the tool-call stream is *technically possible but brittle*:
+  no explicit "created" signal, no success confirmation in `tool_result`, and the agent's structured
+  output is truncated in `summary` (120 chars) / lives in `last_message` text. **Design correction:**
+  the `/accept` harvester reads (a) `RunContext.emitted` — the deterministic spine is host code that
+  *knows* what it wrote and emits `tier`/`entity`/`patch` directly — and (b) the leaf's `finalMessage`
+  parsed to a `value`. Raw event-stream parsing is a possible lossy fallback, not the primary channel.
+  This reshaped `RunContext` (see Technical Design).
+- **RF-2 — the four-kind union covers `/accept`; no new kind. Verified (source).** Inventory of the
+  rdr-accept skill: T2 status write → `tier:T2`; frontmatter + README edits → `patch`; strategic-planner
+  bead creation → `entity:bead`; plan JSON → `value`; catalog links → `entity:link` (already in the
+  union). `nx_plan_audit` / `nx_enrich_beads` results are tool outputs — fold into the planner's `value`
+  return, or treat as side-effects (deferred). A "status transition" is adequately `tier`+`patch` — no
+  `transition` kind.
+- **RF-3 — `patch→artifacts` blast radius is bounded; the SWE-bench scorer is decoupled. Verified
+  (source).** `arm_a.py`/`arm_b.py` call `extract_source_patch()` directly and write the SWE-bench
+  predictions JSONL (`model_patch`) **before** the `run_result_to_agent_result` projection — the scorer
+  never reads `AgentResult`. So `patch→artifacts` touches only: TS (`types/dispatch/dispatch-tool/
+  server` + tests + the two fixtures), Python (`run_arm.AgentResult` TypedDict + the projection, which
+  wraps `model_patch` into a `{kind:"patch"}` artifact, + the conformance test), the shared
+  `agent-shapes.json` (once), and the published spec + #1174. **Decision:** generalize the *shared*
+  `AgentResult` (a shallow Python ripple, scorer untouched) rather than fork a parallel operator type;
+  add a `patchArtifact(result)` back-compat accessor.
+- **Documented** — nexus `plan_run` step outputs are arbitrary structured dicts and `$stepN.field`
+  reads a field from the Nth step's stashed output (`nexus tests/test_plan_run.py::
+  test_run_resolves_step_ref_to_prior_output_field`; outputs like `{"ranked":["x"]}`). A leaf's
+  `Artifact[]` is a natural step-output value (`$stepN.artifacts`).
 
 ### Critical Assumptions
 
-- [ ] **Each step returns its `Artifact[]` at completion; no mid-run streaming** — **Status**:
-  Unverified (design decision) — **Method**: confirmed against `/accept`'s structure (spine returns
-  directly; only the planner is a real leaf and can return at completion).
-- [ ] **nexus's step-output model can hold an `Artifact[]` per step and reference it** — **Status**:
-  Unverified — **Method**: Docs Only (nexus is out of change scope; the spec states the requirement,
-  nexus confirms on #1174).
+- [x] **Each step returns its `Artifact[]` at completion; no mid-run streaming** — **Status**: Verified
+  — **Method**: Source Search. `/accept`'s spine is host code returning directly; only the
+  strategic-planner is a real agentic leaf, and the qwen_dispatch executor is one-shot (RDR-008,
+  `idle` terminal). RF-1 confirms push works via emission/return at completion, not mid-run.
+- [x] **nexus's step-output model can hold an `Artifact[]` per step and reference it** — **Status**:
+  Verified (Documented) — **Method**: Source Search of the nexus test suite (above). Open sub-point to
+  confirm with nexus on #1174: inline filtering/projection into the list (`$stepN.artifacts[?kind=='entity']`)
+  depends on the JMESPath template engine — likely supported (the design memo notes JMESPath), but
+  nexus owns that surface.
 
 ## Proposed Solution
 
@@ -148,15 +173,24 @@ type Artifact =
 // AgentResult: patch -> artifacts.
 interface AgentResult { artifacts: Artifact[]; turns: number; outcome: AgentOutcome; cost: number }
 
-// Harvest seam (replaces ExtractPatch). Reads PUSH (events) + PULL (environment).
+// Harvest seam (replaces ExtractPatch). PUSH = artifacts the run EMITTED / the
+// leaf's structured RETURN (NOT raw event-log scraping — see RF-1). PULL =
+// end-state extraction.
 type Harvest = (run: RunContext) => Promise<Artifact[]>
-interface RunContext { events: ReadonlyArray<RunEvent>; environment: { worktree?: string; baseCommit?: string } }
+interface RunContext {
+  emitted: ReadonlyArray<Artifact>;                 // PUSH: explicit emissions + the leaf's structured return
+  finalMessage?: string;                            // the agent's structured return text, parsed to a `value`
+  environment: { worktree?: string; baseCommit?: string };  // PULL
+}
 ```
 
 - **Code guidance**: define the `Artifact` union, `Harvest`, and `RunContext` as types; the
-  git-diff harvester is one `Harvest` implementation reading `environment`; the `/accept` harvester
-  reads `events` (for `entity`/`tier`) and the planner node's return value (`value`). Do not enumerate
-  artifact kinds beyond the four until a real consumer needs a fifth.
+  git-diff harvester is one `Harvest` implementation reading `environment` (PULL → a `patch` artifact);
+  the `/accept` harvester combines explicit `emitted` artifacts (the deterministic spine — host code —
+  emits its `tier`/`entity`/`patch` directly) with the leaf's `finalMessage` parsed to a `value`. Do
+  NOT derive `entity`/`tier` by scraping the raw tool-call event stream (RF-1: lossy/brittle — no
+  success confirmation, no creation signal, output truncated in summaries). Do not enumerate artifact
+  kinds beyond the four until a real consumer needs a fifth.
 
 ### Existing Infrastructure Audit
 
