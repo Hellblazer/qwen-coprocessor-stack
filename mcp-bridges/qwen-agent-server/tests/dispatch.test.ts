@@ -158,6 +158,16 @@ describe("makeClaudeCliDispatch", () => {
     await expect(dispatch(TASK, endpointProvider)).rejects.toThrow(/model-endpoint/);
     expect(run).not.toHaveBeenCalled();
   });
+
+  it("passes NO finalMessage — claude-cli is not the value-harvest target (RDR-010 RF-1)", async () => {
+    const harvest = vi.fn(async (_run: RunContext): Promise<Artifact[]> => []);
+    const run = vi.fn().mockResolvedValue({ returncode: 0, turnsUsed: 1, cost: 0, timedOut: false });
+    const dispatch = makeClaudeCliDispatch({ run, harvest }, OPTS);
+    await dispatch(TASK, claudeProvider);
+    // ClaudeRunResult has no finalMessage source; the qwen<->claude asymmetry is
+    // intentional (RDR-010: the value-harvest source is the qwen poll path).
+    expect("finalMessage" in harvest.mock.calls[0]![0]).toBe(false);
+  });
 });
 
 // ── qwen_spawn dispatch (poll-to-completion) ────────────────────────────────
@@ -186,6 +196,32 @@ describe("makeQwenSpawnDispatch", () => {
       outcome: "completed",
       cost: 0,
     });
+  });
+
+  it("threads the terminal lastMessage into RunContext.finalMessage (RDR-010 qwen value-harvest)", async () => {
+    const harvest = vi.fn(async (_run: RunContext): Promise<Artifact[]> => []);
+    const poll = vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 2, lastMessage: '{"plan":"x"}' });
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: async () => "t", poll, harvest, sleep: async () => {}, now: () => 0 },
+      OPTS,
+    );
+    await dispatch(TASK, qwenProvider);
+    expect(harvest).toHaveBeenCalledWith({
+      emitted: [],
+      environment: { worktree: "/tmp/wt", baseCommit: BASE },
+      finalMessage: '{"plan":"x"}',
+    });
+  });
+
+  it("omits finalMessage when the terminal snapshot has none (conditional spread)", async () => {
+    const harvest = vi.fn(async (_run: RunContext): Promise<Artifact[]> => []);
+    const poll = vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 2 });
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: async () => "t", poll, harvest, sleep: async () => {}, now: () => 0 },
+      OPTS,
+    );
+    await dispatch(TASK, qwenProvider);
+    expect("finalMessage" in harvest.mock.calls[0]![0]).toBe(false);
   });
 
   it("error terminal state → outcome error (turns/cost carried through)", async () => {
