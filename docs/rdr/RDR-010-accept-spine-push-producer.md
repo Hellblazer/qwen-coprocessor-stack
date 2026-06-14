@@ -84,6 +84,16 @@ The honest scope question for THIS repo: do we (a) close Gaps 1-2 in the executo
 `/accept` spine demonstrator** that proves the full PUSH path end-to-end against a real (local) dispatch,
 or (b) close Gaps 1-2 only and leave the spine entirely to nexus? This RDR must pick one explicitly.
 
+**Resolved by research (RF-2, RF-3):** the production `/accept` is a conexus skill that does **not**
+call `qwen_dispatch`, and the executor structurally cannot populate `RunContext.emitted` with the
+spine's `entity`/`tier` (those accumulate at the orchestrator across calls). So the executor's only
+reachable PUSH artifact is `value`-from-`finalMessage` (Gaps 1-2). Gap 3's `entity`/`tier` emission +
+`acceptHarvester` wiring is confirmed **orchestrator scope** — a demonstrator here would have to *fake*
+the spine. This RDR therefore leans toward **(b)**: ship the executor `finalMessage`/value-harvest, and
+treat any demonstrator as explicitly-fake-spine illustration, not a production `/accept`. The title's
+"live `/accept` spine" is partly a misnomer; the real deliverable is **the executor's value-harvest +
+`finalMessage` capture**.
+
 ### Technical Environment
 
 - Executor: `mcp-bridges/qwen-agent-server/src/{dispatch,dispatch-tool,server}.ts`. `acceptHarvester`,
@@ -96,55 +106,86 @@ or (b) close Gaps 1-2 only and leave the spine entirely to nexus? This RDR must 
 
 ## Research Findings
 
-> To be completed via `/conexus:rdr-research`. Open questions to investigate (source-grounded):
+### Investigation
 
-- **RQ-1 — does the qwen poll result expose the leaf's structured return reliably?** Inspect
-  `PollResult` / the session's `last_message` (or equivalent) in `src/session.ts` / the supervisor
-  poll path. Determine whether a non-truncated final structured message is available at terminal state
-  (RF-1 noted `summary` is truncated to 120 chars and the real text lives in `last_message`). Confirms
-  or refutes the feasibility of Gap 1's `finalMessage` capture.
-- **RQ-2 — how should a run select the value/accept harvester?** A new optional `qwen_dispatch` input
-  (e.g. `harvest: "patch" | "value" | "accept"`), a per-provider default, or a composed harvester that
-  always runs both (git-diff + value) and returns whatever is non-empty? Weigh against the locked
-  four-kind union and the v3 contract.
-- **RQ-3 — where does the `/accept` spine live, and what is the minimal demonstrator?** Survey whether
-  a reference spine belongs in this repo (a demonstrator + integration test) or whether the executor
-  should only expose the value-harvest and leave all spine/ledger accumulation to nexus. Check the
-  existing `rdr-accept` skill to see what the spine actually does today.
-- **RQ-4 — emission entry point.** If a spine emits `entity`/`tier` into a run, what is the API? Does
-  `RunContext.emitted` get populated by the dispatcher (per-call, only the leaf's own emissions) or by
-  the orchestrator across calls? Confirm against RDR-009's "executor is one-shot; each step returns its
-  Artifact[] at completion" invariant.
+RQ-1..RQ-4 investigated at source (2026-06-14). Findings recorded in T2
+(`RDR-010-research-01-push-producer-feasibility`). The net effect is a **scope reshape**: the
+executor's only reachable PUSH artifact is `value`-from-`finalMessage`; the `entity`/`tier` emission
+channel is confirmed orchestrator scope (RDR-009's "engine owns it" holds at the executor boundary).
+
+- **RF-1 (RQ-1) — the leaf's structured return IS available untruncated. Verified (source).**
+  `PollResult.last_message?: string` (`src/types.ts:421`) is set on terminal `idle`/`complete`
+  (`session.ts:424-425`) from `QwenSession._last_message`, which holds the **full** assistant
+  `textBlocks` (`session.ts:598`), not the 120-char `_last_assistant_summary`. The supervisor even
+  instructs leaves to emit structured JSON ("final assistant message must START with `{` or `[`",
+  `session.ts:779`). **Gap**: `makeSupervisorQwenSpawnEffects` maps only `state`/`turns_completed`
+  into `QwenPollSnapshot {state, turnsUsed?, cost?}` and **drops** `last_message`. Fix is small: add a
+  `lastMessage` field to `QwenPollSnapshot`, map it in the adapter, and thread `last.lastMessage` into
+  `RunContext.finalMessage` in the dispatchers (the one field `runContextFor` never sets). **Gap 1
+  feasible.**
+- **RF-2 (RQ-3) — the `/accept` workflow today is a CONEXUS SKILL, not `qwen_dispatch` traffic.
+  Verified (source: `conexus/skills/rdr-accept/SKILL.md`).** Its structure maps to RDR-009's
+  decomposition (Steps 1-6 = deterministic spine: T2 status write → `tier:T2`, frontmatter+README edits
+  → `patch`, `git add`; Step 7 = dispatched leaves), BUT the leaves use the **Agent tool** (Claude
+  subagents: `strategic-planner`) + direct MCP calls (`nx_plan_audit`, `nx_enrich_beads`) — **not
+  `qwen_dispatch`** — and effects are tracked implicitly (`bd` mints beads, `memory_put` writes T2),
+  with **no `Artifact[]` ledger**. **Consequence**: a "live `/accept` spine through the executor"
+  would be a **demonstrator only**; the production `/accept` does not call `qwen_dispatch`, so wiring
+  `acceptHarvester` into a `qwen_dispatch` run does not capture the real `/accept`.
+- **RF-3 (RQ-4) — `RunContext` is per-call; one dispatch = one leaf; the executor cannot populate
+  `emitted` with spine artifacts. Verified (source).** `runContextFor(task, opts)` (`src/dispatch.ts`)
+  builds a fresh `RunContext` per dispatch call. The executor could only populate `emitted` with
+  artifacts the **leaf** emits during its own run — and a qwen leaf emits nothing structured mid-run
+  except its `finalMessage`. The spine's `entity`/`tier` emissions accumulate at the **orchestrator
+  across calls** + deterministic host work, never inside a single dispatch's `RunContext` (consistent
+  with RDR-009's one-shot invariant). **Consequence**: `acceptHarvester`'s `emitted` pass-through is
+  fundamentally an **orchestrator-layer** concept; at the executor layer the only reachable PUSH
+  artifact is `value`-from-`finalMessage`.
+- **RF-4 (RQ-2) — harvester selection.** Options: (a) a new optional `qwen_dispatch` input
+  `harvest: "patch" | "value" | "both"` (explicit; default `"patch"` is additive, no breaking v4);
+  (b) a per-provider default; (c) a composed default that always runs git-diff + value and returns the
+  non-empty ones (risk: a coding leaf's `last_message` chatter becomes a spurious `value` artifact —
+  noise). **Lean (a) defaulting to `"patch"`** so coding runs stay byte-unchanged and a non-code leaf
+  opts into `"value"`; additive, so no live-consumer migration. Final pick at the gate.
 
 ### Critical Assumptions
 
-- [ ] **The leaf's structured return is available at terminal state, untruncated** — Status: UNVERIFIED
-  — Method: source search of the supervisor poll/session path (RQ-1).
-- [ ] **A single dispatch returns only the leaf's own artifacts; spine emissions accumulate at the
-  orchestrator** — Status: UNVERIFIED — Method: confirm against the RDR-009 one-shot invariant + the
-  nexus step-output model (RQ-4).
+- [x] **The leaf's structured return is available at terminal state, untruncated** — Status: VERIFIED
+  — Method: Source Search (`types.ts:421`, `session.ts:424-425,598,779`). RF-1.
+- [x] **A single dispatch returns only the leaf's own artifacts; spine emissions accumulate at the
+  orchestrator** — Status: VERIFIED — Method: Source Search (`runContextFor`, RDR-009 one-shot
+  invariant). RF-3.
 - [ ] **No live nexus consumer depends on the current v3 response shape** (so a v4 evolution, if any,
-  is land-together not migrate-live) — Status: UNVERIFIED — Method: #1174 status check.
+  is land-together not migrate-live) — Status: DOCUMENTED-PENDING — #1174 is pending sign-off; no known
+  live consumer. Confirm before shipping any new response surface.
 
 ## Proposed Solution
 
-> First cut, pre-research. Expect revision after `/conexus:rdr-research` and the gate.
+> Revised after `/conexus:rdr-research` (RF-1..RF-4). The two executor-side gaps are the real in-repo
+> deliverable; Gap 3 is confirmed orchestrator scope.
 
 ### Approach
 
-Close the executor-side gaps in-repo and prove the PUSH path with a reference demonstrator; leave the
-production `/accept` orchestration to nexus.
+Close the two executor-side gaps so a dispatched leaf can return its structured `value`; leave the
+spine's `entity`/`tier` emission + `acceptHarvester` wiring to the orchestrator (nexus / the conexus
+skill), per RF-2/RF-3.
 
-1. **Capture the leaf's `finalMessage` (Gap 1).** Extend the supervisor adapter / poll snapshot to
-   carry the terminal `last_message`; thread it into `RunContext.finalMessage` in the dispatchers (the
-   one field `runContextFor` currently never sets).
-2. **Make the harvester selectable (Gap 2).** Let a `qwen_dispatch` run choose a value/accept harvester
-   (exact mechanism = RQ-2) so a non-code leaf surfaces its `finalMessage` as a `{kind:"value"}`
-   without inventing a worktree diff. The git-diff harvester stays the default for coding runs.
-3. **Reference `/accept` spine demonstrator (Gap 3, scope TBD by RQ-3).** A host-side spine that drives
-   a (local/fake) dispatch, emits an `entity`(bead)/`tier`(T2) as it does deterministic work, captures
-   the leaf's `value`, composes the full `Artifact[]`, and a downstream reader consumes the non-patch
-   entity — the RDR-009 MVV, now through a real producer rather than a hand-built `RunContext`.
+1. **Capture the leaf's `finalMessage` (Gap 1, feasible per RF-1).** Add a `lastMessage` field to
+   `QwenPollSnapshot`; map `PollResult.last_message` in `makeSupervisorQwenSpawnEffects`; thread
+   `last.lastMessage` into `RunContext.finalMessage` in the dispatchers (the one field `runContextFor`
+   never sets today).
+2. **Make the harvester selectable (Gap 2, mechanism per RF-4).** Add an optional `qwen_dispatch` input
+   `harvest: "patch" | "value" | "both"` defaulting to `"patch"` (additive — coding runs stay
+   byte-identical, no v4 break). `"value"` surfaces `finalMessage` as a single `{kind:"value"}` (reuse
+   the `acceptHarvester` value-parse path); `"both"` composes git-diff + value. The dispatcher selects
+   the harvester from the input.
+3. **(Optional) explicitly-fake-spine demonstrator (Gap 3 is orchestrator scope — RF-2/RF-3).** Only if
+   it earns its keep at the gate: an integration test where a *fake* spine hand-emits an `entity`(bead)
+   + `tier`(T2), a real (fake-backed) dispatch contributes the leaf `value`, and `acceptHarvester`
+   composes the full `Artifact[]` a reader consumes — an illustration of the orchestrator pattern, NOT
+   a production `/accept`. Default lean: **skip** — the RDR-009 P2 integration test already proves
+   `acceptHarvester` over a populated `RunContext`; add only if it demonstrates something that test
+   does not.
 
 ### Out of scope (carried from RDR-009, do not re-open)
 
@@ -182,30 +223,43 @@ gaps. A *demonstrator* spine (Alt-in-Approach) gets the end-to-end proof without
 
 ### Risks and Mitigations
 
-- **Risk**: scope creep into building production `/accept` in this repo. **Mitigation**: a reference
-  *demonstrator* only; production orchestration stays nexus's (RDR-009 decision).
-- **Risk**: `last_message` is truncated/unavailable. **Mitigation**: RQ-1 verifies before committing to
-  Gap 1; if unavailable, the value channel narrows to what the leaf can be made to emit explicitly.
+- **Risk**: scope creep into building production `/accept` in this repo. **Mitigation**: RF-2 shows the
+  real `/accept` is a conexus skill that does not use `qwen_dispatch`; this RDR ships only the executor
+  value-harvest. Any demonstrator is explicitly-fake and optional.
+- **Risk (RETIRED)**: `last_message` truncated/unavailable. RF-1 verified the full terminal text is in
+  `PollResult.last_message` (not the 120-char summary). Gap 1 is feasible as designed.
 
 ## Implementation Plan
 
-> Phases are provisional; finalize after research.
+> Reshaped by research. The deliverable is the executor value-harvest (Gaps 1-2); Gap 3 is orchestrator
+> scope and the demonstrator is optional.
 
 ### Minimum Viable Validation
 
-A live (local/fake-backed) dispatch of a non-code leaf returns `[{kind:"value", value: <parsed
-finalMessage>}]`; a reference spine emits an `entity`(bead, created) alongside; the composed
-`Artifact[]` is read by a downstream consumer that extracts the created-bead entity. Proven without a
-hand-built `RunContext` (the RDR-009 gap).
+A dispatched non-code leaf, run with `harvest: "value"`, returns `[{kind:"value", value: <parsed
+finalMessage>}]` — proving a structured non-patch artifact is reachable through a real `qwen_dispatch`
+call (not a hand-built `RunContext`). A coding run with the default `harvest: "patch"` is byte-identical
+to today (the regression guard).
 
-### Phase 1 (provisional): Capture `finalMessage` + selectable value harvester
+### Phase 1: Capture `finalMessage` (Gap 1)
 
-Gaps 1-2 in the executor + conformance/contract update if the request/response surface changes.
+Add `lastMessage` to `QwenPollSnapshot`; map `PollResult.last_message` in
+`makeSupervisorQwenSpawnEffects`; thread `last.lastMessage` into `RunContext.finalMessage` in both
+dispatchers. Unit tests: the adapter maps `last_message`; the dispatcher sets `finalMessage`.
 
-### Phase 2 (provisional): Reference `/accept` spine demonstrator + end-to-end MVV test
+### Phase 2: Selectable harvester + the `"value"`/`"both"` paths (Gap 2)
 
-Gap 3 (scope per RQ-3): a host spine emitting entity/tier + consuming the leaf value, with an
-integration test proving the live PUSH path.
+Add the optional `harvest` input (default `"patch"`), select the harvester in the dispatcher/wiring,
+and reuse `acceptHarvester`'s value-parse for `"value"`. Update `qwen-dispatch-shapes.json` (additive
+request field) + both conformance suites + the operator contract (v4-additive, default unchanged).
+Integration test: a fake-backed dispatch with `harvest: "value"` yields the `{kind:"value"}`; with the
+default, the patch path is unchanged.
+
+### Phase 3 (optional, gate-decided): explicitly-fake-spine demonstrator
+
+Only if it adds beyond the RDR-009 P2 test. A fake spine emits `entity`+`tier`, a fake-backed dispatch
+contributes the leaf `value`, `acceptHarvester` composes them; a reader consumes the entity. Labeled a
+demonstrator of the orchestrator pattern, not a production `/accept`.
 
 ## References
 
@@ -217,5 +271,9 @@ integration test proving the live PUSH path.
 
 ## Revision History
 
-- 2026-06-14: created (draft). Scaffolds the RDR-009-deferred PUSH producer. Research (RQ-1..RQ-4) and
-  the gate pending.
+- 2026-06-14: created (draft). Scaffolds the RDR-009-deferred PUSH producer.
+- 2026-06-14: research complete (RF-1..RF-4, T2 `RDR-010-research-01-push-producer-feasibility`). Two
+  Critical Assumptions verified at source; the scope reshaped: the in-repo deliverable is the executor
+  value-harvest + `finalMessage` capture (Gaps 1-2), Gap 3 (`entity`/`tier` emission) is confirmed
+  orchestrator scope (the real `/accept` is a conexus skill that does not call `qwen_dispatch`). Gate
+  pending (`/conexus:rdr-gate`).
