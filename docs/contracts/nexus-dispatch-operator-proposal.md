@@ -28,20 +28,24 @@ A typed operator over the published shapes:
 operator qwen_dispatch:
   input:
     prompt:      string          # required — task statement
-    worktree:    string (abs)    # required — caller-supplied tree the agent edits
     base_commit: string          # required — patch diffed vs this, NEVER HEAD
+    worktree?:   string (abs)    # caller-supplied tree the agent edits
+    repo?:       string          # owner/name — executor-managed worktree (XOR worktree)
+    repo_url?:   string          # clone-source override for repo-mode
     max_turns?:   int            # default 50
     min_tokens?:  int            # default 16384
     timeout_ms?:  int            # default 1_800_000 (milliseconds)
     provider_id?: string         # pin a declared provider (overrides agent_kind)
     agent_kind?:  string         # dispatcher family, default "qwen-local"
+    # supply EXACTLY ONE of worktree / repo, else error invalid_worktree_spec
   output (AgentResult):
     patch:   string              # source-only diff (test paths stripped)
     turns:   int                 # real completed-turn count (qcs-j2r)
     outcome: "completed" | "timeout" | "turn_limit" | "error"
     cost:    number              # 0 for free-local
   error:
-    { code: "no_provider" | "missing_agent_kind" | "unregistered_kind" | "shutting_down",
+    { code: "no_provider" | "missing_agent_kind" | "unregistered_kind"
+          | "invalid_worktree_spec" | "shutting_down",
       message: string }
 ```
 

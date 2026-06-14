@@ -31,13 +31,21 @@ contract of RDR-007 §4 lifted to an MCP tool boundary.
 | key | type | req | meaning |
 |-----|------|-----|---------|
 | `prompt` | string | ✓ | the task/problem statement for the agent |
-| `worktree` | string (abs path) | ✓ | the worktree the agent edits and `extractPatch` diffs |
 | `base_commit` | string | ✓ | base the patch is diffed against — **never `HEAD`** |
+| `worktree` | string (abs path) | * | caller-supplied worktree the agent edits and `extractPatch` diffs |
+| `repo` | string | * | `owner/name` — selects the executor-managed worktree strategy |
+| `repo_url` | string | – | clone-source override for `repo`-mode (local path / non-github) |
 | `max_turns` | int | – | turn budget (default 50) |
 | `min_tokens` | int | – | per-turn output-token floor (default 16384) |
 | `timeout_ms` | int | – | wall-clock cutoff in **milliseconds** (default 1800000) |
 | `provider_id` | string | – | pin a declared agent-cli provider by id (overrides `agent_kind`) |
 | `agent_kind` | string | – | dispatcher family to select (default `"qwen-local"`) |
+
+> **`*` Supply exactly ONE of `worktree` or `repo`** (the worktree strategy
+> selector). `worktree` = caller-supplied (the caller owns lifecycle);
+> `repo` = executor-managed (the `materialize.py` port — shared bare mirror +
+> per-instance detached worktree at `base_commit`, cleaned up after the run).
+> Neither or both → error `invalid_worktree_spec`.
 
 > **`base_commit` is explicit at this boundary by design.** RDR-007's in-process
 > `ExtractPatch` closure-captured the base; a closure can't cross the MCP
@@ -74,6 +82,7 @@ Structured envelope `{ "error": { "code": <code>, "message": <string> } }`:
 | `no_provider` | no declared agent-cli provider matches the selector | declare one in `agent_providers` |
 | `missing_agent_kind` | the selected provider declares no `agentKind` | add `agentKind` to its config |
 | `unregistered_kind` | the provider's `agentKind` has no registered dispatcher | register a dispatcher for that kind |
+| `invalid_worktree_spec` | not exactly one of `worktree` / `repo` supplied | supply exactly one |
 | `shutting_down` | server is shutting down | retry later |
 
 `missing_agent_kind` is deliberately distinct from `unregistered_kind` so a
@@ -100,14 +109,14 @@ the agent finished its single self-contained task. There is **no resume path**.
 
 ### What the executor REQUIRES from the caller (engine)
 
-- A ready **worktree** + the **`base_commit`** for it. Worktree provisioning is a
-  pluggable **host-effect strategy** (`src/worktree.ts`), invisible to this wire
-  contract — the request shape is the same either way:
-  - **caller-supplied** (default): the caller passes a ready worktree and owns its
-    lifecycle; the executor only runs + extracts.
-  - **executor-managed** (`executorManagedWorktree`, the `materialize.py` port): a
-    shared bare mirror + a per-instance detached worktree at `base_commit`, torn
-    down after the run — for a host that wants isolation handled.
+- The **`base_commit`** + a worktree spec — exactly one of (selected on the wire,
+  `src/worktree.ts`):
+  - **`worktree`** (caller-supplied): the caller passes a ready worktree and owns
+    its lifecycle; the executor only runs + extracts.
+  - **`repo`** (executor-managed, `executorManagedWorktree` — the `materialize.py`
+    port): a shared bare mirror + a per-instance detached worktree at
+    `base_commit`, torn down after the run — for a host that wants isolation
+    handled. `repo_url` overrides the clone source.
   Either way `base_commit` is **caller-supplied** (never inferred).
 - A declared `agent-cli` provider (see registration ceremony).
 

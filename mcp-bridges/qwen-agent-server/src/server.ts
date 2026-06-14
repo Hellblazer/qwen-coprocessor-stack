@@ -13,8 +13,9 @@
 //   qwen_stop     — cancel a session
 //   qwen_backends — list backend health
 
-import { isAbsolute } from "node:path";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "./log.js";
 import { SUPERVISOR_VERSION } from "./version.js";
@@ -37,6 +38,7 @@ import {
   chooseBackendByModality,
   chooseBackendByRole,
   getCachedHealth,
+  getConfigDir,
   loadAgentProviders,
   refreshPoolBackends,
 } from "./backends.js";
@@ -48,6 +50,7 @@ import {
   QwenDispatchError,
   runQwenDispatch,
 } from "./dispatch-tool.js";
+import { callerSuppliedWorktree, executorManagedWorktree } from "./worktree.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -1339,7 +1342,7 @@ async function main(): Promise<void> {
   // per-call because base_commit is per-call (see dispatch-registry.ts).
   mcpServer.tool(
     "qwen_dispatch",
-    "Agentic dispatch (RDR-008): run a one-shot coding task on a local-Qwen agent in a caller-supplied worktree, return {patch, turns, outcome, cost}. Resolves a dispatcher from the registry by the agent-cli provider's agentKind. base_commit is required — extractPatch diffs against it (never HEAD) and returns the source-only patch. The caller owns worktree lifecycle.",
+    "Agentic dispatch (RDR-008): run a one-shot coding task on a local-Qwen agent, return {patch, turns, outcome, cost}. Resolves a dispatcher from the registry by the agent-cli provider's agentKind. base_commit is required — extractPatch diffs against it (never HEAD), source-only. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
     qwenDispatchInputShape,
     async (args) => {
       // Mirror the spawn-initiating tools' shutdown envelope (consistent error
@@ -1360,11 +1363,28 @@ async function main(): Promise<void> {
         { qwen_spawn: handlers.qwen_spawn, qwen_poll: handlers.qwen_poll },
         gitExtractPatch,
       );
+      // Worktree strategy selection (RDR-008 dps): `repo` → executor-managed
+      // (shared bare mirror + per-instance worktree under the config dir, cleaned
+      // up after); else caller-supplied `worktree`. The XOR is enforced in
+      // runQwenDispatch.
+      const wtCacheRoot = join(getConfigDir(), "worktrees", "cache");
+      const wtWorkRoot = join(getConfigDir(), "worktrees", "work");
       try {
         const result = await runQwenDispatch(args, {
           loadProviders: loadAgentProviders,
           resolveDispatch: (provider, baseCommit) =>
             createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit }).resolve(provider),
+          resolveWorktree: (input) =>
+            input.repo !== undefined
+              ? executorManagedWorktree({
+                  repo: input.repo,
+                  baseCommit: input.base_commit,
+                  instanceId: randomUUID(),
+                  cacheRoot: wtCacheRoot,
+                  workRoot: wtWorkRoot,
+                  ...(input.repo_url !== undefined ? { repoUrl: input.repo_url } : {}),
+                })
+              : callerSuppliedWorktree(input.worktree!),
         });
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       } catch (err) {
