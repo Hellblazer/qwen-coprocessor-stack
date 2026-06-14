@@ -433,9 +433,11 @@ export function makeSupervisorQwenSpawnEffects(
   };
   return {
     spawn: async (task) => {
-      const opts: Partial<SpawnOpts> = { cwd: task.worktree };
-      if (task.minTokens > 0) opts.max_output_tokens = task.minTokens;
-      const r = await handlers.qwen_spawn({ task: task.prompt, opts });
+      // `spawnOpts`, not `opts`: avoid shadowing the outer effects-options
+      // parameter (`opts.harvest`/`opts.clock`) within this closure (R2 review).
+      const spawnOpts: Partial<SpawnOpts> = { cwd: task.worktree };
+      if (task.minTokens > 0) spawnOpts.max_output_tokens = task.minTokens;
+      const r = await handlers.qwen_spawn({ task: task.prompt, opts: spawnOpts });
       if ("error" in r) {
         throw new Error(`qwen_dispatch spawn failed (${r.error.code}): ${r.error.message}`);
       }

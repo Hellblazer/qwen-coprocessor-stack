@@ -101,6 +101,29 @@ describe("qwen_dispatch value-harvest (RDR-010 P2, end-to-end via the real adapt
     expect(result.artifacts).toEqual([{ kind: "patch", diff: "diff --git a/x b/x\n", base: BASE }]);
   });
 
+  it('harvest:"both" with no finalMessage yields the patch only (common coding-run case)', async () => {
+    const handlers = {
+      qwen_spawn: vi.fn().mockResolvedValue({ task_id: "t", chosen_backend: "mac" }),
+      qwen_poll: vi.fn().mockResolvedValue({
+        state: "complete",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "1",
+        turns_completed: 2,
+        // no last_message: the run produced code changes but no structured return
+      }),
+    };
+    const effects = makeSupervisorQwenSpawnEffects(handlers, async () => "diff --git a/x b/x\n", {
+      clock: { now: () => 0, sleep: async () => {} },
+      harvest: selectHarvester("both", async () => "diff --git a/x b/x\n"),
+    });
+    const dispatch = makeQwenSpawnDispatch(effects, { baseCommit: BASE });
+
+    const result = await dispatch(TASK, provider);
+    expect(result.artifacts).toEqual([{ kind: "patch", diff: "diff --git a/x b/x\n", base: BASE }]);
+    expect(patchArtifact(result)).toBeDefined();
+  });
+
   it('harvest:"value" with no finalMessage yields [] (leaf returned nothing structured)', async () => {
     const handlers = {
       qwen_spawn: vi.fn().mockResolvedValue({ task_id: "t", chosen_backend: "mac" }),

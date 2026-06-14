@@ -175,13 +175,13 @@ function runContextFor(
  * source). Pure — no I/O — so it composes with the git-diff (PULL) harvester
  * without ordering constraints.
  *
- * NOTE (partially wired): RDR-010 P1 wired the `finalMessage` half — the qwen
- * dispatcher now threads the leaf's terminal return into `RunContext.finalMessage`.
- * What is NOT yet wired: (a) the harvest SELECTOR that injects a value harvester
- * as the `harvest` effect (RDR-010 P2 — until then `qwen_dispatch` always uses the
- * git-diff harvester, so `finalMessage` is captured but unused); (b) the `emitted`
- * channel (the spine's entity/tier producer), which stays orchestrator scope and
- * is out of RDR-010 (so `runContextFor` keeps `emitted: []`).
+ * NOTE: RDR-010 wired the leaf-`value` path — P1 captures `finalMessage` and P2
+ * adds the `harvest:"value"|"both"` selector ({@link valueHarvester}, the tool
+ * layer in server.ts). This `acceptHarvester` (which ALSO passes `run.emitted`)
+ * remains the PUSH-SPINE harvester: the `emitted` channel (the spine's
+ * entity/tier producer) stays orchestrator scope, out of RDR-010, so
+ * `runContextFor` keeps `emitted: []` and no dispatcher injects this harvester
+ * yet. `valueHarvester` — not this — is what `harvest:"value"` uses.
  */
 export const acceptHarvester: Harvest = async (run) => {
   // Shallow copy: a fresh array (so `push` below never mutates the caller's
