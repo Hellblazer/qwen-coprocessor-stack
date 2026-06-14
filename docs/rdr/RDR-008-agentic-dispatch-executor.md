@@ -10,6 +10,7 @@ created: 2026-06-13
 accepted_date: 2026-06-13
 closed_date: 2026-06-14
 close_reason: implemented
+post_mortem: docs/rdr/post-mortem/008-agentic-dispatch-executor.md
 related_issues: ["Hellblazer/nexus#1174"]
 ---
 
