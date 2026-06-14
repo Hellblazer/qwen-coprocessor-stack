@@ -19,16 +19,22 @@
     }
   },
   "response": {
-    "requiredKeys": ["patch", "turns", "outcome", "cost"],
+    "requiredKeys": ["artifacts", "turns", "outcome", "cost"],
     "example": {
-      "patch": "diff --git a/calc.py b/calc.py\n",
+      "artifacts": [
+        {
+          "kind": "patch",
+          "diff": "diff --git a/calc.py b/calc.py\n",
+          "base": "9f1c0de2b7a4c5e6f8091a2b3c4d5e6f70819203"
+        }
+      ],
       "turns": 4,
       "outcome": "completed",
       "cost": 0
     },
     "notes": {
-      "shape": "AgentResult (RDR-007, agent-shapes.json) — reused verbatim. A qwen_dispatch run is one agentic run; its result IS an AgentResult.",
-      "patch": "SOURCE-ONLY (test paths stripped). Contamination stays host-internal — NOT a field of AgentResult (RDR-007 P4b).",
+      "shape": "AgentResult (RDR-007, generalized by RDR-009; agent-shapes.json) — reused verbatim. A qwen_dispatch run is one agentic run; its result IS an AgentResult. RDR-009: the response now carries `artifacts: Artifact[]` (was `patch: string`); a qwen-local run emits a single {kind:'patch'} artifact via the git-diff harvester.",
+      "artifacts": "Artifact[] (agent-shapes.json `artifact`). For qwen_dispatch (a coding run) this is one {kind:'patch'} artifact: SOURCE-ONLY diff (test paths stripped; contamination stays host-internal, NOT a field — RDR-007 P4b) with the `base` it was diffed against.",
       "turns": "Real completed-turn count on qwen-local success (j2r: PollResult.turns_completed is always-present).",
       "cost": "0 for free-local qwen-local."
     }

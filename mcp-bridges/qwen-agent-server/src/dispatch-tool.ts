@@ -28,7 +28,9 @@ import type {
   AgentProvider,
   AgentResult,
   AgentTask,
+  Artifact,
   DispatcherKind,
+  Harvest,
   PollOpts,
   PollResult,
   SpawnOpts,
@@ -76,6 +78,36 @@ export async function gitExtractPatch(
   const args = ["-C", worktree, "diff", baseCommit, "--", ...excludes];
   const { stdout } = await execFileP("git", args, { maxBuffer: 64 * 1024 * 1024 });
   return stdout;
+}
+
+/**
+ * The git-diff {@link Harvest}: the PULL channel of RDR-009. Reads the worktree
+ * end-state from `run.environment` and emits a single `{kind:"patch"}` artifact
+ * — the generalization of RDR-008's `ExtractPatch`. The base-commit invariant
+ * (diff vs `baseCommit`, never `HEAD`) is re-expressed as the artifact's `base`
+ * field. Always emits the patch artifact when an environment is present (an
+ * empty diff → an empty-`diff` patch, preserving the old `patch:""` semantics);
+ * with no worktree/base (a non-environment run) it emits nothing.
+ *
+ * `extract` is injected (defaults to {@link gitExtractPatch}) so tests drive it
+ * without a real repo; `extraTestPaths` are per-instance test globs stripped in
+ * addition to the generic patterns.
+ */
+export function gitDiffHarvester(
+  extract: (
+    worktree: string,
+    baseCommit: string,
+    opts?: { extraTestPaths?: readonly string[] },
+  ) => Promise<string> = gitExtractPatch,
+  opts: { extraTestPaths?: readonly string[] } = {},
+): Harvest {
+  return async (run) => {
+    const { worktree, baseCommit } = run.environment;
+    if (worktree === undefined || baseCommit === undefined) return [];
+    const diff = await extract(worktree, baseCommit, opts);
+    const patch: Artifact = { kind: "patch", diff, base: baseCommit };
+    return [patch];
+  };
 }
 
 /** Zod shape for the `qwen_dispatch` MCP tool input. Kept as a raw shape object
@@ -331,7 +363,10 @@ export interface SupervisorSpawnPoll {
  * output floor (`task.minTokens`) maps to `max_output_tokens`.
  *
  * `extractPatch` is supplied separately (the real `gitExtractPatch` in
- * production) so the worktree/base_commit strategy stays pluggable.
+ * production) so the worktree/base_commit strategy stays pluggable. It is
+ * wrapped here into the git-diff {@link Harvest} (RDR-009) the dispatcher
+ * consumes — this adapter's job is "git-diff is the host effect", so it owns
+ * the PULL-channel harvester. The adapter API stays `extractPatch`-shaped.
  *
  * Turn/cost fidelity: `turnsUsed` maps from `PollResult.turns_completed` — the
  * always-present live counter (RDR-008 j2r) — so a normally-completed qwen-local
@@ -372,7 +407,7 @@ export function makeSupervisorQwenSpawnEffects(
       if (turns !== undefined) snap.turnsUsed = turns;
       return snap;
     },
-    extractPatch,
+    harvest: gitDiffHarvester(extractPatch),
     sleep: clock.sleep,
     now: clock.now,
   };

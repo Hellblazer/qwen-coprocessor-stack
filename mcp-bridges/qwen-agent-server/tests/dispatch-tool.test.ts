@@ -26,7 +26,12 @@ const qwenProvider: AgentProvider = {
   costClass: "free-local",
 };
 
-const RESULT: AgentResult = { patch: "diff", turns: 4, outcome: "completed", cost: 0 };
+const RESULT: AgentResult = {
+  artifacts: [{ kind: "patch", diff: "diff", base: "abc123" }],
+  turns: 4,
+  outcome: "completed",
+  cost: 0,
+};
 
 const INPUT: QwenDispatchInput = {
   prompt: "fix it",

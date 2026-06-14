@@ -297,21 +297,23 @@ def test_build_agent_task_overrides_and_ms_conversion():
     assert task["timeout"] == 5000  # seconds -> ms at the contract boundary
 
 
-def _rr(outcome=Outcome.COMPLETED, patch="DIFF", telemetry=None) -> RunResult:
+def _rr(outcome=Outcome.COMPLETED, patch="DIFF", base="", telemetry=None) -> RunResult:
     return RunResult(
         instance_id="psf__requests-2148",
         arm="arm-x",
         outcome=outcome,
         model_patch=patch,
+        base_commit=base,
         telemetry=telemetry if telemetry is not None else {},
     )
 
 
 def test_agent_result_shape_matches_contract():
-    res = run_result_to_agent_result(_rr())
-    # Exact key set mirrors the TS AgentResult interface.
-    assert set(res) == {"patch", "turns", "outcome", "cost"}
-    assert res["patch"] == "DIFF"
+    res = run_result_to_agent_result(_rr(base="abc123"))
+    # Exact key set mirrors the TS AgentResult interface (RDR-009: artifacts).
+    assert set(res) == {"artifacts", "turns", "outcome", "cost"}
+    # The git extraction is wrapped into a single {kind:"patch"} artifact.
+    assert res["artifacts"] == [{"kind": "patch", "diff": "DIFF", "base": "abc123"}]
     # outcome is the STRING value (JSON), never the Python enum.
     assert res["outcome"] == "completed"
     assert isinstance(res["outcome"], str)

@@ -129,6 +129,7 @@ class RunResult:
     arm: str
     outcome: Outcome
     model_patch: str = ""
+    base_commit: str = ""
     test_edit_contamination: bool = False
     duration_seconds: float = 0.0
     returncode: int | None = None
@@ -277,14 +278,23 @@ class AgentTask(TypedDict):
 
 
 class AgentResult(TypedDict):
-    """Result of an agentic run — mirror of the TS `AgentResult` (RDR-007 §4).
+    """Result of an agentic run — mirror of the TS `AgentResult` (RDR-007 §4,
+    generalized by RDR-009).
 
     `outcome` is the AgentOutcome STRING value (``Outcome.value``), never the
     Python enum, so it round-trips through JSON identically to the TS side.
     `cost` is USD (metered providers; ``0.0`` for free-local).
+
+    RDR-009: the single ``patch`` string is replaced by ``artifacts`` — a list
+    of typed ``Artifact`` dicts (the TS ``Artifact`` union: ``patch`` | ``value``
+    | ``entity`` | ``tier``). The eval host produces exactly one ``{"kind":
+    "patch", "diff", "base"}`` artifact, wrapping the arm-uniform git extraction
+    (``model_patch``). The SWE-bench scorer is DECOUPLED from this projection
+    (RF-3): predictions are written from the git extraction directly, NOT from
+    AgentResult — see ``write_prediction`` and ``tests/test_swebench_decoupling.py``.
     """
 
-    patch: str
+    artifacts: list[dict]
     turns: int
     outcome: str
     cost: float
@@ -340,13 +350,23 @@ def _telemetry_cost(telemetry: dict) -> float:
 
 def run_result_to_agent_result(result: RunResult) -> AgentResult:
     """Project a host-internal ``RunResult`` onto the language-neutral
-    ``AgentResult`` contract (RDR-007 §4). The run-identity fields
-    (``instance_id``/``arm``), ``test_edit_contamination`` (host-internal), and
-    the rest of ``telemetry`` are NOT part of the contract surface; ``turns`` and
-    ``cost`` are lifted out of ``telemetry`` via the normalized accessors above.
+    ``AgentResult`` contract (RDR-007 §4, generalized by RDR-009). The
+    run-identity fields (``instance_id``/``arm``), ``test_edit_contamination``
+    (host-internal), and the rest of ``telemetry`` are NOT part of the contract
+    surface; ``turns`` and ``cost`` are lifted out of ``telemetry`` via the
+    normalized accessors above.
+
+    RDR-009: ``model_patch`` is wrapped into a single ``{"kind": "patch"}``
+    artifact (mirroring the TS git-diff harvester) with the ``base`` it was
+    diffed against. This projection is a PURE function of ``RunResult`` and is
+    DECOUPLED from the SWE-bench scoring path (RF-3): the scorer reads the
+    predictions JSONL written by ``write_prediction`` from the git extraction
+    directly, never this ``AgentResult`` — so this wrapping cannot move a score.
     """
     return {
-        "patch": result.model_patch,
+        "artifacts": [
+            {"kind": "patch", "diff": result.model_patch, "base": result.base_commit}
+        ],
         "turns": _telemetry_turns(result.telemetry),
         "outcome": result.outcome.value,
         "cost": _telemetry_cost(result.telemetry),

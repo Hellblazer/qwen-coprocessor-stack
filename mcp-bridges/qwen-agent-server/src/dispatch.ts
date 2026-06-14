@@ -20,6 +20,8 @@ import type {
   AgentProvider,
   AgentResult,
   AgentTask,
+  Harvest,
+  RunContext,
   SessionState,
 } from "./types.js";
 
@@ -68,32 +70,10 @@ export function assertAgentCli(
  * would misclassify it as `completed` with a partial patch. */
 export type Dispatch = (task: AgentTask, provider: AgentProvider) => Promise<AgentResult>;
 
-/**
- * The host's git-diff patch extraction off the worktree. RF-1 keeps this a
- * HOST effect (dispatch.ts never runs git). Two invariants the host impl MUST
- * honour, both carried from `run_arm` (scripts/coding-eval/run_arm.py):
- *
- *  1. **Diff against `baseCommit`, NOT `HEAD`** (`run_arm._git_diff`,
- *     run_arm.py:179-188). If the agent COMMITS its edits, `git diff HEAD` is
- *     empty and the run scores zero *silently*. RDR-008 P2 makes `baseCommit` an
- *     EXPLICIT PARAMETER (not a closure-captured value as in RDR-007's
- *     in-process form): a closure can't cross the `qwen_dispatch` MCP boundary,
- *     and a required parameter makes it impossible to silently forget the base
- *     and fall back to `HEAD`. `base_commit` is carried as a `qwen_dispatch`
- *     tool-input + this parameter — NOT by mutating the fixture-locked
- *     `AgentTask` (RDR-008 §Decision item 4).
- *  2. **Return the SOURCE-ONLY patch** — test/fixture deltas stripped
- *     (`run_arm.extract_source_patch`, run_arm.py:201-219). Contamination
- *     detection (a model patch touching test files) is HOST-INTERNAL; the
- *     dispatch contract surfaces only the stripped `AgentResult.patch`, so both
- *     hosts (TS + Python) produce identical patch semantics.
- */
-export type ExtractPatch = (worktree: string, baseCommit: string) => Promise<string>;
-
 // ── claude -p ───────────────────────────────────────────────────────────────
 
 /** Outcome of the host's `claude -p` invocation (telemetry; the patch is
- *  produced separately by `extractPatch`, never from claude's `model_patch`). */
+ *  produced separately by the `harvest` effect, never from claude's `model_patch`). */
 export interface ClaudeRunResult {
   returncode: number | null;
   turnsUsed: number;
@@ -104,11 +84,12 @@ export interface ClaudeRunResult {
 
 /** Injected effects for the claude-cli dispatcher (constructor injection — the
  *  host owns the actual `claude -p --output-format json` invocation + killpg
- *  and the `git diff` patch extraction). */
+ *  and the run harvest). */
 export interface ClaudeCliEffects {
   run: (task: AgentTask, provider: AgentProvider) => Promise<ClaudeRunResult>;
-  /** See {@link ExtractPatch} — diff against base_commit (not HEAD), source-only. */
-  extractPatch: ExtractPatch;
+  /** See {@link Harvest} — produces the run's `Artifact[]`; the git-diff
+   *  harvester diffs against base_commit (not HEAD), source-only. */
+  harvest: Harvest;
 }
 
 /** Per-construction options shared by the dispatchers (RDR-008 P2). `baseCommit`
@@ -135,8 +116,19 @@ export function makeClaudeCliDispatch(effects: ClaudeCliEffects, opts: DispatchB
     const outcome: AgentOutcome = res.timedOut
       ? "timeout"
       : classifyOutcome(res.returncode, { turnsUsed: res.turnsUsed, maxTurns: task.maxTurns });
-    const patch = await effects.extractPatch(task.worktree, opts.baseCommit);
-    return { patch, turns: res.turnsUsed, outcome, cost: res.cost };
+    const artifacts = await effects.harvest(runContextFor(task, opts));
+    return { artifacts, turns: res.turnsUsed, outcome, cost: res.cost };
+  };
+}
+
+/** The one-shot {@link RunContext} a dispatcher hands its harvester (RDR-009).
+ *  In P1 the PUSH channel (`emitted`/`finalMessage`) is empty — only the PULL
+ *  channel (`environment`) is populated, so the git-diff harvester has the
+ *  worktree + base it needs. The /accept harvester (Phase 2) fills the rest. */
+function runContextFor(task: AgentTask, opts: DispatchBaseOpts): RunContext {
+  return {
+    emitted: [],
+    environment: { worktree: task.worktree, baseCommit: opts.baseCommit },
   };
 }
 
@@ -157,8 +149,9 @@ export interface QwenPollSnapshot {
 export interface QwenSpawnEffects {
   spawn: (task: AgentTask, provider: AgentProvider) => Promise<string>;
   poll: (taskId: string) => Promise<QwenPollSnapshot>;
-  /** See {@link ExtractPatch} — diff against base_commit (not HEAD), source-only. */
-  extractPatch: ExtractPatch;
+  /** See {@link Harvest} — produces the run's `Artifact[]`; the git-diff
+   *  harvester diffs against base_commit (not HEAD), source-only. */
+  harvest: Harvest;
   /** Delay between polls. Injected so tests resolve immediately. */
   sleep: (ms: number) => Promise<void>;
   /** Monotonic clock in ms. Injected for deterministic deadline tests. */
@@ -210,7 +203,7 @@ export function makeQwenSpawnDispatch(
           maxTurns: task.maxTurns,
           ...(last.turnsUsed !== undefined ? { turnsUsed: last.turnsUsed } : {}),
         });
-    const patch = await effects.extractPatch(task.worktree, opts.baseCommit);
-    return { patch, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
+    const artifacts = await effects.harvest(runContextFor(task, opts));
+    return { artifacts, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
   };
 }

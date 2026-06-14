@@ -14,7 +14,16 @@ import {
   makeClaudeCliDispatch,
   makeQwenSpawnDispatch,
 } from "../src/dispatch.js";
-import type { AgentProvider, AgentTask } from "../src/types.js";
+import { patchArtifact } from "../src/types.js";
+import type { AgentProvider, AgentTask, Artifact, RunContext } from "../src/types.js";
+
+/** A harvest stub returning a single patch artifact with the given diff (the
+ *  P1 git-diff harvester's output shape). */
+function patchHarvest(diff: string) {
+  return vi.fn(async (run: RunContext): Promise<Artifact[]> => [
+    { kind: "patch", diff, base: run.environment.baseCommit ?? "" },
+  ]);
+}
 
 const TASK: AgentTask = {
   prompt: "fix the bug",
@@ -90,41 +99,46 @@ describe("assertAgentCli", () => {
 // ── claude -p dispatch ──────────────────────────────────────────────────────
 
 describe("makeClaudeCliDispatch", () => {
-  it("resolves an AgentResult; patch comes from extractPatch, NOT the agent", async () => {
+  it("resolves an AgentResult; the patch artifact comes from harvest, NOT the agent", async () => {
     const run = vi.fn().mockResolvedValue({
       returncode: 0,
       turnsUsed: 12,
       cost: 0.42,
       timedOut: false,
     });
-    const extractPatch = vi.fn().mockResolvedValue("diff --git a/x b/x\n+real");
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch }, OPTS);
+    const harvest = patchHarvest("diff --git a/x b/x\n+real");
+    const dispatch = makeClaudeCliDispatch({ run, harvest }, OPTS);
 
     const r = await dispatch(TASK, claudeProvider);
 
     expect(r).toEqual({
-      patch: "diff --git a/x b/x\n+real",
+      artifacts: [{ kind: "patch", diff: "diff --git a/x b/x\n+real", base: BASE }],
       turns: 12,
       outcome: "completed",
       cost: 0.42,
     });
+    expect(patchArtifact(r)?.diff).toBe("diff --git a/x b/x\n+real");
     expect(run).toHaveBeenCalledWith(TASK, claudeProvider);
-    expect(extractPatch).toHaveBeenCalledWith("/tmp/wt", BASE);
+    // harvest receives the one-shot RunContext: empty PUSH channel, environment
+    // carrying the worktree + base for the PULL (git-diff) channel.
+    expect(harvest).toHaveBeenCalledWith({
+      emitted: [],
+      environment: { worktree: "/tmp/wt", baseCommit: BASE },
+    });
   });
 
-  it("timedOut from the runner → outcome timeout (patch still extracted)", async () => {
+  it("timedOut from the runner → outcome timeout (patch still harvested)", async () => {
     const run = vi.fn().mockResolvedValue({
       returncode: null,
       turnsUsed: 3,
       cost: 0.1,
       timedOut: true,
     });
-    const extractPatch = vi.fn().mockResolvedValue("partial");
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch }, OPTS);
+    const dispatch = makeClaudeCliDispatch({ run, harvest: patchHarvest("partial") }, OPTS);
 
     const r = await dispatch(TASK, claudeProvider);
     expect(r.outcome).toBe("timeout");
-    expect(r.patch).toBe("partial");
+    expect(patchArtifact(r)?.diff).toBe("partial");
   });
 
   it("turn-limit signal classifies as turn_limit", async () => {
@@ -134,13 +148,13 @@ describe("makeClaudeCliDispatch", () => {
       cost: 1,
       timedOut: false,
     });
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch: async () => "" }, OPTS);
+    const dispatch = makeClaudeCliDispatch({ run, harvest: patchHarvest("") }, OPTS);
     expect((await dispatch(TASK, claudeProvider)).outcome).toBe("turn_limit");
   });
 
   it("rejects a model-endpoint provider before running anything", async () => {
     const run = vi.fn();
-    const dispatch = makeClaudeCliDispatch({ run, extractPatch: async () => "" }, OPTS);
+    const dispatch = makeClaudeCliDispatch({ run, harvest: patchHarvest("") }, OPTS);
     await expect(dispatch(TASK, endpointProvider)).rejects.toThrow(/model-endpoint/);
     expect(run).not.toHaveBeenCalled();
   });
@@ -149,7 +163,7 @@ describe("makeClaudeCliDispatch", () => {
 // ── qwen_spawn dispatch (poll-to-completion) ────────────────────────────────
 
 describe("makeQwenSpawnDispatch", () => {
-  it("polls to completion (blocking) then resolves; extractPatch runs once after terminal", async () => {
+  it("polls to completion (blocking) then resolves; harvest runs once after terminal", async () => {
     const spawn = vi.fn().mockResolvedValue("task-1");
     // running, running, then complete — the loop must not resolve early.
     const poll = vi
@@ -157,35 +171,45 @@ describe("makeQwenSpawnDispatch", () => {
       .mockResolvedValueOnce({ state: "running" })
       .mockResolvedValueOnce({ state: "running" })
       .mockResolvedValueOnce({ state: "complete", turnsUsed: 7, cost: 0 });
-    const extractPatch = vi.fn().mockResolvedValue("qwen-diff");
+    const harvest = patchHarvest("qwen-diff");
     const sleep = vi.fn().mockResolvedValue(undefined);
-    const dispatch = makeQwenSpawnDispatch({ spawn, poll, extractPatch, sleep, now: () => 0 }, OPTS);
+    const dispatch = makeQwenSpawnDispatch({ spawn, poll, harvest, sleep, now: () => 0 }, OPTS);
 
     const r = await dispatch(TASK, qwenProvider);
 
     expect(spawn).toHaveBeenCalledWith(TASK, qwenProvider);
     expect(poll).toHaveBeenCalledTimes(3); // blocked until the 3rd (terminal) poll
-    expect(extractPatch).toHaveBeenCalledTimes(1);
-    expect(r).toEqual({ patch: "qwen-diff", turns: 7, outcome: "completed", cost: 0 });
+    expect(harvest).toHaveBeenCalledTimes(1);
+    expect(r).toEqual({
+      artifacts: [{ kind: "patch", diff: "qwen-diff", base: BASE }],
+      turns: 7,
+      outcome: "completed",
+      cost: 0,
+    });
   });
 
   it("error terminal state → outcome error (turns/cost carried through)", async () => {
     const dispatch = makeQwenSpawnDispatch({
       spawn: async () => "t",
       poll: async () => ({ state: "error", turnsUsed: 2 }),
-      extractPatch: async () => "",
+      harvest: patchHarvest(""),
       sleep: async () => {},
       now: () => 0,
     }, OPTS);
     const r = await dispatch(TASK, qwenProvider);
-    expect(r).toEqual({ patch: "", turns: 2, outcome: "error", cost: 0 });
+    expect(r).toEqual({
+      artifacts: [{ kind: "patch", diff: "", base: BASE }],
+      turns: 2,
+      outcome: "error",
+      cost: 0,
+    });
   });
 
   it("idle at the turn budget → turn_limit (compound idle + turns>=max)", async () => {
     const dispatch = makeQwenSpawnDispatch({
       spawn: async () => "t",
       poll: async () => ({ state: "idle", turnsUsed: TASK.maxTurns, cost: 0 }),
-      extractPatch: async () => "p",
+      harvest: patchHarvest("p"),
       sleep: async () => {},
       now: () => 0,
     }, OPTS);
@@ -196,7 +220,7 @@ describe("makeQwenSpawnDispatch", () => {
     const dispatch = makeQwenSpawnDispatch({
       spawn: async () => "t",
       poll: async () => ({ state: "idle", turnsUsed: 4, cost: 0 }),
-      extractPatch: async () => "p",
+      harvest: patchHarvest("p"),
       sleep: async () => {},
       now: () => 0,
     }, OPTS);
@@ -205,20 +229,20 @@ describe("makeQwenSpawnDispatch", () => {
     expect(r.turns).toBe(4);
   });
 
-  it("wall-clock deadline fires → outcome timeout (patch still extracted)", async () => {
+  it("wall-clock deadline fires → outcome timeout (patch still harvested)", async () => {
     // poll never reaches a terminal state; now() jumps past the deadline.
     const now = vi.fn().mockReturnValueOnce(0).mockReturnValue(TASK.timeout + 1);
-    const extractPatch = vi.fn().mockResolvedValue("whatever-was-written");
+    const harvest = patchHarvest("whatever-was-written");
     const dispatch = makeQwenSpawnDispatch({
       spawn: async () => "t",
       poll: async () => ({ state: "running" }),
-      extractPatch,
+      harvest,
       sleep: async () => {},
       now,
     }, OPTS);
     const r = await dispatch(TASK, qwenProvider);
     expect(r.outcome).toBe("timeout");
-    expect(extractPatch).toHaveBeenCalledTimes(1);
+    expect(harvest).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a model-endpoint provider before spawning", async () => {
@@ -226,7 +250,7 @@ describe("makeQwenSpawnDispatch", () => {
     const dispatch = makeQwenSpawnDispatch({
       spawn,
       poll: async () => ({ state: "complete" }),
-      extractPatch: async () => "",
+      harvest: patchHarvest(""),
       sleep: async () => {},
       now: () => 0,
     }, OPTS);

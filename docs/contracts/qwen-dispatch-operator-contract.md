@@ -1,9 +1,10 @@
 <!-- SPDX-License-Identifier: MIT -->
 # qwen_dispatch Operator Contract (RDR-008)
 
-**Status:** published · **v2 pending nexus sign-off** (v2 adds the `worktree` XOR `repo` worktree-spec
-selector + the `invalid_worktree_spec` error; see [#1174](https://github.com/Hellblazer/nexus/issues/1174)) ·
-**Source RDR:** RDR-008 (accepted) · **Golden fixture:** [`fixtures/qwen-dispatch-shapes.json`](./fixtures/qwen-dispatch-shapes.json)
+**Status:** published · **v3 pending nexus sign-off** (v2 added the `worktree` XOR `repo` worktree-spec
+selector + the `invalid_worktree_spec` error; **v3 (RDR-009) changes the response from `{patch}` to
+`{artifacts: Artifact[]}`** — see [#1174](https://github.com/Hellblazer/nexus/issues/1174)) ·
+**Source RDR:** RDR-008 (accepted), RDR-009 (accepted) · **Golden fixture:** [`fixtures/qwen-dispatch-shapes.json`](./fixtures/qwen-dispatch-shapes.json)
 
 This is the **language-neutral** contract for `qwen_dispatch` — the agentic-dispatch
 operator the qwen-coprocessor-stack supervisor exposes for an external engine
@@ -57,19 +58,30 @@ contract of RDR-007 §4 lifted to an MCP tool boundary.
 > the run scores a silent zero. `base_commit` is **not** carried on `AgentTask`
 > (that shape is pinned by RDR-007's `agent-shapes.json` and is unchanged).
 
-### Response — `AgentResult` (reused verbatim from RDR-007)
+### Response — `AgentResult` (RDR-007, generalized by RDR-009)
 
 A `qwen_dispatch` run is one agentic run, so its result **is** an `AgentResult`
-([agent-shapes.json](./fixtures/agent-shapes.json)): `{patch, turns, outcome, cost}`.
-No new fields.
+([agent-shapes.json](./fixtures/agent-shapes.json)): `{artifacts, turns, outcome, cost}`.
 
-- `patch` — **source-only** diff (test paths stripped). **Contamination** (a patch
-  touching test files) is **host-internal**, NOT a field of `AgentResult`
-  (RDR-007 P4b).
-- `outcome: "timeout"` — the wall-clock cutoff fired; the patch is whatever the
-  worktree held at the cutoff (possibly partial). **The worktree state is
-  indeterminate.** A retry must run against a **fresh** worktree at `base_commit`,
-  not the timed-out one — worktree lifecycle is the caller's (see below).
+> **RDR-009 wire change.** The single `patch: string` field is replaced by
+> `artifacts: Artifact[]` — the typed harvest envelope. The `Artifact` union has
+> exactly **four kinds**: `patch` | `value` | `entity` | `tier`. A `qwen_dispatch`
+> coding run emits **one** `{kind:"patch", diff, base}` artifact (the git-diff
+> harvester wrapping the source-only diff). This is **not** wire-compatible with
+> the old `{patch}` shape; an engine reading `$stepN.patch` must migrate to
+> `$stepN.artifacts` (filter `[?kind=='patch']`). The migration ships as one unit
+> with this spec — there is no transition shape.
+
+- `artifacts` — the run's typed work product. For a coding run: one
+  `{kind:"patch", diff, base}` where `diff` is the **source-only** diff (test
+  paths stripped; **contamination** is **host-internal**, NOT an artifact field —
+  RDR-007 P4b) and `base` is the commit it was diffed against. The PUSH-channel
+  kinds (`value`/`entity`/`tier`) are produced by other harvesters (the `/accept`
+  path, RDR-009 Phase 2); a `qwen_dispatch` leaf does not emit them.
+- `outcome: "timeout"` — the wall-clock cutoff fired; the patch artifact's `diff`
+  is whatever the worktree held at the cutoff (possibly partial). **The worktree
+  state is indeterminate.** A retry must run against a **fresh** worktree at
+  `base_commit`, not the timed-out one — worktree lifecycle is the caller's (see below).
 - `turns` — the real completed-turn count, including on a qwen-local **success**
   run (`PollResult.turns_completed` is the always-present live counter — bead
   **qwen-coprocessor-stack-j2r**).

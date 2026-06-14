@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { Dispatch } from "../../src/dispatch.js";
 import { gitExtractPatch, runQwenDispatch, type QwenDispatchInput } from "../../src/dispatch-tool.js";
+import { patchArtifact } from "../../src/types.js";
 import type { AgentProvider } from "../../src/types.js";
 import { executorManagedWorktree } from "../../src/worktree.js";
 
@@ -77,8 +78,13 @@ describe("qwen_dispatch repo-mode (real managed worktree)", () => {
       writeFileSync(join(task.worktree, "calc.py"), "def add(a, b):\n    return a + b\n");
       git(task.worktree, "add", "-A");
       git(task.worktree, "commit", "-q", "-m", "fix");
-      const patch = await gitExtractPatch(task.worktree, base);
-      return { patch, turns: 2, outcome: "completed", cost: 0 };
+      const diff = await gitExtractPatch(task.worktree, base);
+      return {
+        artifacts: [{ kind: "patch", diff, base }],
+        turns: 2,
+        outcome: "completed",
+        cost: 0,
+      };
     };
 
     const result = await runQwenDispatch(
@@ -94,8 +100,9 @@ describe("qwen_dispatch repo-mode (real managed worktree)", () => {
     expect(ranIn).toBe(join(workRoot, "inst-it"));
     expect(result.outcome).toBe("completed");
     expect(result.turns).toBe(2);
-    expect(result.patch).toContain("return a + b");
-    expect(result.patch).not.toContain("test_"); // source-only
+    const patch = patchArtifact(result);
+    expect(patch!.diff).toContain("return a + b");
+    expect(patch!.diff).not.toContain("test_"); // source-only
 
     // Cleanup ran: the worktree is gone, the mirror is kept.
     expect(existsSync(join(workRoot, "inst-it"))).toBe(false);
@@ -107,7 +114,7 @@ describe("qwen_dispatch repo-mode (real managed worktree)", () => {
     await expect(
       runQwenDispatch(
         { prompt: "x", base_commit: base, repo: "acme/calc" },
-        { loadProviders: () => [provider], resolveDispatch: () => (async () => ({ patch: "", turns: 0, outcome: "completed", cost: 0 })) as Dispatch },
+        { loadProviders: () => [provider], resolveDispatch: () => (async () => ({ artifacts: [], turns: 0, outcome: "completed", cost: 0 })) as Dispatch },
       ),
     ).rejects.toMatchObject({ code: "invalid_worktree_spec" });
     // No stray worktrees were left behind.
