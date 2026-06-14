@@ -617,6 +617,11 @@ describe("QwenSession", () => {
       await flush();
       expect(session.poll({}).turns_completed).toBe(2);
 
+      // complete (terminal success) path also carries the count.
+      session.stop();
+      expect(session.state).toBe("complete");
+      expect(session.poll({}).turns_completed).toBe(2);
+
       ctrl.end();
     });
 

@@ -439,7 +439,11 @@ export interface PollResult {
    * caller can read the count on a SUCCESS (`idle`/`complete`) terminal poll.
    * This is what `qwen_dispatch` maps to `AgentResult.turns` (before j2r the
    * success poll carried no turn count, so dispatch reported `turns: 0`).
-   * Optional in the type for back-compat with prior PollResult consumers.
+   *
+   * Typed OPTIONAL only for wire back-compat — a pre-j2r supervisor's poll
+   * response omits it (the dispatch adapter falls back to
+   * `last_known.turns_completed`). THIS supervisor's `QwenSession.poll()` always
+   * sets it; an absent value indicates an older peer, never this build.
    */
   turns_completed?: number;
 }

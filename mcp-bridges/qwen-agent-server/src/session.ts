@@ -433,6 +433,10 @@ export class QwenSession {
       if (this._error !== undefined) {
         result.error = this._error;
       }
+      // `last_known.turns_completed` duplicates the top-level `turns_completed`
+      // (set above) on the error path. Kept for the error-continuity contract
+      // (re-spawn via prior_context) AND for a pre-j2r consumer that only reads
+      // last_known; the dispatch adapter prefers the top-level field (RDR-008 j2r).
       const lastKnown: import("./types.js").LastKnown = {
         turns_completed: this._turns_completed,
       };
