@@ -24,4 +24,4 @@ namespace) for cross-session discoverability.
 | 007 | closed (implemented)  | design       | [Unified agent dispatch contract — one AgentProvider registry + one dispatch interface across Claude and Qwen](RDR-007-unified-agent-dispatch-contract.md) |
 | 008 | closed (implemented)  | design       | [Agentic dispatch executor — a pluggable dispatcher framework exposing dispatch() as a nexus-callable MCP operator](RDR-008-agentic-dispatch-executor.md) |
 | 009 | closed (implemented)  | architecture | [Generalized harvest envelope — dispatch returns a typed Artifact[] (push+pull) instead of a patch; nexus owns the ledger](RDR-009-harvest-envelope.md) |
-| 010 | accepted              | design       | [Executor value-harvest — a dispatched leaf returns its structured finalMessage as a {kind:value} artifact](RDR-010-executor-value-harvest.md) |
+| 010 | closed (implemented)  | design       | [Executor value-harvest — a dispatched leaf returns its structured finalMessage as a {kind:value} artifact](RDR-010-executor-value-harvest.md) |
