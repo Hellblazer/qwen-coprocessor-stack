@@ -2,12 +2,12 @@
 title: "Generalized harvest envelope — dispatch returns a typed Artifact[] (push+pull) instead of a patch; nexus owns the ledger"
 id: RDR-009
 type: Architecture
-status: draft
+status: accepted
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-14
-accepted_date: # set by /rdr-accept
+accepted_date: 2026-06-14
 related_issues: ["Hellblazer/nexus#1174"]
 ---
 

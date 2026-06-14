@@ -22,4 +22,5 @@ namespace) for cross-session discoverability.
 | 005 | deferred              | architecture | [Supervisor process lifecycle — layered cleanup model](RDR-005-supervisor-process-lifecycle.md) |
 | 006 | closed (implemented)  | research     | [Coding-agent evaluation — Qwen3.6-35B-A3B vs Claude on SWE-bench Lite, three arms](RDR-006-coding-agent-eval.md) |
 | 007 | closed (implemented)  | design       | [Unified agent dispatch contract — one AgentProvider registry + one dispatch interface across Claude and Qwen](RDR-007-unified-agent-dispatch-contract.md) |
-| 008 | accepted              | design       | [Agentic dispatch executor — a pluggable dispatcher framework exposing dispatch() as a nexus-callable MCP operator](RDR-008-agentic-dispatch-executor.md) |
+| 008 | closed (implemented)  | design       | [Agentic dispatch executor — a pluggable dispatcher framework exposing dispatch() as a nexus-callable MCP operator](RDR-008-agentic-dispatch-executor.md) |
+| 009 | accepted              | architecture | [Generalized harvest envelope — dispatch returns a typed Artifact[] (push+pull) instead of a patch; nexus owns the ledger](RDR-009-harvest-envelope.md) |
