@@ -1,7 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 # qwen_dispatch Operator Contract (RDR-008)
 
-**Status:** published · **Source RDR:** RDR-008 (accepted) · **Golden fixture:** [`fixtures/qwen-dispatch-shapes.json`](./fixtures/qwen-dispatch-shapes.json)
+**Status:** published · **v2 pending nexus sign-off** (v2 adds the `worktree` XOR `repo` worktree-spec
+selector + the `invalid_worktree_spec` error; see [#1174](https://github.com/Hellblazer/nexus/issues/1174)) ·
+**Source RDR:** RDR-008 (accepted) · **Golden fixture:** [`fixtures/qwen-dispatch-shapes.json`](./fixtures/qwen-dispatch-shapes.json)
 
 This is the **language-neutral** contract for `qwen_dispatch` — the agentic-dispatch
 operator the qwen-coprocessor-stack supervisor exposes for an external engine

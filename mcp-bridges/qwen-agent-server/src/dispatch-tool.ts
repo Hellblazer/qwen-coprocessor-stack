@@ -94,7 +94,7 @@ export const qwenDispatchInputShape = {
     .describe("Caller-supplied base commit. extractPatch ALWAYS diffs against this, never HEAD."),
   repo: z
     .string()
-    .min(1)
+    .regex(/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/, "repo must be an owner/name slug")
     .optional()
     .describe("`owner/name` slug — selects the EXECUTOR-MANAGED worktree strategy (mutually exclusive with `worktree`). The executor materializes a per-instance detached worktree at base_commit and cleans it up."),
   repo_url: z
@@ -228,6 +228,21 @@ export async function runQwenDispatch(
     );
   }
 
+  // Exactly one worktree spec (RDR-008 dps): caller-supplied `worktree` XOR
+  // executor-managed `repo`. Validate BEFORE resolving the dispatcher so a
+  // malformed request fails with `invalid_worktree_spec` (a fixable input error)
+  // rather than being masked by a downstream `unregistered_kind`, and so both
+  // the default and any injected resolver see a well-formed request.
+  const hasWorktree = input.worktree !== undefined;
+  const hasRepo = input.repo !== undefined;
+  if (hasWorktree === hasRepo) {
+    throw new QwenDispatchError(
+      "invalid_worktree_spec",
+      `qwen_dispatch requires exactly one of "worktree" (caller-supplied) or "repo" ` +
+        `(executor-managed); got ${hasWorktree ? "both" : "neither"}.`,
+    );
+  }
+
   // resolveDispatch throws (via registry.resolve) on an unregistered agentKind /
   // a model-endpoint provider; surface it as a typed error.
   let dispatch: Dispatch;
@@ -237,19 +252,6 @@ export async function runQwenDispatch(
     throw new QwenDispatchError(
       "unregistered_kind",
       err instanceof Error ? err.message : String(err),
-    );
-  }
-
-  // Exactly one worktree spec (RDR-008 dps): caller-supplied `worktree` XOR
-  // executor-managed `repo`. Validated here so both the default and any injected
-  // resolver see a well-formed request.
-  const hasWorktree = input.worktree !== undefined;
-  const hasRepo = input.repo !== undefined;
-  if (hasWorktree === hasRepo) {
-    throw new QwenDispatchError(
-      "invalid_worktree_spec",
-      `qwen_dispatch requires exactly one of "worktree" (caller-supplied) or "repo" ` +
-        `(executor-managed); got ${hasWorktree ? "both" : "neither"}.`,
     );
   }
 
