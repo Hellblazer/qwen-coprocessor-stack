@@ -20,6 +20,7 @@ import type {
   AgentProvider,
   AgentResult,
   AgentTask,
+  Artifact,
   Harvest,
   RunContext,
   SessionState,
@@ -134,6 +135,72 @@ function runContextFor(task: AgentTask, opts: DispatchBaseOpts): RunContext {
     emitted: [],
     environment: { worktree: task.worktree, baseCommit: opts.baseCommit },
   };
+}
+
+// ── /accept harvester (RDR-009 Phase 2 — the PUSH path) ─────────────────────
+
+/**
+ * The `/accept` harvester: the PUSH-channel {@link Harvest}. Surfaces the
+ * artifacts the run pushed WITHOUT touching git or the raw supervisor event log
+ * (RF-1) —
+ *
+ *  - passes `run.emitted` through **verbatim** (every kind, unfiltered): the
+ *    deterministic `/accept` spine is host code that KNOWS what it wrote and
+ *    emits its `entity`/`tier` artifacts DIRECTLY at the time it creates the bead
+ *    / writes the tier. (A spine could emit any kind; the harvester does not
+ *    filter, so no legitimate spine emission is dropped.)
+ *  - parses `run.finalMessage` (the leaf agent's structured return) into a single
+ *    `{kind:"value"}` — JSON when it parses, else the raw string (never dropped).
+ *
+ * `finalMessage` ambiguity (accepted): a JSON-encoded string payload
+ * (`"\"x\""` → `"x"`) is indistinguishable at the consumer from a bare
+ * non-JSON `"x"`. For the real `/accept` case the leaf returns a JSON object /
+ * array (no ambiguity); preserving the raw text alongside would need an extra
+ * `value`-artifact field, disproportionate for the locked four-kind union.
+ * Literal JSON `null` is treated as **no structured return** (a degenerate
+ * answer is not a value); `false` / `0` / `""` are genuine values and ARE
+ * surfaced.
+ *
+ * Reading neither source yields `[]` (no throw). It NEVER scrapes the raw event
+ * log: that stream has no explicit "created" signal, no success confirmation,
+ * and truncates the agent's structured output to 120 chars (RF-1, verified at
+ * source). Pure — no I/O — so it composes with the git-diff (PULL) harvester
+ * without ordering constraints.
+ *
+ * NOTE (seam, not yet wired): this is the harvester half of the PUSH path. The
+ * producer — the `/accept` spine that populates `RunContext.emitted` /
+ * `finalMessage` (and the dispatcher wiring that injects this as the `harvest`
+ * effect) — is engine/host work outside RDR-009's one-shot executor scope. Until
+ * that lands, `runContextFor` emits `[]`/no `finalMessage`, so a dispatched run
+ * does not yet exercise this harvester end-to-end.
+ */
+export const acceptHarvester: Harvest = async (run) => {
+  // Shallow copy: a fresh array (so `push` below never mutates the caller's
+  // ReadonlyArray); the element objects are shared (Artifacts are immutable data).
+  const artifacts: Artifact[] = [...run.emitted];
+  const value = parseFinalMessageValue(run.finalMessage);
+  if (value !== undefined) artifacts.push(value);
+  return artifacts;
+};
+
+/** Parse the leaf's `finalMessage` into a `value` artifact, or `undefined` when
+ *  there was no structured return (absent / whitespace-only / literal JSON
+ *  `null`). JSON is parsed; non-JSON text is surfaced raw rather than discarded. */
+function parseFinalMessageValue(
+  finalMessage: string | undefined,
+): Extract<Artifact, { kind: "value" }> | undefined {
+  if (finalMessage === undefined || finalMessage.trim() === "") return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(finalMessage);
+  } catch {
+    // Not JSON — surface the raw structured text rather than dropping it.
+    return { kind: "value", value: finalMessage };
+  }
+  // Literal JSON `null` is a degenerate "no answer", not a value (false/0/""
+  // are genuine values and fall through).
+  if (value === null) return undefined;
+  return { kind: "value", value };
 }
 
 // ── qwen_spawn (poll-to-completion) ─────────────────────────────────────────
