@@ -407,6 +407,10 @@ export function makeSupervisorQwenSpawnEffects(
       // (error-path only) for a pre-j2r supervisor.
       const turns = r.turns_completed ?? r.last_known?.turns_completed;
       if (turns !== undefined) snap.turnsUsed = turns;
+      // The leaf's terminal structured return (RDR-010): PollResult.last_message
+      // is the full assistant text (present only at terminal idle/complete).
+      // Threaded to RunContext.finalMessage for the value harvester.
+      if (r.last_message !== undefined) snap.lastMessage = r.last_message;
       return snap;
     },
     harvest: gitDiffHarvester(extractPatch),

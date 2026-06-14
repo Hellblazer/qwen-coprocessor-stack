@@ -274,6 +274,35 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     expect(await effects.poll("t")).toEqual({ state: "complete", turnsUsed: 4 });
   });
 
+  it("poll maps last_message into the snapshot (RDR-010 finalMessage source)", async () => {
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "complete",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "1",
+      turns_completed: 2,
+      last_message: '{"plan":"x"}',
+    });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    expect(await effects.poll("t")).toEqual({
+      state: "complete",
+      turnsUsed: 2,
+      lastMessage: '{"plan":"x"}',
+    });
+  });
+
+  it("poll omits lastMessage when the poll result has none (conditional)", async () => {
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "running",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "0",
+      turns_completed: 0,
+    });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    expect("lastMessage" in (await effects.poll("t"))).toBe(false);
+  });
+
   it("poll falls back to last_known.turns_completed for a pre-j2r supervisor", async () => {
     const qwen_poll = vi.fn().mockResolvedValue({
       state: "error",

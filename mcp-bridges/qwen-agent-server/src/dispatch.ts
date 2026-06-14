@@ -123,17 +123,25 @@ export function makeClaudeCliDispatch(effects: ClaudeCliEffects, opts: DispatchB
 }
 
 /** The one-shot {@link RunContext} a dispatcher hands its harvester (RDR-009).
- *  In P1 the PUSH channel (`emitted`/`finalMessage`) is empty — only the PULL
- *  channel (`environment`) is populated, so the git-diff harvester has the
- *  worktree + base it needs. The /accept harvester (Phase 2) fills the rest. */
-function runContextFor(task: AgentTask, opts: DispatchBaseOpts): RunContext {
+ *  PULL channel (`environment`) is always populated. PUSH: `finalMessage` is the
+ *  leaf's structured return, threaded by the QWEN dispatcher from the terminal
+ *  poll snapshot (RDR-010); `emitted` stays `[]` (the spine's entity/tier
+ *  producer is orchestrator scope, deferred per RDR-010 §Out of scope). The
+ *  claude-cli dispatcher passes no `finalMessage` — `ClaudeRunResult` has no
+ *  such source, and claude-cli is not the value-harvest target (RDR-010 RF-1:
+ *  the source is the qwen poll path). */
+function runContextFor(
+  task: AgentTask,
+  opts: DispatchBaseOpts,
+  finalMessage?: string,
+): RunContext {
   return {
-    // Phase 2 seam: the /accept harvester populates `emitted` (PUSH-channel
-    // artifacts the host spine wrote during the run) + `finalMessage` (the
-    // leaf's structured return) here. In P1 the only harvester is the git-diff
-    // (PULL) one, which reads `environment` only — so `emitted` is [] by design.
     emitted: [],
     environment: { worktree: task.worktree, baseCommit: opts.baseCommit },
+    // Conditional spread, not `finalMessage: finalMessage`: under
+    // exactOptionalPropertyTypes an optional prop may be omitted but not
+    // explicitly assigned `undefined` (TS2379).
+    ...(finalMessage !== undefined ? { finalMessage } : {}),
   };
 }
 
@@ -208,11 +216,16 @@ function parseFinalMessageValue(
 /** A single poll snapshot from the qwen supervisor (subset of PollResult the
  *  dispatcher needs). `turnsUsed` / `cost` may be absent on non-terminal
  *  (`running`) snapshots; on timeout the dispatcher falls back to `0` for each
- *  (it returns the last, possibly-running, snapshot). */
+ *  (it returns the last, possibly-running, snapshot). `lastMessage` is the
+ *  leaf's terminal structured return (`PollResult.last_message`, the full text —
+ *  not the 120-char summary; RDR-010 RF-1), present only at a terminal state
+ *  that produced one; the dispatcher threads it into `RunContext.finalMessage`
+ *  for the value harvester. */
 export interface QwenPollSnapshot {
   state: SessionState;
   turnsUsed?: number;
   cost?: number;
+  lastMessage?: string;
 }
 
 /** Injected effects for the qwen_spawn dispatcher. The host owns the supervisor
@@ -274,7 +287,9 @@ export function makeQwenSpawnDispatch(
           maxTurns: task.maxTurns,
           ...(last.turnsUsed !== undefined ? { turnsUsed: last.turnsUsed } : {}),
         });
-    const artifacts = await effects.harvest(runContextFor(task, opts));
+    // Thread the leaf's terminal structured return (RDR-010) so a value
+    // harvester can surface it; the git-diff harvester ignores it.
+    const artifacts = await effects.harvest(runContextFor(task, opts, last.lastMessage));
     return { artifacts, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
   };
 }
