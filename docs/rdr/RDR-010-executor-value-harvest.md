@@ -2,12 +2,15 @@
 title: "Executor value-harvest — a dispatched leaf returns its structured finalMessage as a {kind:value} artifact"
 id: RDR-010
 type: Design
-status: accepted
+status: closed
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-14
 accepted_date: 2026-06-14
+closed_date: 2026-06-14
+close_reason: implemented
+post_mortem: docs/rdr/post-mortem/010-executor-value-harvest.md
 related_issues: ["Hellblazer/nexus#1174"]
 ---
 
