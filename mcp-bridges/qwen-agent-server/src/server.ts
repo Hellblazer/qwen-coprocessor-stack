@@ -326,6 +326,9 @@ export type ToolHandlers = {
    * untrusted-client surface to protect against.
    */
   qwen_reload_extensions?: (args: Record<string, never>) => Promise<{ size: number; names: string[] }>;
+  /** True once shutdown has begun — spawn-initiating tools reject with a
+   *  `shutting_down` envelope (RDR-008 P2: qwen_dispatch mirrors this). */
+  isShuttingDown: () => boolean;
   /** Test-only: flip the shutting_down flag. */
   __setShuttingDown: (v: boolean) => void;
 };
@@ -1114,6 +1117,7 @@ export function createToolHandlers(
     qwen_tokenize,
     qwen_extensions,
     ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
+    isShuttingDown: () => shuttingDown,
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
   };
 }
@@ -1338,6 +1342,20 @@ async function main(): Promise<void> {
     "Agentic dispatch (RDR-008): run a one-shot coding task on a local-Qwen agent in a caller-supplied worktree, return {patch, turns, outcome, cost}. Resolves a dispatcher from the registry by the agent-cli provider's agentKind. base_commit is required — extractPatch diffs against it (never HEAD) and returns the source-only patch. The caller owns worktree lifecycle.",
     qwenDispatchInputShape,
     async (args) => {
+      // Mirror the spawn-initiating tools' shutdown envelope (consistent error
+      // surface; qwen_dispatch spawns a session under the hood).
+      if (handlers.isShuttingDown()) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: { code: "shutting_down", message: "server is shutting down; cannot dispatch" },
+              }),
+            },
+          ],
+        };
+      }
       const effects = makeSupervisorQwenSpawnEffects(
         { qwen_spawn: handlers.qwen_spawn, qwen_poll: handlers.qwen_poll },
         gitExtractPatch,

@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 
 import { z } from "zod";
 
+import { selectAgentProvider } from "./backends.js";
 import { createLogger } from "./log.js";
 import type { Dispatch, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
 import type {
@@ -132,10 +133,16 @@ export interface QwenDispatchDeps {
   resolveDispatch: (provider: AgentProvider, baseCommit: string) => Dispatch;
 }
 
-/** Structured error surfaced to the caller when dispatch can't proceed. */
+/** Structured error surfaced to the caller when dispatch can't proceed.
+ *  - `no_provider` — no declared agent-cli provider matches the selector.
+ *  - `missing_agent_kind` — the selected provider declares no `agentKind`
+ *    (config fix: add `agentKind`), distinct from `unregistered_kind` so the
+ *    caller isn't misdirected to register a dispatcher.
+ *  - `unregistered_kind` — the provider's `agentKind` has no registered
+ *    dispatcher. */
 export class QwenDispatchError extends Error {
   constructor(
-    readonly code: "no_provider" | "unregistered_kind",
+    readonly code: "no_provider" | "missing_agent_kind" | "unregistered_kind",
     message: string,
   ) {
     super(message);
@@ -155,18 +162,31 @@ export async function runQwenDispatch(
   deps: QwenDispatchDeps,
 ): Promise<AgentResult> {
   const providers = deps.loadProviders();
-  const provider =
+  // Single selection spine (shared with selectAgentProvider so behaviour can't
+  // diverge): pin by id, else the default/declared agentKind family.
+  const by =
     input.provider_id !== undefined
-      ? providers.find((p) => p.id === input.provider_id)
-      : providers.find((p) => p.agentKind === (input.agent_kind ?? DEFAULT_AGENT_KIND));
+      ? { id: input.provider_id }
+      : { agentKind: (input.agent_kind ?? DEFAULT_AGENT_KIND) as DispatcherKind };
+  const provider = selectAgentProvider(providers, by);
 
   if (provider === undefined) {
-    const sel = input.provider_id !== undefined ? `id="${input.provider_id}"` : `agentKind="${input.agent_kind ?? DEFAULT_AGENT_KIND}"`;
+    const sel = "id" in by ? `id="${by.id}"` : `agentKind="${by.agentKind}"`;
     throw new QwenDispatchError(
       "no_provider",
       `qwen_dispatch: no agent-cli provider matches ${sel}. ` +
         `Declared: [${providers.map((p) => p.id).join(", ")}]. ` +
         `Add one to config.agent_providers (or QWEN_AGENT_PROVIDERS).`,
+    );
+  }
+
+  // A provider matched (likely an id pin) but declares no dispatcher family:
+  // surface a distinct code so the caller fixes config, not the registry.
+  if (provider.agentKind === undefined) {
+    throw new QwenDispatchError(
+      "missing_agent_kind",
+      `qwen_dispatch: provider "${provider.id}" declares no agentKind; ` +
+        `add agentKind to its config.agent_providers entry.`,
     );
   }
 
@@ -230,12 +250,13 @@ export interface SupervisorSpawnPoll {
  * `extractPatch` is supplied separately (the real `gitExtractPatch` in
  * production) so the worktree/base_commit strategy stays pluggable.
  *
- * Turn/cost fidelity note: the supervisor's `PollResult` does not surface a
- * per-turn count on the success path (only `last_known.turns_completed` on the
- * error-continuity path), and local Qwen is free (`cost = 0`). The dispatcher
- * therefore reports `turns` best-effort from `last_known`; refining the
- * supervisor's turn telemetry is out of P2 scope (bright line: no new
- * AgentResult fields).
+ * Turn/cost fidelity note: the supervisor's `PollResult.last_known` is
+ * populated ONLY on the error path (session.ts), so `turnsUsed` is `undefined`
+ * for every `complete`/`idle` (success) poll → `AgentResult.turns` is `0` for a
+ * normally-completed qwen-local run today. Local Qwen is free (`cost = 0`).
+ * Emitting `turns_completed` on the success poll is a supervisor protocol change
+ * (qwen-coprocessor-stack-j2r, filed at R2) out of this bead's scope — the P3
+ * conformance fixture must spec `turns=0` on qwen-local success until it lands.
  */
 export function makeSupervisorQwenSpawnEffects(
   handlers: SupervisorSpawnPoll,
@@ -257,6 +278,13 @@ export function makeSupervisorQwenSpawnEffects(
     },
     poll: async (taskId) => {
       const r = await handlers.qwen_poll({ task_id: taskId, opts: {} });
+      // Session evicted from the pool (LRU/reap) — an INFRASTRUCTURE failure,
+      // not a dispatch outcome. Throw so it propagates as an untyped error the
+      // tool rethrows, instead of masquerading as a clean `outcome:"error"`
+      // with an empty patch (indistinguishable from a genuine agent failure).
+      if ("error" in r && r.error?.code === "task_id_not_found") {
+        throw new Error(`qwen_dispatch poll: session ${taskId} evicted (${r.error.message})`);
+      }
       const snap: QwenPollSnapshot = { state: r.state };
       if (r.last_known?.turns_completed !== undefined) {
         snap.turnsUsed = r.last_known.turns_completed;

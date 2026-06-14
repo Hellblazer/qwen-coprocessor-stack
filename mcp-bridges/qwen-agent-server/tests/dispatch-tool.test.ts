@@ -96,6 +96,24 @@ describe("runQwenDispatch", () => {
       }),
     ).rejects.toBeInstanceOf(QwenDispatchError);
   });
+
+  it("throws missing_agent_kind when a pinned provider declares no agentKind", async () => {
+    const undeclared: AgentProvider = {
+      id: "mystery",
+      kind: "agent-cli",
+      modalities: ["text"],
+      excludes: [],
+    };
+    const resolveDispatch = vi.fn();
+    await expect(
+      runQwenDispatch(
+        { ...INPUT, provider_id: "mystery" },
+        { loadProviders: () => [undeclared], resolveDispatch: resolveDispatch as never },
+      ),
+    ).rejects.toMatchObject({ code: "missing_agent_kind" });
+    // Never reaches the registry — it's a config error, not a registration gap.
+    expect(resolveDispatch).not.toHaveBeenCalled();
+  });
 });
 
 describe("makeSupervisorQwenSpawnEffects", () => {
@@ -125,6 +143,18 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     const qwen_spawn = vi.fn().mockResolvedValue({ error: { code: "spawn_no_backend", message: "none" } });
     const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn, qwen_poll: vi.fn() }, async () => "");
     await expect(effects.spawn(TASK, qwenProvider)).rejects.toThrow(/spawn_no_backend/);
+  });
+
+  it("poll THROWS on session eviction (task_id_not_found) — infra failure, not a clean error outcome", async () => {
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "error",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "0",
+      error: { code: "task_id_not_found", message: "no such task" },
+    });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    await expect(effects.poll("gone")).rejects.toThrow(/evicted/);
   });
 
   it("poll maps state and (when present) turns from last_known", async () => {
