@@ -80,7 +80,11 @@ A `qwen_dispatch` run is one agentic run, so its result **is** an `AgentResult`
   paths stripped; **contamination** is **host-internal**, NOT an artifact field —
   RDR-007 P4b) and `base` is the commit it was diffed against. The PUSH-channel
   kinds (`value`/`entity`/`tier`) are produced by other harvesters (the `/accept`
-  path, RDR-009 Phase 2); a `qwen_dispatch` leaf does not emit them.
+  path, RDR-009 Phase 2); a `qwen_dispatch` leaf does not emit them. `value` is the
+  one PUSH kind reachable through the executor (a leaf's `finalMessage`, RDR-010);
+  `entity`/`tier` are **orchestrator-produced** — their producer obligations are
+  specified in the companion [harvest producer contract](./harvest-producer-contract.md)
+  (RDR-011). The executor does not and will not emit `entity`/`tier` (one-shot invariant).
 - `outcome: "timeout"` — the wall-clock cutoff fired; the patch artifact's `diff`
   is whatever the worktree held at the cutoff (possibly partial). **The worktree
   state is indeterminate.** A retry must run against a **fresh** worktree at
