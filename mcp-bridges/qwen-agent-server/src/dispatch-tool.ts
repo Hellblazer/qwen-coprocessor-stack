@@ -86,11 +86,22 @@ export const qwenDispatchInputShape = {
   worktree: z
     .string()
     .min(1)
-    .describe("Absolute path to the caller-supplied worktree the agent edits and that extractPatch diffs."),
+    .optional()
+    .describe("Absolute path to a caller-supplied worktree the agent edits and that extractPatch diffs. Mutually exclusive with `repo`; supply exactly one."),
   base_commit: z
     .string()
     .min(1)
     .describe("Caller-supplied base commit. extractPatch ALWAYS diffs against this, never HEAD."),
+  repo: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/, "repo must be an owner/name slug")
+    .optional()
+    .describe("`owner/name` slug — selects the EXECUTOR-MANAGED worktree strategy (mutually exclusive with `worktree`). The executor materializes a per-instance detached worktree at base_commit and cleans it up."),
+  repo_url: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Override clone source for repo-mode (local path / non-github URL). Defaults to https://github.com/<repo>.git."),
   max_turns: z.number().int().positive().optional().describe("Turn budget (default 50)."),
   min_tokens: z
     .number()
@@ -155,11 +166,14 @@ export interface QwenDispatchDeps {
  *    caller isn't misdirected to register a dispatcher.
  *  - `unregistered_kind` — the provider's `agentKind` has no registered
  *    dispatcher.
+ *  - `invalid_worktree_spec` — the request did not supply exactly one of
+ *    `worktree` (caller-supplied) or `repo` (executor-managed).
  */
 export const DISPATCH_ERROR_CODES = [
   "no_provider",
   "missing_agent_kind",
   "unregistered_kind",
+  "invalid_worktree_spec",
 ] as const;
 export type QwenDispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];
 
@@ -214,6 +228,21 @@ export async function runQwenDispatch(
     );
   }
 
+  // Exactly one worktree spec (RDR-008 dps): caller-supplied `worktree` XOR
+  // executor-managed `repo`. Validate BEFORE resolving the dispatcher so a
+  // malformed request fails with `invalid_worktree_spec` (a fixable input error)
+  // rather than being masked by a downstream `unregistered_kind`, and so both
+  // the default and any injected resolver see a well-formed request.
+  const hasWorktree = input.worktree !== undefined;
+  const hasRepo = input.repo !== undefined;
+  if (hasWorktree === hasRepo) {
+    throw new QwenDispatchError(
+      "invalid_worktree_spec",
+      `qwen_dispatch requires exactly one of "worktree" (caller-supplied) or "repo" ` +
+        `(executor-managed); got ${hasWorktree ? "both" : "neither"}.`,
+    );
+  }
+
   // resolveDispatch throws (via registry.resolve) on an unregistered agentKind /
   // a model-endpoint provider; surface it as a typed error.
   let dispatch: Dispatch;
@@ -227,8 +256,20 @@ export async function runQwenDispatch(
   }
 
   // Prepare the worktree via the selected strategy; the executor owns its
-  // lifecycle (cleanup runs in finally) for whichever strategy is chosen.
-  const strategy = (deps.resolveWorktree ?? ((i) => callerSuppliedWorktree(i.worktree)))(input);
+  // lifecycle (cleanup runs in finally) for whichever strategy is chosen. The
+  // host's `resolveWorktree` builds the executor-managed strategy for repo-mode;
+  // without one, only caller-supplied `worktree` is serviceable.
+  let strategy: WorktreeStrategy;
+  if (deps.resolveWorktree !== undefined) {
+    strategy = deps.resolveWorktree(input);
+  } else if (input.worktree !== undefined) {
+    strategy = callerSuppliedWorktree(input.worktree);
+  } else {
+    throw new QwenDispatchError(
+      "invalid_worktree_spec",
+      `qwen_dispatch repo-mode requires a host-provided worktree resolver.`,
+    );
+  }
   const prep = await strategy.prepare();
   try {
     const task: AgentTask = {

@@ -86,6 +86,45 @@ describe("runQwenDispatch", () => {
     ).rejects.toMatchObject({ code: "no_provider" });
   });
 
+  it("rejects a request with NEITHER worktree nor repo (invalid_worktree_spec)", async () => {
+    const { worktree: _omit, ...noWorktree } = INPUT;
+    await expect(
+      runQwenDispatch(noWorktree as QwenDispatchInput, {
+        loadProviders: () => [qwenProvider],
+        resolveDispatch: () => vi.fn() as never,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_worktree_spec" });
+  });
+
+  it("rejects a request with BOTH worktree and repo (invalid_worktree_spec)", async () => {
+    await expect(
+      runQwenDispatch(
+        { ...INPUT, repo: "acme/calc" },
+        { loadProviders: () => [qwenProvider], resolveDispatch: () => vi.fn() as never },
+      ),
+    ).rejects.toMatchObject({ code: "invalid_worktree_spec" });
+  });
+
+  it("repo-mode selects the injected (executor-managed) worktree strategy", async () => {
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    const prepare = vi.fn().mockResolvedValue({ worktree: "/managed/acme", cleanup });
+    const dispatch = vi.fn().mockResolvedValue(RESULT);
+    const { worktree: _omit, ...repoInput } = INPUT;
+
+    await runQwenDispatch(
+      { ...repoInput, repo: "acme/calc" } as QwenDispatchInput,
+      {
+        loadProviders: () => [qwenProvider],
+        resolveDispatch: () => dispatch,
+        resolveWorktree: () => ({ prepare }),
+      },
+    );
+
+    const task = (dispatch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AgentTask;
+    expect(task.worktree).toBe("/managed/acme");
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it("prepares the worktree strategy, runs on its path, and cleans up after", async () => {
     const cleanup = vi.fn().mockResolvedValue(undefined);
     const prepare = vi.fn().mockResolvedValue({ worktree: "/managed/wt", cleanup });

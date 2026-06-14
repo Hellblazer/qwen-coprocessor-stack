@@ -1,8 +1,8 @@
 {
   "$schema_note": "RDR-008 P3 golden conformance fixture — the qwen_dispatch OPERATOR I/O contract (request shape, response shape, structured error envelope). TS host asserts it in mcp-bridges/qwen-agent-server/tests/contract-conformance.test.ts. This is the fixture-pinnable half of the nexus dispatch-operator spec (the prose half — continuation requirements + one-shot semantics — lives in docs/contracts/qwen-dispatch-operator-contract.md). The RESPONSE is AgentResult, reused VERBATIM from agent-shapes.json (RDR-007) — a qwen_dispatch run returns an AgentResult, nothing new. `turns` now carries the real completed-turn count on a qwen-local SUCCESS run (bead qwen-coprocessor-stack-j2r — PollResult.turns_completed is always-present).",
   "request": {
-    "requiredKeys": ["prompt", "worktree", "base_commit"],
-    "optionalKeys": ["max_turns", "min_tokens", "timeout_ms", "provider_id", "agent_kind"],
+    "requiredKeys": ["prompt", "base_commit"],
+    "optionalKeys": ["worktree", "repo", "repo_url", "max_turns", "min_tokens", "timeout_ms", "provider_id", "agent_kind"],
     "example": {
       "prompt": "Fix the off-by-one in calc.add.",
       "worktree": "/work/wt",
@@ -14,7 +14,7 @@
     },
     "notes": {
       "base_commit": "REQUIRED. extractPatch ALWAYS diffs against this, never HEAD (a committed agent edit must still be captured). Carried at the tool-input + ExtractPatch parameter boundary, NOT on AgentTask.",
-      "worktree": "Caller-supplied worktree strategy (default): the caller owns lifecycle (create/cleanup); the executor only runs + extracts.",
+      "worktree_xor_repo": "Supply EXACTLY ONE of `worktree` or `repo` (RDR-008 dps). Neither/both → error code invalid_worktree_spec. `worktree` = caller-supplied strategy (caller owns lifecycle; executor only runs + extracts). `repo` (owner/name) = executor-managed strategy (the materialize.py port: shared bare mirror + per-instance detached worktree at base_commit, cleaned up after the run). `repo_url` overrides the clone source for repo-mode.",
       "agent_kind": "Selects the dispatcher family (default \"qwen-local\"). provider_id pins a specific declared provider and overrides agent_kind."
     }
   },
@@ -34,7 +34,7 @@
     }
   },
   "error": {
-    "codes": ["no_provider", "missing_agent_kind", "unregistered_kind", "shutting_down"],
+    "codes": ["no_provider", "missing_agent_kind", "unregistered_kind", "invalid_worktree_spec", "shutting_down"],
     "envelope": {
       "error": {
         "code": "no_provider",
@@ -45,6 +45,7 @@
       "no_provider": "No declared agent-cli provider matches the selector (provider_id pin or agent_kind family).",
       "missing_agent_kind": "The selected provider declares no agentKind — a config fix (add agentKind), distinct from unregistered_kind so the caller is not misdirected to register a dispatcher.",
       "unregistered_kind": "The provider's agentKind has no registered dispatcher.",
+      "invalid_worktree_spec": "The request did not supply exactly one of worktree (caller-supplied) or repo (executor-managed) — neither or both.",
       "shutting_down": "Server is shutting down; cannot dispatch (mirrors the spawn-initiating tools' envelope)."
     }
   },
