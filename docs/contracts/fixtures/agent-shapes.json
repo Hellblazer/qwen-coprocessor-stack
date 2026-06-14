@@ -27,7 +27,7 @@
     }
   },
   "artifact": {
-    "$note": "RDR-009 Artifact union — exactly FOUR kinds (do NOT add a fifth without a real consumer). The git-diff harvester (PULL channel) produces `patch`; the /accept harvester (PUSH channel: emitted + finalMessage, RDR-009 Phase 2) produces `value`/`entity`/`tier`. Both conformance suites assert this `kinds` set; `examples` carries one canonical literal per kind.",
+    "$note": "RDR-009 Artifact union — exactly FOUR kinds (do NOT add a fifth without a real consumer). The git-diff harvester (PULL channel) produces `patch`; the /accept harvester (PUSH channel: emitted + finalMessage, RDR-009 Phase 2) produces `value`/`entity`/`tier`. Both conformance suites assert this `kinds` set; `examples` carries one canonical literal per kind. NOTE (RDR-011): the `tier` example's `key` value 'RDR-009' is a pre-P4 SHAPE literal only (it predates the key-encoding convention and is intentionally left unchanged so the cross-host byte-identical assertion is not disturbed). The NORMATIVE per-tier key encoding is in docs/contracts/harvest-producer-contract.md §P4 (T1=entry_id, T2='<project>/<title>', T3='<collection>/<doc_id>'); a producer must follow that, not copy this example's key.",
     "kinds": ["patch", "value", "entity", "tier"],
     "examples": {
       "patch": {
