@@ -37,7 +37,7 @@ operator qwen_dispatch:
     agent_kind?:  string         # dispatcher family, default "qwen-local"
   output (AgentResult):
     patch:   string              # source-only diff (test paths stripped)
-    turns:   int                 # 0 on qwen-local success until qcs-j2r lands
+    turns:   int                 # real completed-turn count (qcs-j2r)
     outcome: "completed" | "timeout" | "turn_limit" | "error"
     cost:    number              # 0 for free-local
   error:
@@ -60,9 +60,8 @@ operator qwen_dispatch:
    (`agent_providers` config) and registers a `DispatcherKind → Dispatch`. On the
    nexus side, the analogous step is registering `qwen_dispatch` as a typed
    operator keyed to the shapes above.
-4. **`turns` caveat.** `turns` is `0` on a qwen-local success run until
-   qwen-coprocessor-stack-j2r emits `turns_completed` on the success poll. Don't
-   build plan logic that depends on a meaningful `turns` on success yet.
+4. **`turns`.** Carries the real completed-turn count on success
+   (qwen-coprocessor-stack-j2r — `PollResult.turns_completed` is always-present).
 
 ## Out of scope (this proposal)
 

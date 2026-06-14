@@ -595,6 +595,31 @@ describe("QwenSession", () => {
       ctrl.end();
     });
 
+    it("exposes turns_completed in poll on the idle/running path (RDR-008 j2r)", async () => {
+      // last_known carries turns_completed only on the error path; qwen_dispatch
+      // needs the count on a SUCCESS (idle/complete) poll. poll().turns_completed
+      // is the always-present live counter (like budget), so the dispatcher can
+      // report real turns instead of 0 on a completed run.
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const session = new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      expect(session.poll({}).turns_completed).toBe(0); // running, no turns yet
+
+      ctrl.push(resultMsg("turn 1 done"));
+      await flush();
+      expect(session.state).toBe("idle");
+      expect(session.poll({}).turns_completed).toBe(1); // idle success path — NOT 0
+
+      session.send("again");
+      await flush();
+      ctrl.push(resultMsg("turn 2 done"));
+      await flush();
+      expect(session.poll({}).turns_completed).toBe(2);
+
+      ctrl.end();
+    });
+
     it("transitions to error on SDK iterator error", async () => {
       const ctrl = makeControllableIter();
       _makeIter = () => ctrl.iter;

@@ -264,13 +264,10 @@ export interface SupervisorSpawnPoll {
  * `extractPatch` is supplied separately (the real `gitExtractPatch` in
  * production) so the worktree/base_commit strategy stays pluggable.
  *
- * Turn/cost fidelity note: the supervisor's `PollResult.last_known` is
- * populated ONLY on the error path (session.ts), so `turnsUsed` is `undefined`
- * for every `complete`/`idle` (success) poll → `AgentResult.turns` is `0` for a
- * normally-completed qwen-local run today. Local Qwen is free (`cost = 0`).
- * Emitting `turns_completed` on the success poll is a supervisor protocol change
- * (qwen-coprocessor-stack-j2r, filed at R2) out of this bead's scope — the P3
- * conformance fixture must spec `turns=0` on qwen-local success until it lands.
+ * Turn/cost fidelity: `turnsUsed` maps from `PollResult.turns_completed` — the
+ * always-present live counter (RDR-008 j2r) — so a normally-completed qwen-local
+ * run reports its real turn count (it falls back to `last_known.turns_completed`
+ * for a pre-j2r supervisor). Local Qwen is free (`cost = 0`).
  */
 export function makeSupervisorQwenSpawnEffects(
   handlers: SupervisorSpawnPoll,
@@ -300,9 +297,10 @@ export function makeSupervisorQwenSpawnEffects(
         throw new Error(`qwen_dispatch poll: session ${taskId} evicted (${r.error.message})`);
       }
       const snap: QwenPollSnapshot = { state: r.state };
-      if (r.last_known?.turns_completed !== undefined) {
-        snap.turnsUsed = r.last_known.turns_completed;
-      }
+      // Prefer the always-present live counter (j2r); fall back to last_known
+      // (error-path only) for a pre-j2r supervisor.
+      const turns = r.turns_completed ?? r.last_known?.turns_completed;
+      if (turns !== undefined) snap.turnsUsed = turns;
       return snap;
     },
     extractPatch,

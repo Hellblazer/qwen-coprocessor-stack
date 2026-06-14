@@ -157,19 +157,31 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     await expect(effects.poll("gone")).rejects.toThrow(/evicted/);
   });
 
-  it("poll maps state and (when present) turns from last_known", async () => {
+  it("poll maps turns from the always-present turns_completed on a SUCCESS poll (j2r)", async () => {
     const qwen_poll = vi
       .fn()
-      .mockResolvedValueOnce({ state: "running", recent_events: [], more_events_available: false, latest_event_id: "0" })
+      .mockResolvedValueOnce({ state: "running", recent_events: [], more_events_available: false, latest_event_id: "0", turns_completed: 0 })
       .mockResolvedValueOnce({
         state: "complete",
         recent_events: [],
         more_events_available: false,
         latest_event_id: "1",
-        last_known: { turns_completed: 6 },
+        turns_completed: 4, // success path now carries the real count, not 0
       });
     const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
-    expect(await effects.poll("t")).toEqual({ state: "running" });
-    expect(await effects.poll("t")).toEqual({ state: "complete", turnsUsed: 6 });
+    expect(await effects.poll("t")).toEqual({ state: "running", turnsUsed: 0 });
+    expect(await effects.poll("t")).toEqual({ state: "complete", turnsUsed: 4 });
+  });
+
+  it("poll falls back to last_known.turns_completed for a pre-j2r supervisor", async () => {
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "error",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "1",
+      last_known: { turns_completed: 6 },
+    });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    expect(await effects.poll("t")).toEqual({ state: "error", turnsUsed: 6 });
   });
 });

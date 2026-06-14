@@ -415,6 +415,10 @@ export class QwenSession {
         tool_calls: this._toolCallCount,
         max_tool_calls: this._maxToolCalls,
       },
+      // Always-present live turn counter (RDR-008 j2r): unlike `last_known`
+      // (error-path only), this lets a SUCCESS-path poller (qwen_dispatch) read
+      // the real turn count instead of defaulting to 0.
+      turns_completed: this._turns_completed,
     };
 
     if ((this._state === "idle" || this._state === "complete") && this._last_message !== undefined) {

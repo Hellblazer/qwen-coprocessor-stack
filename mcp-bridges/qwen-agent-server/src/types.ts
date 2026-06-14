@@ -432,6 +432,16 @@ export interface PollResult {
    * destructuring callers and prior PollResult consumers.
    */
   budget?: SessionBudgetStats;
+  /**
+   * Completed-turn count — the always-present live counter (RDR-008 j2r).
+   * Unlike `last_known.turns_completed` (populated only on the `error`
+   * continuity path), this is set on EVERY poll regardless of state, so a
+   * caller can read the count on a SUCCESS (`idle`/`complete`) terminal poll.
+   * This is what `qwen_dispatch` maps to `AgentResult.turns` (before j2r the
+   * success poll carried no turn count, so dispatch reported `turns: 0`).
+   * Optional in the type for back-compat with prior PollResult consumers.
+   */
+  turns_completed?: number;
 }
 
 /**
