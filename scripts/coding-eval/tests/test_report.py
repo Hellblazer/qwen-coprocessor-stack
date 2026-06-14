@@ -124,6 +124,23 @@ def test_resolved_implies_clean_apply_no_contradiction():
     assert card.taxonomy["clean_apply_fail"] == 0
 
 
+def test_build_scorecard_warns_when_telemetry_shorter_than_total():
+    # A lost telemetry write makes empty+non_empty < total; the patch-accounting
+    # table would silently undercount. The scorecard must warn rather than hide it.
+    raw = {"completed_ids": ["x"], "resolved_ids": ["x"], "empty_patch_ids": []}
+    tele = [_tele("x", files=1, added=2)]  # only 1 row, but total says 2
+    with pytest.warns(RuntimeWarning, match="may undercount"):
+        card = report.build_scorecard(report.ArmInputs("X", _score(["x"], 2, raw), tele))
+    assert card.total == 2  # canonical count preserved
+
+
+def test_build_scorecard_no_undercount_warning_when_consistent(recwarn):
+    raw = {"completed_ids": ["x", "y"], "resolved_ids": ["x"], "empty_patch_ids": ["y"]}
+    tele = [_tele("x", files=1, added=2), _tele("y", files=0, added=0)]
+    report.build_scorecard(report.ArmInputs("X", _score(["x"], 2, raw), tele))
+    assert not [w for w in recwarn.list if "may undercount" in str(w.message)]
+
+
 def test_clean_apply_falls_back_to_resolved_without_completed_ids():
     # An older report lacking applied_ids AND completed_ids must not report
     # resolved-but-failed — it falls back to resolved (and warns about it).

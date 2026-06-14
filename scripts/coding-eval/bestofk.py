@@ -31,8 +31,10 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
-# A unified-diff file header: `diff --git a/<path> b/<path>`.
-_FILE_HDR = re.compile(r"^diff --git a/(\S+) b/")
+# A unified-diff file header: `diff --git a/<path> b/<path>`. `(.+)` not `\S+`
+# so a path containing spaces isn't truncated; `.+ b/.+$` pins the separator at
+# the last " b/" (matched per-line via .match).
+_FILE_HDR = re.compile(r"^diff --git a/(.+) b/.+$")
 
 
 def touched_files(patch: str) -> frozenset[str]:

@@ -51,7 +51,10 @@ import run_arm
 
 # Unified-diff body line markers. A '+'/'-' that is NOT a '+++'/'---' file
 # header counts as an added/removed line.
-_FILE_HDR_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)")
+# `(.+)` not `\S+` so paths containing spaces are not truncated at the first
+# space; matched per-line via .match, the trailing `$` pins the separator at
+# the last " b/".
+_FILE_HDR_RE = re.compile(r"^diff --git a/(.+) b/(.+)$")
 
 
 def diffstat(patch: str) -> dict[str, int]:

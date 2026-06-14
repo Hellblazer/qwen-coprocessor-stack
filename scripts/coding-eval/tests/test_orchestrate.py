@@ -167,6 +167,28 @@ def test_contamination_round_trips_into_telemetry_jsonl(tmp_path):
     assert by_id["a"]["test_edit_contamination"] is False
 
 
+def test_read_telemetry_skips_corrupt_line(tmp_path, capsys):
+    # A single corrupt/partial line (e.g. a write interrupted by a kill) must
+    # NOT abort the whole report phase after every arm has already run — skip it
+    # with a warning and keep the good records.
+    path = tmp_path / "telemetry.jsonl"
+    path.write_text(
+        '{"instance_id": "a", "ok": true}\n'
+        "{ this is not valid json\n"
+        "\n"  # blank line tolerated
+        '{"instance_id": "b", "ok": false}\n',
+        encoding="utf-8",
+    )
+    recs = orchestrate._read_telemetry(path)
+    assert [r["instance_id"] for r in recs] == ["a", "b"]
+    err = capsys.readouterr().err
+    assert "corrupt telemetry line 2" in err
+
+
+def test_read_telemetry_missing_file_returns_empty(tmp_path):
+    assert orchestrate._read_telemetry(tmp_path / "nope.jsonl") == []
+
+
 def test_model_name_falls_back_when_arm_lacks_name_attrs(tmp_path):
     # A module missing both MODEL_NAME and DEFAULT_MODEL_NAME must not crash the
     # fail-soft path — _model_name returns a sentinel, the loop continues.

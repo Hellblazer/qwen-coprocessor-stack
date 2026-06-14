@@ -22,6 +22,7 @@ Load-bearing rules the RDR gate flagged (enforced here, not just documented):
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -141,6 +142,19 @@ def build_scorecard(inp: ArmInputs) -> ArmScorecard:
         non_empty += 1
         if _applied_cleanly(inp.score, rec.get("instance_id", "")):
             clean_apply += 1
+
+    # `total` is the canonical instance count (from the harness score), but
+    # empty/non_empty are derived from telemetry. If a telemetry write was lost
+    # (crash, disk-full) the patch-accounting table would silently sum to fewer
+    # than `total` rows with no signal. Surface the gap rather than letting a
+    # reader puzzle over why resolved+empty+non_empty < total.
+    if empty + non_empty != total:
+        warnings.warn(
+            f"arm {inp.arm}: telemetry rows ({empty + non_empty}) != score total "
+            f"({total}); patch accounting may undercount (lost telemetry write?).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     taxonomy = build_taxonomy(inp.telemetry)
     # clean-apply failures are a first-class taxonomy class per the RDR (a

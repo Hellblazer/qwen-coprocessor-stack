@@ -313,9 +313,24 @@ def score_one_arm(
 
 
 def _read_telemetry(path: Path) -> list[dict]:
+    # Resilient line-by-line parse: a single corrupt/partial line (e.g. a write
+    # interrupted by a kill) must NOT abort the whole report phase after every
+    # arm has already run for hours. Skip the bad line with a stderr warning and
+    # keep the rest, rather than letting JSONDecodeError propagate.
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    records: list[dict] = []
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as err:
+            print(
+                f"WARNING: corrupt telemetry line {lineno} in {path}; skipping ({err})",
+                file=sys.stderr,
+            )
+    return records
 
 
 def build_and_write_report(

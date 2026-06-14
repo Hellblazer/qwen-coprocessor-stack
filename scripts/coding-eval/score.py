@@ -219,6 +219,14 @@ def parse_report(
     accounting is per the requested subset, not the harness's view.
     """
     raw = json.loads(report_file.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        # A well-formed harness report is a JSON object. A bare array / string /
+        # null would make raw.get(...) raise an opaque AttributeError; fail with
+        # a message that names the file and the actual shape instead.
+        raise ValueError(
+            f"harness report {report_file} is not a JSON object "
+            f"(got {type(raw).__name__}); cannot parse resolved_ids"
+        )
     resolved_set = set(raw.get("resolved_ids", []))
 
     per_instance: dict[str, str] = {}
@@ -259,13 +267,32 @@ def _make_default_runner(timeout_seconds: float) -> "Runner":
     """Build the production runner: execute the harness as a subprocess in
     ``cwd`` (where it writes its report), streaming output, bounded by
     ``timeout_seconds`` so a hung Docker build can't wedge the run forever."""
+    import os
+    import signal
     import subprocess
 
     def runner(argv: Sequence[str], cwd: Path) -> int:
+        # start_new_session so the harness (which spawns Docker build/run
+        # children) is a process-group leader we can signal as a whole. A bare
+        # subprocess.run(timeout=) raises TimeoutExpired but does NOT kill the
+        # child, orphaning the harness and its Docker containers to compete for
+        # host resources for the rest of the eval (mirrors run_arm._kill_group).
+        proc = subprocess.Popen(list(argv), cwd=str(cwd), start_new_session=True)
         try:
-            proc = subprocess.run(list(argv), cwd=str(cwd), timeout=timeout_seconds)
-            return proc.returncode
+            return proc.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            # Reap so we don't leave a zombie; bounded so the cutoff can't hang.
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
             # Surface as a distinct nonzero code so score_predictions warns.
             return 124
 
