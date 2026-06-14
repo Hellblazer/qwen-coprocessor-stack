@@ -3,12 +3,14 @@
 // `qwen_dispatch` MCP tool (RDR-008 P2, bead qwen-coprocessor-stack-exn). The
 // operator surface nexus (or any orchestrator) calls: resolve a dispatcher from
 // the registry, run a one-shot agentic task in a caller-supplied worktree,
-// return `{patch, turns, outcome, cost}` (= `AgentResult`).
+// return `{artifacts, turns, outcome, cost}` (= `AgentResult`; RDR-009 — a
+// coding run's artifacts are one `{kind:"patch", diff, base}`).
 //
 // base_commit is EXPLICIT at this boundary (RDR-008 §Decision item 4): the tool
-// input carries `base_commit`; it is threaded into the dispatcher and to
-// `extractPatch`, which ALWAYS diffs against the base (never `HEAD`) and returns
-// the SOURCE-ONLY patch. It is NOT carried on the fixture-locked `AgentTask`.
+// input carries `base_commit`; it is threaded into the dispatcher and to the
+// git-diff harvester, which ALWAYS diffs against the base (never `HEAD`) and
+// emits the SOURCE-ONLY patch artifact. It is NOT carried on the fixture-locked
+// `AgentTask`.
 //
 // Worktree handling is the caller-supplied strategy (RF-5 default): the caller
 // passes a ready worktree + base_commit; the executor runs + extracts and leaves
@@ -119,11 +121,11 @@ export const qwenDispatchInputShape = {
     .string()
     .min(1)
     .optional()
-    .describe("Absolute path to a caller-supplied worktree the agent edits and that extractPatch diffs. Mutually exclusive with `repo`; supply exactly one."),
+    .describe("Absolute path to a caller-supplied worktree the agent edits and that the git-diff harvester diffs. Mutually exclusive with `repo`; supply exactly one."),
   base_commit: z
     .string()
     .min(1)
-    .describe("Caller-supplied base commit. extractPatch ALWAYS diffs against this, never HEAD."),
+    .describe("Caller-supplied base commit. The git-diff harvester ALWAYS diffs against this, never HEAD."),
   repo: z
     .string()
     .regex(/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/, "repo must be an owner/name slug")

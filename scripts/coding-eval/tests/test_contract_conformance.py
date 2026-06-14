@@ -97,7 +97,9 @@ def test_artifact_union_kinds_match_golden_fixture():
     # RDR-009: the four-kind union is the cross-host contract. Each example
     # carries its discriminant; the eval host emits the `patch` kind.
     fx = _load("agent-shapes.json")["artifact"]
-    assert fx["kinds"] == ["patch", "value", "entity", "tier"]
+    # Set-membership, matching the TS conformance suite (the cross-host contract
+    # is the set of kinds, not their fixture ordering).
+    assert set(fx["kinds"]) == {"patch", "value", "entity", "tier"}
     for kind in fx["kinds"]:
         assert fx["examples"][kind]["kind"] == kind
 

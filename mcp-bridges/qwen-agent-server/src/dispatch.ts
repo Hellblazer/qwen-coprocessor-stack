@@ -93,10 +93,10 @@ export interface ClaudeCliEffects {
 }
 
 /** Per-construction options shared by the dispatchers (RDR-008 P2). `baseCommit`
- *  is REQUIRED: `extractPatch` always diffs against it (never `HEAD`), and a
+ *  is REQUIRED: the git-diff harvester always diffs against it (never `HEAD`), and a
  *  required field makes the silent-`HEAD`-zero path unrepresentable. It is the
  *  caller-supplied base for THIS run's worktree (the `qwen_dispatch` tool-input
- *  value), threaded to `extractPatch` rather than carried on the fixture-locked
+ *  value), threaded to the harvester (via `RunContext.environment`) rather than carried on the fixture-locked
  *  `AgentTask`. */
 export interface DispatchBaseOpts {
   baseCommit: string;
@@ -127,6 +127,10 @@ export function makeClaudeCliDispatch(effects: ClaudeCliEffects, opts: DispatchB
  *  worktree + base it needs. The /accept harvester (Phase 2) fills the rest. */
 function runContextFor(task: AgentTask, opts: DispatchBaseOpts): RunContext {
   return {
+    // Phase 2 seam: the /accept harvester populates `emitted` (PUSH-channel
+    // artifacts the host spine wrote during the run) + `finalMessage` (the
+    // leaf's structured return) here. In P1 the only harvester is the git-diff
+    // (PULL) one, which reads `environment` only — so `emitted` is [] by design.
     emitted: [],
     environment: { worktree: task.worktree, baseCommit: opts.baseCommit },
   };

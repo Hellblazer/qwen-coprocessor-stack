@@ -773,7 +773,7 @@ export type AgentOutcome = "completed" | "timeout" | "turn_limit" | "error";
  *
  * - `prompt`    — the task/problem statement given to the agent.
  * - `worktree`  — absolute path to the isolated working tree the agent edits;
- *                 also the target the host's `extractPatch` effect diffs.
+ *                 also the target the host's git-diff harvester (`Harvest`) diffs.
  * - `maxTurns`  — turn budget; `turns >= maxTurns` classifies as `turn_limit`.
  * - `minTokens` — per-turn output-token floor (the reasoning-clearing floor;
  *                 run_arm 4yx). Forwarded to the qwen spawn's

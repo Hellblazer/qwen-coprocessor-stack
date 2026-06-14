@@ -1337,12 +1337,12 @@ async function main(): Promise<void> {
   //
   // The agentic-dispatch operator: resolve a dispatcher from the P1 registry,
   // run a one-shot task in the caller-supplied worktree, return AgentResult.
-  // base_commit is explicit at this boundary and threaded to extractPatch (which
-  // always diffs vs base, never HEAD; source-only). The registry is built
+  // base_commit is explicit at this boundary and threaded to the git-diff
+  // harvester (which always diffs vs base, never HEAD; source-only). The registry is built
   // per-call because base_commit is per-call (see dispatch-registry.ts).
   mcpServer.tool(
     "qwen_dispatch",
-    "Agentic dispatch (RDR-008): run a one-shot coding task on a local-Qwen agent, return {patch, turns, outcome, cost}. Resolves a dispatcher from the registry by the agent-cli provider's agentKind. base_commit is required — extractPatch diffs against it (never HEAD), source-only. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
+    "Agentic dispatch (RDR-008/RDR-009): run a one-shot coding task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier; a coding run emits one {kind:'patch', diff, base}). Resolves a dispatcher from the registry by the agent-cli provider's agentKind. base_commit is required — the git-diff harvester diffs against it (never HEAD), source-only. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
     qwenDispatchInputShape,
     async (args) => {
       // Mirror the spawn-initiating tools' shutdown envelope (consistent error
