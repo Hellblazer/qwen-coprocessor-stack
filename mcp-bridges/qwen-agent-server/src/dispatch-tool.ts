@@ -22,6 +22,7 @@ import { z } from "zod";
 
 import { selectAgentProvider } from "./backends.js";
 import { createLogger } from "./log.js";
+import { callerSuppliedWorktree, type WorktreeStrategy } from "./worktree.js";
 import type { Dispatch, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
 import type {
   AgentProvider,
@@ -131,6 +132,15 @@ const DEFAULT_AGENT_KIND: DispatcherKind = "qwen-local";
 export interface QwenDispatchDeps {
   loadProviders: () => AgentProvider[];
   resolveDispatch: (provider: AgentProvider, baseCommit: string) => Dispatch;
+  /**
+   * Pick the worktree strategy for this run (RDR-008 1gl). Defaults to the
+   * caller-supplied strategy over `input.worktree` (P2 behaviour). A host that
+   * wants isolation handled injects one that returns `executorManagedWorktree`
+   * (the materialize.py port). `runQwenDispatch` runs `prepare()` before the
+   * dispatch and `cleanup()` in a `finally`, so the executor owns the worktree
+   * lifecycle for whichever strategy is chosen.
+   */
+  resolveWorktree?: (input: QwenDispatchInput) => WorktreeStrategy;
 }
 
 /**
@@ -216,29 +226,37 @@ export async function runQwenDispatch(
     );
   }
 
-  const task: AgentTask = {
-    prompt: input.prompt,
-    worktree: input.worktree,
-    maxTurns: input.max_turns ?? DEFAULT_MAX_TURNS,
-    minTokens: input.min_tokens ?? DEFAULT_MIN_TOKENS,
-    timeout: input.timeout_ms ?? DEFAULT_TIMEOUT_MS,
-  };
+  // Prepare the worktree via the selected strategy; the executor owns its
+  // lifecycle (cleanup runs in finally) for whichever strategy is chosen.
+  const strategy = (deps.resolveWorktree ?? ((i) => callerSuppliedWorktree(i.worktree)))(input);
+  const prep = await strategy.prepare();
+  try {
+    const task: AgentTask = {
+      prompt: input.prompt,
+      worktree: prep.worktree,
+      maxTurns: input.max_turns ?? DEFAULT_MAX_TURNS,
+      minTokens: input.min_tokens ?? DEFAULT_MIN_TOKENS,
+      timeout: input.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+    };
 
-  log.info(
-    {
-      event_type: "dispatch_start",
-      provider: provider.id,
-      agent_kind: provider.agentKind,
-      worktree: task.worktree,
-    },
-    "qwen_dispatch run starting",
-  );
-  const result = await dispatch(task, provider);
-  log.info(
-    { event_type: "dispatch_done", provider: provider.id, outcome: result.outcome, turns: result.turns },
-    "qwen_dispatch run complete",
-  );
-  return result;
+    log.info(
+      {
+        event_type: "dispatch_start",
+        provider: provider.id,
+        agent_kind: provider.agentKind,
+        worktree: task.worktree,
+      },
+      "qwen_dispatch run starting",
+    );
+    const result = await dispatch(task, provider);
+    log.info(
+      { event_type: "dispatch_done", provider: provider.id, outcome: result.outcome, turns: result.turns },
+      "qwen_dispatch run complete",
+    );
+    return result;
+  } finally {
+    await prep.cleanup();
+  }
 }
 
 // ── supervisor adapter (production wiring) ──────────────────────────────────
