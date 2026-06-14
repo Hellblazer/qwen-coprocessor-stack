@@ -1,10 +1,12 @@
 <!-- SPDX-License-Identifier: MIT -->
 # qwen_dispatch Operator Contract (RDR-008)
 
-**Status:** published · **v3 pending nexus sign-off** (v2 added the `worktree` XOR `repo` worktree-spec
-selector + the `invalid_worktree_spec` error; **v3 (RDR-009) changes the response from `{patch}` to
-`{artifacts: Artifact[]}`** — see [#1174](https://github.com/Hellblazer/nexus/issues/1174)) ·
-**Source RDR:** RDR-008 (accepted), RDR-009 (accepted) · **Golden fixture:** [`fixtures/qwen-dispatch-shapes.json`](./fixtures/qwen-dispatch-shapes.json)
+**Status:** published · **v4 pending nexus sign-off** (v2 added the `worktree` XOR `repo` worktree-spec
+selector + the `invalid_worktree_spec` error; v3 (RDR-009) changed the response from `{patch}` to
+`{artifacts: Artifact[]}`; **v4 (RDR-010) adds the optional `harvest` request field** —
+`"patch"`(default)`|"value"|"both"` — additive, the response shape is unchanged — see
+[#1174](https://github.com/Hellblazer/nexus/issues/1174)) · **Source RDR:** RDR-008, RDR-009, RDR-010
+(accepted) · **Golden fixture:** [`fixtures/qwen-dispatch-shapes.json`](./fixtures/qwen-dispatch-shapes.json)
 
 This is the **language-neutral** contract for `qwen_dispatch` — the agentic-dispatch
 operator the qwen-coprocessor-stack supervisor exposes for an external engine
@@ -43,6 +45,7 @@ contract of RDR-007 §4 lifted to an MCP tool boundary.
 | `timeout_ms` | int | – | wall-clock cutoff in **milliseconds** (default 1800000) |
 | `provider_id` | string | – | pin a declared agent-cli provider by id (overrides `agent_kind`) |
 | `agent_kind` | string | – | dispatcher family to select (default `"qwen-local"`) |
+| `harvest` | `"patch"`\|`"value"`\|`"both"` | – | what to harvest (RDR-010, default `"patch"`). `"value"` = the leaf's structured `finalMessage` as a `{kind:"value"}` artifact (non-code leaves); `"both"` = git-diff + value. Default keeps coding runs byte-identical. |
 
 > **`*` Supply exactly ONE of `worktree` or `repo`** (the worktree strategy
 > selector). `worktree` = caller-supplied (the caller owns lifecycle);

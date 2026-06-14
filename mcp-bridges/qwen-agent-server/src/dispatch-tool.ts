@@ -25,6 +25,7 @@ import { z } from "zod";
 import { selectAgentProvider } from "./backends.js";
 import { createLogger } from "./log.js";
 import { callerSuppliedWorktree, type WorktreeStrategy } from "./worktree.js";
+import { valueHarvester } from "./dispatch.js";
 import type { Dispatch, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
 import type {
   AgentProvider,
@@ -112,6 +113,41 @@ export function gitDiffHarvester(
   };
 }
 
+/**
+ * Which harvester a `qwen_dispatch` run uses (RDR-010 P2). `"patch"` (default) is
+ * the PULL git-diff — coding runs stay byte-identical. `"value"` surfaces the
+ * leaf's `finalMessage` as a `{kind:"value"}` (PUSH leaf channel). `"both"`
+ * composes them (git-diff artifacts then the value artifact).
+ */
+export type HarvestMode = "patch" | "value" | "both";
+
+/**
+ * Build the {@link Harvest} for a `harvest` mode (RDR-010 P2 — the tool-layer
+ * resolution point: `server.ts` reads the `harvest` input and calls this, then
+ * injects the result into the supervisor effects). `AgentTask` and the `Dispatch`
+ * signature are untouched (the mode is an MCP-boundary concern, never on the
+ * cross-host shape). `"both"` runs the git-diff harvester then appends the value
+ * artifact — order: patch(es) first, value last.
+ */
+export function selectHarvester(
+  mode: HarvestMode,
+  extract: (
+    worktree: string,
+    baseCommit: string,
+    opts?: { extraTestPaths?: readonly string[] },
+  ) => Promise<string> = gitExtractPatch,
+): Harvest {
+  const patchHarvest = gitDiffHarvester(extract);
+  switch (mode) {
+    case "patch":
+      return patchHarvest;
+    case "value":
+      return valueHarvester;
+    case "both":
+      return async (run) => [...(await patchHarvest(run)), ...(await valueHarvester(run))];
+  }
+}
+
 /** Zod shape for the `qwen_dispatch` MCP tool input. Kept as a raw shape object
  *  so it plugs into `mcpServer.tool(name, desc, shape, cb)` like the other
  *  qwen_* tools. */
@@ -152,6 +188,12 @@ export const qwenDispatchInputShape = {
     .string()
     .optional()
     .describe('Dispatcher family to select (default "qwen-local").'),
+  harvest: z
+    .enum(["patch", "value", "both"])
+    .optional()
+    .describe(
+      'What to harvest from the run (RDR-010; default "patch"). "patch" = the source git-diff (coding runs). "value" = the leaf\'s structured finalMessage as a {kind:"value"} artifact (non-code leaves, e.g. a planner returning JSON). "both" = git-diff + value.',
+    ),
 } as const;
 
 const qwenDispatchInputSchema = z.object(qwenDispatchInputShape);
@@ -365,10 +407,12 @@ export interface SupervisorSpawnPoll {
  * output floor (`task.minTokens`) maps to `max_output_tokens`.
  *
  * `extractPatch` is supplied separately (the real `gitExtractPatch` in
- * production) so the worktree/base_commit strategy stays pluggable. It is
- * wrapped here into the git-diff {@link Harvest} (RDR-009) the dispatcher
- * consumes — this adapter's job is "git-diff is the host effect", so it owns
- * the PULL-channel harvester. The adapter API stays `extractPatch`-shaped.
+ * production). By default it is wrapped into the git-diff {@link Harvest}
+ * (RDR-009). RDR-010 P2: `opts.harvest` overrides that — `server.ts` (the tool
+ * layer) builds the harvester from the `harvest` input via {@link selectHarvester}
+ * and injects it here, so a run can harvest the leaf's `value` instead of (or in
+ * addition to) a patch. When `opts.harvest` is absent the default git-diff
+ * harvester is used (coding runs unchanged).
  *
  * Turn/cost fidelity: `turnsUsed` maps from `PollResult.turns_completed` — the
  * always-present live counter (RDR-008 j2r) — so a normally-completed qwen-local
@@ -378,16 +422,22 @@ export interface SupervisorSpawnPoll {
 export function makeSupervisorQwenSpawnEffects(
   handlers: SupervisorSpawnPoll,
   extractPatch: (worktree: string, baseCommit: string) => Promise<string>,
-  clock: { now: () => number; sleep: (ms: number) => Promise<void> } = {
-    now: () => Date.now(),
-    sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
-  },
+  opts: {
+    clock?: { now: () => number; sleep: (ms: number) => Promise<void> };
+    harvest?: Harvest;
+  } = {},
 ): QwenSpawnEffects {
+  const clock = opts.clock ?? {
+    now: () => Date.now(),
+    sleep: (ms: number) => new Promise((res) => setTimeout(res, ms)),
+  };
   return {
     spawn: async (task) => {
-      const opts: Partial<SpawnOpts> = { cwd: task.worktree };
-      if (task.minTokens > 0) opts.max_output_tokens = task.minTokens;
-      const r = await handlers.qwen_spawn({ task: task.prompt, opts });
+      // `spawnOpts`, not `opts`: avoid shadowing the outer effects-options
+      // parameter (`opts.harvest`/`opts.clock`) within this closure (R2 review).
+      const spawnOpts: Partial<SpawnOpts> = { cwd: task.worktree };
+      if (task.minTokens > 0) spawnOpts.max_output_tokens = task.minTokens;
+      const r = await handlers.qwen_spawn({ task: task.prompt, opts: spawnOpts });
       if ("error" in r) {
         throw new Error(`qwen_dispatch spawn failed (${r.error.code}): ${r.error.message}`);
       }
@@ -418,7 +468,7 @@ export function makeSupervisorQwenSpawnEffects(
       }
       return snap;
     },
-    harvest: gitDiffHarvester(extractPatch),
+    harvest: opts.harvest ?? gitDiffHarvester(extractPatch),
     sleep: clock.sleep,
     now: clock.now,
   };

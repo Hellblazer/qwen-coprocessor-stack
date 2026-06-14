@@ -175,13 +175,13 @@ function runContextFor(
  * source). Pure — no I/O — so it composes with the git-diff (PULL) harvester
  * without ordering constraints.
  *
- * NOTE (partially wired): RDR-010 P1 wired the `finalMessage` half — the qwen
- * dispatcher now threads the leaf's terminal return into `RunContext.finalMessage`.
- * What is NOT yet wired: (a) the harvest SELECTOR that injects a value harvester
- * as the `harvest` effect (RDR-010 P2 — until then `qwen_dispatch` always uses the
- * git-diff harvester, so `finalMessage` is captured but unused); (b) the `emitted`
- * channel (the spine's entity/tier producer), which stays orchestrator scope and
- * is out of RDR-010 (so `runContextFor` keeps `emitted: []`).
+ * NOTE: RDR-010 wired the leaf-`value` path — P1 captures `finalMessage` and P2
+ * adds the `harvest:"value"|"both"` selector ({@link valueHarvester}, the tool
+ * layer in server.ts). This `acceptHarvester` (which ALSO passes `run.emitted`)
+ * remains the PUSH-SPINE harvester: the `emitted` channel (the spine's
+ * entity/tier producer) stays orchestrator scope, out of RDR-010, so
+ * `runContextFor` keeps `emitted: []` and no dispatcher injects this harvester
+ * yet. `valueHarvester` — not this — is what `harvest:"value"` uses.
  */
 export const acceptHarvester: Harvest = async (run) => {
   // Shallow copy: a fresh array (so `push` below never mutates the caller's
@@ -192,14 +192,26 @@ export const acceptHarvester: Harvest = async (run) => {
   return artifacts;
 };
 
+/**
+ * The value harvester (RDR-010 P2): surface the leaf's `finalMessage` as a single
+ * `{kind:"value"}` artifact, or `[]` when there was no structured return. Pure;
+ * reuses {@link parseFinalMessageValue}. The tool-layer harvest selector picks
+ * this for `harvest:"value"`.
+ *
+ * Deliberately NOT `acceptHarvester`: that also passes `run.emitted` through (the
+ * spine's `entity`/`tier` PUSH channel), which is orchestrator scope and out of
+ * RDR-010. This harvester reads ONLY `finalMessage` (the leaf's own return).
+ */
+export const valueHarvester: Harvest = async (run) => {
+  const value = parseFinalMessageValue(run.finalMessage);
+  return value !== undefined ? [value] : [];
+};
+
 /** Parse the leaf's `finalMessage` into a `value` artifact, or `undefined` when
  *  there was no structured return (absent / whitespace-only / literal JSON
  *  `null`). JSON is parsed; non-JSON text is surfaced raw rather than discarded.
- *
- *  P2 (RDR-010): the tool-layer harvest selector (dispatch-tool.ts) reuses this
- *  helper for `harvest:"value"` — export it then (it is private here only because
- *  `acceptHarvester` is its sole caller today). Do NOT route P2 through
- *  `acceptHarvester`: that also passes `run.emitted` (the out-of-scope spine channel). */
+ *  Shared by {@link acceptHarvester} (PUSH spine path) and {@link valueHarvester}
+ *  (RDR-010 leaf value path); kept private — both callers live in this module. */
 function parseFinalMessageValue(
   finalMessage: string | undefined,
 ): Extract<Artifact, { kind: "value" }> | undefined {
