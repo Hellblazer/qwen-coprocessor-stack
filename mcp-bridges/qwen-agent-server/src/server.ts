@@ -49,6 +49,7 @@ import {
   qwenDispatchInputShape,
   QwenDispatchError,
   runQwenDispatch,
+  selectHarvester,
 } from "./dispatch-tool.js";
 import { callerSuppliedWorktree, executorManagedWorktree } from "./worktree.js";
 import { QwenSession } from "./session.js";
@@ -1342,7 +1343,7 @@ async function main(): Promise<void> {
   // per-call because base_commit is per-call (see dispatch-registry.ts).
   mcpServer.tool(
     "qwen_dispatch",
-    "Agentic dispatch (RDR-008/RDR-009): run a one-shot coding task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier; a coding run emits one {kind:'patch', diff, base}). Resolves a dispatcher from the registry by the agent-cli provider's agentKind. base_commit is required — the git-diff harvester diffs against it (never HEAD), source-only. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
+    "Agentic dispatch (RDR-008/009/010): run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
     qwenDispatchInputShape,
     async (args) => {
       // Mirror the spawn-initiating tools' shutdown envelope (consistent error
@@ -1359,9 +1360,13 @@ async function main(): Promise<void> {
           ],
         };
       }
+      // RDR-010 P2: select the harvester from the `harvest` input (default
+      // "patch" — coding runs unchanged). Resolved here at the tool layer and
+      // injected; AgentTask / Dispatch stay untouched.
       const effects = makeSupervisorQwenSpawnEffects(
         { qwen_spawn: handlers.qwen_spawn, qwen_poll: handlers.qwen_poll },
         gitExtractPatch,
+        { harvest: selectHarvester(args.harvest ?? "patch", gitExtractPatch) },
       );
       // Worktree strategy selection (RDR-008 dps): `repo` → executor-managed
       // (shared bare mirror + per-instance worktree under the config dir, cleaned

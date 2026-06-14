@@ -192,14 +192,26 @@ export const acceptHarvester: Harvest = async (run) => {
   return artifacts;
 };
 
+/**
+ * The value harvester (RDR-010 P2): surface the leaf's `finalMessage` as a single
+ * `{kind:"value"}` artifact, or `[]` when there was no structured return. Pure;
+ * reuses {@link parseFinalMessageValue}. The tool-layer harvest selector picks
+ * this for `harvest:"value"`.
+ *
+ * Deliberately NOT `acceptHarvester`: that also passes `run.emitted` through (the
+ * spine's `entity`/`tier` PUSH channel), which is orchestrator scope and out of
+ * RDR-010. This harvester reads ONLY `finalMessage` (the leaf's own return).
+ */
+export const valueHarvester: Harvest = async (run) => {
+  const value = parseFinalMessageValue(run.finalMessage);
+  return value !== undefined ? [value] : [];
+};
+
 /** Parse the leaf's `finalMessage` into a `value` artifact, or `undefined` when
  *  there was no structured return (absent / whitespace-only / literal JSON
  *  `null`). JSON is parsed; non-JSON text is surfaced raw rather than discarded.
- *
- *  P2 (RDR-010): the tool-layer harvest selector (dispatch-tool.ts) reuses this
- *  helper for `harvest:"value"` — export it then (it is private here only because
- *  `acceptHarvester` is its sole caller today). Do NOT route P2 through
- *  `acceptHarvester`: that also passes `run.emitted` (the out-of-scope spine channel). */
+ *  Shared by {@link acceptHarvester} (PUSH spine path) and {@link valueHarvester}
+ *  (RDR-010 leaf value path); kept private — both callers live in this module. */
 function parseFinalMessageValue(
   finalMessage: string | undefined,
 ): Extract<Artifact, { kind: "value" }> | undefined {
