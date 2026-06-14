@@ -291,6 +291,22 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     });
   });
 
+  it("poll does NOT thread last_message on a non-terminal (running) snapshot (state-gated)", async () => {
+    // Defense-in-depth: even if a supervisor erroneously sends last_message on a
+    // running poll, the adapter state-gates it (idle/complete only), keeping the
+    // snapshot's "terminal only" invariant honest at every poll.
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "running",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "0",
+      turns_completed: 0,
+      last_message: '{"premature":"x"}',
+    });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    expect("lastMessage" in (await effects.poll("t"))).toBe(false);
+  });
+
   it("poll omits lastMessage when the poll result has none (conditional)", async () => {
     const qwen_poll = vi.fn().mockResolvedValue({
       state: "running",

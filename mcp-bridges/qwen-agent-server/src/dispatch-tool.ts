@@ -408,9 +408,14 @@ export function makeSupervisorQwenSpawnEffects(
       const turns = r.turns_completed ?? r.last_known?.turns_completed;
       if (turns !== undefined) snap.turnsUsed = turns;
       // The leaf's terminal structured return (RDR-010): PollResult.last_message
-      // is the full assistant text (present only at terminal idle/complete).
-      // Threaded to RunContext.finalMessage for the value harvester.
-      if (r.last_message !== undefined) snap.lastMessage = r.last_message;
+      // is the full assistant text. The server only sets it at idle/complete
+      // (session.ts), so state-gate here too — this keeps the snapshot honest at
+      // every poll (matching the "present only at a terminal state" invariant on
+      // QwenPollSnapshot.lastMessage), not just incidentally because the
+      // dispatcher reads the last snapshot. Threaded to RunContext.finalMessage.
+      if (r.last_message !== undefined && (r.state === "idle" || r.state === "complete")) {
+        snap.lastMessage = r.last_message;
+      }
       return snap;
     },
     harvest: gitDiffHarvester(extractPatch),

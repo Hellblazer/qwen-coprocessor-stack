@@ -175,12 +175,13 @@ function runContextFor(
  * source). Pure — no I/O — so it composes with the git-diff (PULL) harvester
  * without ordering constraints.
  *
- * NOTE (seam, not yet wired): this is the harvester half of the PUSH path. The
- * producer — the `/accept` spine that populates `RunContext.emitted` /
- * `finalMessage` (and the dispatcher wiring that injects this as the `harvest`
- * effect) — is engine/host work outside RDR-009's one-shot executor scope. Until
- * that lands, `runContextFor` emits `[]`/no `finalMessage`, so a dispatched run
- * does not yet exercise this harvester end-to-end.
+ * NOTE (partially wired): RDR-010 P1 wired the `finalMessage` half — the qwen
+ * dispatcher now threads the leaf's terminal return into `RunContext.finalMessage`.
+ * What is NOT yet wired: (a) the harvest SELECTOR that injects a value harvester
+ * as the `harvest` effect (RDR-010 P2 — until then `qwen_dispatch` always uses the
+ * git-diff harvester, so `finalMessage` is captured but unused); (b) the `emitted`
+ * channel (the spine's entity/tier producer), which stays orchestrator scope and
+ * is out of RDR-010 (so `runContextFor` keeps `emitted: []`).
  */
 export const acceptHarvester: Harvest = async (run) => {
   // Shallow copy: a fresh array (so `push` below never mutates the caller's
@@ -193,7 +194,12 @@ export const acceptHarvester: Harvest = async (run) => {
 
 /** Parse the leaf's `finalMessage` into a `value` artifact, or `undefined` when
  *  there was no structured return (absent / whitespace-only / literal JSON
- *  `null`). JSON is parsed; non-JSON text is surfaced raw rather than discarded. */
+ *  `null`). JSON is parsed; non-JSON text is surfaced raw rather than discarded.
+ *
+ *  P2 (RDR-010): the tool-layer harvest selector (dispatch-tool.ts) reuses this
+ *  helper for `harvest:"value"` — export it then (it is private here only because
+ *  `acceptHarvester` is its sole caller today). Do NOT route P2 through
+ *  `acceptHarvester`: that also passes `run.emitted` (the out-of-scope spine channel). */
 function parseFinalMessageValue(
   finalMessage: string | undefined,
 ): Extract<Artifact, { kind: "value" }> | undefined {
