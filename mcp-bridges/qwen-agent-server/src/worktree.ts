@@ -172,6 +172,15 @@ async function materializeFromMirror(
  * detached worktree at `base_commit`, and return a `cleanup` that removes the
  * worktree + prunes the mirror registry (the mirror is kept for reuse). For
  * callers that want isolation handled rather than supplying a worktree.
+ *
+ * SELECTION STATUS (RDR-008 1gl): the seam is wired into `runQwenDispatch` via
+ * the optional `resolveWorktree` dep, but the MCP `qwen_dispatch` tool currently
+ * always injects the caller-supplied default (the wire request carries a
+ * `worktree`, not a `repo`). Production selection of managed mode — either an
+ * MCP `repo`-mode input or migrating the Python eval harness onto this strategy —
+ * is tracked as a follow-up (bead qwen-coprocessor-stack-dps). Until then this is
+ * the proven-second-member of the host-effect seam, exercised by the integration
+ * test, ready for the first production selector.
  */
 export function executorManagedWorktree(opts: ExecutorManagedOpts): WorktreeStrategy {
   const runner = opts.runner ?? defaultRunner;
@@ -192,7 +201,16 @@ export function executorManagedWorktree(opts: ExecutorManagedOpts): WorktreeStra
       return {
         worktree,
         cleanup: async () => {
-          await withMirrorLock(mirror, () => removeWorktreeUnlocked(mirror, worktree, runner));
+          // Guard on the mirror like materialize.py:186-191: if the mirror was
+          // externally deleted between prepare and cleanup, `git worktree prune`
+          // would throw — fall back to removing the worktree dir directly.
+          await withMirrorLock(mirror, async () => {
+            if (existsSync(mirror)) {
+              await removeWorktreeUnlocked(mirror, worktree, runner);
+            } else if (existsSync(worktree)) {
+              rmSync(worktree, { recursive: true, force: true });
+            }
+          });
           log.info(
             { event_type: "worktree_cleaned", repo: opts.repo, instance: opts.instanceId },
             "executor-managed worktree removed",

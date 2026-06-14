@@ -255,7 +255,17 @@ export async function runQwenDispatch(
     );
     return result;
   } finally {
-    await prep.cleanup();
+    // A cleanup failure must NOT mask the dispatch result (or a dispatch error):
+    // worktree teardown is best-effort (removeWorktreeUnlocked already rmSyncs as
+    // a fallback). Log and continue.
+    try {
+      await prep.cleanup();
+    } catch (err) {
+      log.warn(
+        { event_type: "worktree_cleanup_error", error: err instanceof Error ? err.message : String(err) },
+        "qwen_dispatch worktree cleanup failed — continuing",
+      );
+    }
   }
 }
 

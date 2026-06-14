@@ -6,7 +6,7 @@
 // cleanup, stale-dest removal, per-mirror serialization) is exercised offline.
 // The REAL git path is covered by tests/integration/worktree-managed.test.ts.
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -119,6 +119,22 @@ describe("executorManagedWorktree", () => {
     const dest = join(root, "work", "inst-1");
     expect(calls).toContainEqual(["git", "-C", mirror, "worktree", "remove", "--force", dest]);
     expect(calls).toContainEqual(["git", "-C", mirror, "worktree", "prune"]);
+  });
+
+  it("cleanup falls back to rmtree (no prune throw) when the mirror was externally deleted", async () => {
+    const mirror = mirrorPath("owner/name", join(root, "cache"));
+    mkdirSync(mirror, { recursive: true });
+    const { runner } = recordingRunner();
+    const prep = await executorManagedWorktree({ ...baseOpts(), runner }).prepare();
+
+    // Simulate the mirror being deleted out from under us, and a worktree dir
+    // left behind (the fake `worktree add` didn't create it, so make it).
+    rmSync(mirror, { recursive: true, force: true });
+    mkdirSync(prep.worktree, { recursive: true });
+
+    // Must NOT throw (no `git worktree prune` against a missing mirror).
+    await expect(prep.cleanup()).resolves.toBeUndefined();
+    expect(existsSync(prep.worktree)).toBe(false);
   });
 
   it("derives the github URL from an owner/name slug when repoUrl is omitted", async () => {

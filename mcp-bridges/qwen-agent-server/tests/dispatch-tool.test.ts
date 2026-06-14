@@ -118,6 +118,31 @@ describe("runQwenDispatch", () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
+  it("a cleanup failure does NOT mask a successful dispatch result", async () => {
+    const dispatch = vi.fn().mockResolvedValue(RESULT);
+    const cleanup = vi.fn().mockRejectedValue(new Error("prune failed"));
+    const r = await runQwenDispatch(INPUT, {
+      loadProviders: () => [qwenProvider],
+      resolveDispatch: () => dispatch,
+      resolveWorktree: () => ({ prepare: async () => ({ worktree: "/m", cleanup }) }),
+    });
+    expect(r).toEqual(RESULT); // cleanup error logged + swallowed, result preserved
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("a cleanup failure does NOT mask the original dispatch error", async () => {
+    const cleanup = vi.fn().mockRejectedValue(new Error("prune failed"));
+    await expect(
+      runQwenDispatch(INPUT, {
+        loadProviders: () => [qwenProvider],
+        resolveDispatch: () => async () => {
+          throw new Error("dispatch boom");
+        },
+        resolveWorktree: () => ({ prepare: async () => ({ worktree: "/m", cleanup }) }),
+      }),
+    ).rejects.toThrow("dispatch boom"); // NOT "prune failed"
+  });
+
   it("maps a registry resolution failure to unregistered_kind", async () => {
     await expect(
       runQwenDispatch(INPUT, {
