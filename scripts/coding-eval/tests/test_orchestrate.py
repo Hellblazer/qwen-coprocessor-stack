@@ -529,6 +529,10 @@ def test_run_variance_defaults_to_serial_scoring():
     assert orchestrate.PROBE_MAX_WORKERS == 1
 
 
+# Drives a single-rep probe (n_reps=1), which legitimately trips the new
+# variance "n_reps < 2" RuntimeWarning. Own it so the test stays clean under
+# `-W error::RuntimeWarning`.
+@pytest.mark.filterwarnings("ignore:.*n_reps=1 < 2.*:RuntimeWarning")
 def test_run_variance_retries_transient_error_in_probe(tmp_path):
     # The probe must get the SAME transient-ERROR retry as the headline run, AND
     # the RECOVERED (non-empty) patch — not the failed attempt's empty one — must

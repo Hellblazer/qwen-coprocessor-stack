@@ -360,6 +360,20 @@ describe("chooseBackend — routing algorithm", () => {
     expect(counts["local-27b"]).toBeGreaterThan(50);
   });
 
+  it("explicit weight:0 degrades to equal weighting (not NaN-index last-pin)", async () => {
+    // `?? 1` lets an explicit 0 through, which zeroed totalWeight -> NaN index
+    // -> the for-loop fell through and always returned the LAST candidate. The
+    // clamp must make both zero-weight backends reachable.
+    const a = { ...local27, id: "zero-a", weight: 0 };
+    const b = { ...local27, id: "zero-b", weight: 0 };
+    const picks = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      const r = await chooseBackend([a, b], {}, "x", allHealthy);
+      if (r) picks.add(r.id);
+    }
+    expect(picks).toEqual(new Set(["zero-a", "zero-b"]));
+  });
+
   it("when all backends unhealthy and no local available, returns null", async () => {
     // Only remote backends, all down
     const pool = [remote35, remote72];

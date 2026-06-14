@@ -228,6 +228,11 @@ def test_band_echoes_method_not_ci():
 # ── end-to-end render ──────────────────────────────────────────────────────
 
 
+# This fixture intentionally pairs total=2 with a single telemetry row per arm
+# (to exercise N/A token rendering), which legitimately trips the new
+# undercount RuntimeWarning. Own it explicitly so the test stays clean and
+# passes even under `-W error::RuntimeWarning`.
+@pytest.mark.filterwarnings("ignore:.*may undercount.*:RuntimeWarning")
 def test_build_report_renders_all_sections_and_na():
     score_a = {"resolved_ids": ["r"], "applied_ids": ["r"], "total": 2,
                "raw": {"completed_ids": ["r"]}}

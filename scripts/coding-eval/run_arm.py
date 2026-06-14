@@ -159,8 +159,12 @@ def gold_test_globs(test_patch: str) -> list[str]:
     paths: list[str] = []
     # `(.+)` not `\S+`: a `\S+` stops at the first space, truncating any path
     # that contains spaces. Greedy capture anchored on the line end pins the
-    # separator at the LAST " b/" (how git itself disambiguates an unquoted
-    # header), so spaced paths round-trip intact.
+    # separator at the LAST " b/", so spaced paths round-trip intact. Residual
+    # limitation (unchanged from the old `\S+`, just shaped differently): a path
+    # whose left side literally contains " b/" as a component is still
+    # mis-split — git's unquoted header is genuinely ambiguous there and only
+    # quoting (which git does for control chars, NOT for spaces) resolves it.
+    # SWE-bench source paths don't contain " b/", so this is documented, not fixed.
     for m in re.finditer(r"^diff --git a/(.+) b/(.+)$", test_patch, re.MULTILINE):
         paths.append(m.group(2))
     # De-dup, preserve order.
