@@ -152,9 +152,12 @@ channel is confirmed orchestrator scope (RDR-009's "engine owns it" holds at the
 - [x] **A single dispatch returns only the leaf's own artifacts; spine emissions accumulate at the
   orchestrator** — Status: VERIFIED — Method: Source Search (`runContextFor`, RDR-009 one-shot
   invariant). RF-3.
-- [ ] **No live nexus consumer depends on the current v3 response shape** (so a v4 evolution, if any,
-  is land-together not migrate-live) — Status: DOCUMENTED-PENDING — #1174 is pending sign-off; no known
-  live consumer. Confirm before shipping any new response surface.
+- [ ] **No live nexus consumer depends on the current v3 response shape** — Status: DOCUMENTED-PENDING,
+  and **moot for this RDR's v4**. This was load-bearing for RDR-009's v3 wire change (`patch` →
+  `artifacts`). RDR-010's v4 is an **optional request field only**: the response shape stays
+  `{artifacts: Artifact[]}`, `value` is already in the four-kind union (already in `agent-shapes.json`,
+  already asserted by both conformance suites). There is nothing to migrate, so the PENDING status does
+  not gate v4. Listed for completeness, not as a pre-ship blocker.
 
 ## Proposed Solution
 
@@ -173,7 +176,13 @@ about the spine, `emitted`, or the production `/accept` is touched.
    `harvest: "patch" | "value" | "both"` defaulting to `"patch"` (additive — coding runs stay
    byte-identical, no breaking change). `"value"` surfaces `finalMessage` as a single `{kind:"value"}`
    (reuse the existing `acceptHarvester` value-parse path — `null` → no value, JSON parsed, else raw
-   string); `"both"` composes git-diff + value. The dispatcher selects the harvester from the input.
+   string); `"both"` composes git-diff + value.
+   **Resolution lives in the tool layer (`dispatch-tool.ts`), NOT the in-process interface:** the tool
+   reads the `harvest` input field, builds the appropriate `Harvest` function, and constructs
+   `QwenSpawnEffects` with that harvester before invoking `dispatch`. The `AgentTask` interface and the
+   `Dispatch` signature are **unchanged** — `harvest` is an MCP-boundary concern and must NOT be added
+   to `AgentTask` (that is the cross-host shape pinned by `agent-shapes.json` + both conformance
+   suites; polluting it would force a needless cross-language fixture change for a qwen-specific knob).
 
 ### Out of scope (retargeted out + carried from RDR-009, do not re-open)
 
@@ -227,9 +236,12 @@ gap. RF-2 also shows the real `/accept` does not use `qwen_dispatch`, so a spine
 ### Minimum Viable Validation
 
 A dispatched non-code leaf, run with `harvest: "value"`, returns `[{kind:"value", value: <parsed
-finalMessage>}]` — proving a structured non-patch artifact is reachable through a real `qwen_dispatch`
-call (not a hand-built `RunContext`). A coding run with the default `harvest: "patch"` is byte-identical
-to today (the regression guard).
+finalMessage>}]` — proving a structured non-patch artifact is reachable through the **full dispatch
+machinery** (spawn + poll through the real dispatcher logic, with a stub supervisor returning a
+`last_message`; NOT by hand-building a `RunContext` and calling `acceptHarvester` directly). A live
+Qwen backend is not required — RF-1 source-verified that `PollResult.last_message` carries the full
+terminal text, so the stub-backed integration test exercises the real capture → threading → harvest
+path. A coding run with the default `harvest: "patch"` is byte-identical to today (the regression guard).
 
 ### Phase 1: Capture `finalMessage` (Gap 1)
 
@@ -267,3 +279,10 @@ discipline.
   executor cannot emit the spine's `entity`/`tier`). New target: the executor value-harvest only —
   capture `finalMessage`, add a selectable `harvest` input. Gap 3 (spine) + the demonstrator moved to
   out-of-scope. Gate pending (`/conexus:rdr-gate`).
+- 2026-06-14: **gate PASSED** (0 Critical, 1 Significant, 3 Observations). substantive-critic confirmed
+  the scope reduction is legitimate and evidence-grounded, the MVV and additive-contract claims sound.
+  Fixed pre-accept: the Significant (specify harvest selection resolves at the tool layer
+  `dispatch-tool.ts`, NOT by polluting `AgentTask`); Observation-1 (MVV phrasing: full dispatch
+  machinery with a stub supervisor, no live backend needed); Observation-3 (the v3-consumer assumption
+  is moot for v4's additive request field). Observation-2 (operator-contract value-promotion line) is
+  tracked by Phase 2's contract update.
