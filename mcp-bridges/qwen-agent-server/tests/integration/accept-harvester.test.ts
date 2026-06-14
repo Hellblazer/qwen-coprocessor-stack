@@ -83,9 +83,24 @@ describe("acceptHarvester (RDR-009 Phase 2, the PUSH path)", () => {
     expect(artifacts).toEqual([{ kind: "value", value: "done: created 3 beads" }]);
   });
 
-  it("reads neither source → [] (no throw)", async () => {
+  it("reads neither source, or a whitespace-only finalMessage → [] (no throw)", async () => {
     expect(await acceptHarvester({ emitted: [], environment: {} })).toEqual([]);
     // An empty / whitespace-only finalMessage is "no structured return" → no value.
     expect(await acceptHarvester({ emitted: [], finalMessage: "   ", environment: {} })).toEqual([]);
+  });
+
+  it("literal JSON null finalMessage → no value (degenerate answer), but false/0/\"\" ARE values", async () => {
+    // `null` is a degenerate "no answer" — not surfaced.
+    expect(await acceptHarvester({ emitted: [], finalMessage: "null", environment: {} })).toEqual([]);
+    // false / 0 / empty-string-JSON are genuine structured values — surfaced.
+    expect(await acceptHarvester({ emitted: [], finalMessage: "false", environment: {} })).toEqual([
+      { kind: "value", value: false },
+    ]);
+    expect(await acceptHarvester({ emitted: [], finalMessage: "0", environment: {} })).toEqual([
+      { kind: "value", value: 0 },
+    ]);
+    expect(await acceptHarvester({ emitted: [], finalMessage: '""', environment: {} })).toEqual([
+      { kind: "value", value: "" },
+    ]);
   });
 });
