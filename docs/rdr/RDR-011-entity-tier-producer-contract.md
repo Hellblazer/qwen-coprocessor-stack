@@ -2,12 +2,15 @@
 title: "Entity/tier producer contract — what an orchestrator must emit for the entity/tier Artifact kinds, and how they compose with executor patch/value artifacts"
 id: RDR-011
 type: Design
-status: accepted
+status: closed
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-14
 accepted_date: 2026-06-14
+closed_date: 2026-06-14
+close_reason: implemented
+post_mortem: docs/rdr/post-mortem/011-entity-tier-producer-contract.md
 related_issues: ["Hellblazer/nexus#1174"]
 ---
 
