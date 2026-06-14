@@ -72,6 +72,8 @@ what the **executor** provides and requires.
 
 ## Acceptance
 
-- nexus agrees the operator signature above (or proposes amendments).
-- The qwen-coprocessor-stack side is pinned by `qwen-dispatch-shapes.json` +
-  the conformance test (already landed in RDR-008 P3).
+- **Status: FILED, pending nexus sign-off.** The qwen-coprocessor-stack side is
+  complete and pinned (`qwen-dispatch-shapes.json` + the conformance test landed
+  in RDR-008 P3). The interface signature here is **proposed**; it becomes
+  *agreed* once nexus responds on [#1174](https://github.com/Hellblazer/nexus/issues/1174)
+  (acks the signature, or proposes amendments folded back here).

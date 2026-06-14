@@ -56,6 +56,10 @@ No new fields.
 - `patch` — **source-only** diff (test paths stripped). **Contamination** (a patch
   touching test files) is **host-internal**, NOT a field of `AgentResult`
   (RDR-007 P4b).
+- `outcome: "timeout"` — the wall-clock cutoff fired; the patch is whatever the
+  worktree held at the cutoff (possibly partial). **The worktree state is
+  indeterminate.** A retry must run against a **fresh** worktree at `base_commit`,
+  not the timed-out one — worktree lifecycle is the caller's (see below).
 - `turns` — **`0` on a qwen-local success run today.** The supervisor's success
   poll carries no turn count (`PollResult.last_known` is populated only on the
   error path). Tracked by **qwen-coprocessor-stack-j2r**; until it lands, an
@@ -143,8 +147,9 @@ request/response shapes above.
 
 ## Linked nexus proposal
 
-The agreed operator-interface signature and registration ceremony for the engine
-side live in the nexus proposal: see
+The **proposed** operator-interface signature and registration ceremony for the
+engine side live in the nexus proposal: see
 [`nexus-dispatch-operator-proposal.md`](./nexus-dispatch-operator-proposal.md),
 filed as [Hellblazer/nexus#1174](https://github.com/Hellblazer/nexus/issues/1174)
-(also recorded on bead **qwen-coprocessor-stack-pwa** and in T2).
+(**pending nexus sign-off** — agreed once nexus acks/amends; recorded on bead
+**qwen-coprocessor-stack-pwa** and in T2).

@@ -133,16 +133,30 @@ export interface QwenDispatchDeps {
   resolveDispatch: (provider: AgentProvider, baseCommit: string) => Dispatch;
 }
 
-/** Structured error surfaced to the caller when dispatch can't proceed.
+/**
+ * The `QwenDispatchError` code set — the runtime witness the conformance fixture
+ * asserts against (a TS union can't be enumerated at runtime). The tool's
+ * `shutting_down` envelope is NOT here: it is emitted at the server boundary
+ * (server.ts), not by this class. Keep `qwen-dispatch-shapes.json`'s
+ * `error.codes` = these three + `"shutting_down"`.
  *  - `no_provider` — no declared agent-cli provider matches the selector.
  *  - `missing_agent_kind` — the selected provider declares no `agentKind`
  *    (config fix: add `agentKind`), distinct from `unregistered_kind` so the
  *    caller isn't misdirected to register a dispatcher.
  *  - `unregistered_kind` — the provider's `agentKind` has no registered
- *    dispatcher. */
+ *    dispatcher.
+ */
+export const DISPATCH_ERROR_CODES = [
+  "no_provider",
+  "missing_agent_kind",
+  "unregistered_kind",
+] as const;
+export type QwenDispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];
+
+/** Structured error surfaced to the caller when dispatch can't proceed. */
 export class QwenDispatchError extends Error {
   constructor(
-    readonly code: "no_provider" | "missing_agent_kind" | "unregistered_kind",
+    readonly code: QwenDispatchErrorCode,
     message: string,
   ) {
     super(message);

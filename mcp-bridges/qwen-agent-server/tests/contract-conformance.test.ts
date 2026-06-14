@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { classifyOutcome } from "../src/dispatch.js";
-import { qwenDispatchInputShape } from "../src/dispatch-tool.js";
+import { DISPATCH_ERROR_CODES, qwenDispatchInputShape } from "../src/dispatch-tool.js";
 import { classifyTask } from "../src/types.js";
 import type { AgentResult, AgentTask, TaskKind, TaskSignals } from "../src/types.js";
 
@@ -159,8 +159,9 @@ describe("qwen-dispatch-shapes golden fixture (TS-host-scoped)", () => {
   });
 
   it("response shape is AgentResult (reused verbatim from RDR-007)", () => {
-    // A literal typed as AgentResult: drift in the interface keys fails at
-    // runtime (Object.keys), independent of the untyped test compile.
+    // A literal typed as AgentResult: a REMOVED/renamed required field fails at
+    // compile time (typecheck:tests); this runtime check pins that the fixture's
+    // requiredKeys match the literal's keys (no fixture-only stray key).
     const result: AgentResult = {
       patch: String(fx.response.example.patch),
       turns: Number(fx.response.example.turns),
@@ -170,10 +171,11 @@ describe("qwen-dispatch-shapes golden fixture (TS-host-scoped)", () => {
     expect(Object.keys(result).sort()).toEqual([...fx.response.requiredKeys].sort());
   });
 
-  it("error-code set is the contract surface (3 QwenDispatchError codes + shutting_down)", () => {
-    // Runtime witness of the QwenDispatchError union + the tool's shutdown
-    // envelope (a compile-time union can't be enumerated at runtime).
-    const codes = ["no_provider", "missing_agent_kind", "unregistered_kind", "shutting_down"];
+  it("error-code set is the contract surface (the 3 QwenDispatchError codes + shutting_down)", () => {
+    // Bound to the REAL exported code set (DISPATCH_ERROR_CODES) so a renamed /
+    // added class code fails here; `shutting_down` is the server-boundary
+    // envelope (not a class code), appended explicitly.
+    const codes = [...DISPATCH_ERROR_CODES, "shutting_down"];
     expect([...fx.error.codes].sort()).toEqual([...codes].sort());
     expect(fx.error.codes).toContain(fx.error.envelope.error.code);
   });
