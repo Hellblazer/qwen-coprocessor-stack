@@ -257,6 +257,17 @@ describe("approxTokens / classifyCapacity", () => {
     expect(classifyCapacity("a tricky problem")).toBe("heavy");
     expect(classifyCapacity("an architectural choice")).toBe("fast"); // arch* no longer keyword
   });
+
+  it("falls back to the default threshold on a malformed ROUTER_HEAVY_THRESHOLD_TOKENS (regression: NaN must not disable token classification)", () => {
+    // A bare parseInt would yield NaN here and `tokens >= NaN` is always false,
+    // silently routing every large prompt to a 'fast' backend. The guarded
+    // parse must ignore the junk value and apply the 2000-token default.
+    process.env["ROUTER_HEAVY_THRESHOLD_TOKENS"] = "abc";
+    const huge = Array.from({ length: 3000 }, () => "word").join(" ");
+    expect(classifyCapacity(huge)).toBe("heavy");
+    // And a small prompt with no keyword still classifies fast.
+    expect(classifyCapacity("fix this typo")).toBe("fast");
+  });
 });
 
 describe("chooseBackend — routing algorithm", () => {

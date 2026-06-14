@@ -27,15 +27,22 @@ describe("ThreadStore", () => {
     expect(t.turns).toEqual([]);
   });
 
-  it("resolve(unknown_id) honours the supplied id (starts fresh thread)", () => {
+  it("resolve(unknown_id) honours the supplied id (starts fresh thread) and flags was_reset", () => {
     store = new ThreadStore({ reap_interval_ms: 0 });
     const t = store.resolve("caller-chosen-id");
     expect(t.id).toBe("caller-chosen-id");
     expect(t.turns).toEqual([]);
     expect(store.has("caller-chosen-id")).toBe(true);
+    // A supplied-but-unknown id means prior context could not be recovered.
+    expect(t.was_reset).toBe(true);
   });
 
-  it("resolve(known_id) returns existing turns and refreshes expiry", () => {
+  it("resolve(undefined) does NOT flag was_reset (caller supplied no id; nothing to lose)", () => {
+    store = new ThreadStore({ reap_interval_ms: 0 });
+    expect(store.resolve(undefined).was_reset).toBe(false);
+  });
+
+  it("resolve(known_id) returns existing turns, refreshes expiry, and does not flag was_reset", () => {
     store = new ThreadStore({ reap_interval_ms: 0 });
     const a = store.resolve(undefined);
     store.append(a.id, { role: "user", content: "hi" });
@@ -46,6 +53,19 @@ describe("ThreadStore", () => {
     expect(b.turns).toHaveLength(2);
     expect(b.turns[0]!.content).toBe("hi");
     expect(b.turns[1]!.content).toBe("hello");
+    expect(b.was_reset).toBe(false);
+  });
+
+  it("resolve(expired_id) flags was_reset and returns an empty thread", () => {
+    store = new ThreadStore({ reap_interval_ms: 0, ttl_ms: 1000 });
+    const a = store.resolve(undefined);
+    store.append(a.id, { role: "user", content: "hi" });
+    // Force expiry, then resolve the same id again.
+    store.reap(Date.now() + 5000);
+    const b = store.resolve(a.id);
+    expect(b.id).toBe(a.id);
+    expect(b.turns).toEqual([]);
+    expect(b.was_reset).toBe(true);
   });
 
   it("append() respects the per-thread turn cap", () => {

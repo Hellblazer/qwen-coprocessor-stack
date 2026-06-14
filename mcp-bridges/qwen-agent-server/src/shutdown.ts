@@ -37,6 +37,10 @@ export function setupShutdown(
   server: ShuttableServer,
   pool: SessionPool,
   exit: (code: number) => void = process.exit,
+  // Invoked once at the very start of shutdown, before server.close(). Lets the
+  // caller flip its own tool-handler `shuttingDown` guard so no new spawn slips
+  // through the window between signal receipt and transport close completing.
+  onShutdownStart?: () => void,
 ): {
   handleSignal: (signal: string) => Promise<void>;
   isShuttingDown: () => boolean;
@@ -50,6 +54,7 @@ export function setupShutdown(
     if (shutdownStarted) return;
     shutdownStarted = true;
     shuttingDown = true;
+    onShutdownStart?.();
 
     log.info({ signal, event_type: "shutdown" }, "shutdown signal received");
 

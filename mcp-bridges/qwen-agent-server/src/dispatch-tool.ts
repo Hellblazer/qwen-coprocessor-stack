@@ -18,6 +18,7 @@
 // strategy (the materialize.py port) is a fast-follow, not P2.
 
 import { execFile } from "node:child_process";
+import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 
 import { z } from "zod";
@@ -27,6 +28,7 @@ import { createLogger } from "./log.js";
 import { callerSuppliedWorktree, type WorktreeStrategy } from "./worktree.js";
 import { valueHarvester } from "./dispatch.js";
 import type { Dispatch, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
+import { DISPATCHER_KINDS } from "./types.js";
 import type {
   AgentProvider,
   AgentResult,
@@ -156,6 +158,7 @@ export const qwenDispatchInputShape = {
   worktree: z
     .string()
     .min(1)
+    .refine(isAbsolute, { message: "worktree must be an absolute path" })
     .optional()
     .describe("Absolute path to a caller-supplied worktree the agent edits and that the git-diff harvester diffs. Mutually exclusive with `repo`; supply exactly one."),
   base_commit: z
@@ -185,9 +188,9 @@ export const qwenDispatchInputShape = {
     .optional()
     .describe("Pin a specific agent-cli provider by id. Overrides agent_kind selection."),
   agent_kind: z
-    .string()
+    .enum(DISPATCHER_KINDS)
     .optional()
-    .describe('Dispatcher family to select (default "qwen-local").'),
+    .describe('Dispatcher family to select (default "qwen-local"). Validated against the closed DispatcherKind set; an unknown kind fails at input validation, not downstream as a vague "no provider".'),
   harvest: z
     .enum(["patch", "value", "both"])
     .optional()
@@ -281,7 +284,7 @@ export async function runQwenDispatch(
   const by =
     input.provider_id !== undefined
       ? { id: input.provider_id }
-      : { agentKind: (input.agent_kind ?? DEFAULT_AGENT_KIND) as DispatcherKind };
+      : { agentKind: input.agent_kind ?? DEFAULT_AGENT_KIND };
   const provider = selectAgentProvider(providers, by);
 
   if (provider === undefined) {
@@ -398,6 +401,10 @@ export interface SupervisorSpawnPoll {
   qwen_poll: (
     args: { task_id: string; opts?: PollOpts },
   ) => Promise<PollResult | (Omit<PollResult, "error"> & { error: { code: string; message: string } })>;
+  /** Stop/remove a session. Used to reap a timed-out dispatch session promptly
+   *  rather than leaving it `running` until the periodic sweep. Optional so the
+   *  adapter degrades gracefully if a host wires only spawn/poll. */
+  qwen_stop?: (args: { task_id: string }) => Promise<{ ack: boolean }>;
 }
 
 /**
@@ -471,5 +478,10 @@ export function makeSupervisorQwenSpawnEffects(
     harvest: opts.harvest ?? gitDiffHarvester(extractPatch),
     sleep: clock.sleep,
     now: clock.now,
+    // Reap a timed-out session promptly (fire-and-forget in the dispatcher).
+    // Only wired when the host supplied a qwen_stop handler.
+    ...(handlers.qwen_stop !== undefined
+      ? { stop: async (taskId: string) => { await handlers.qwen_stop!({ task_id: taskId }); } }
+      : {}),
   };
 }

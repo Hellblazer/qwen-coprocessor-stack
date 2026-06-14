@@ -622,7 +622,13 @@ export type CostClass = "free-local" | "metered";
  * one-shot poll-to-completion. Adding a kind here is the registration ceremony:
  * extend this union, then `register()` the new `Dispatch` against it.
  */
-export type DispatcherKind = "qwen-local";
+/**
+ * Runtime tuple of the closed DispatcherKind union — the single source of truth
+ * so a Zod validator can be derived without drifting from the type. Extend this
+ * tuple (not a separate string literal) when registering a new dispatcher.
+ */
+export const DISPATCHER_KINDS = ["qwen-local"] as const;
+export type DispatcherKind = (typeof DISPATCHER_KINDS)[number];
 
 /**
  * Provider-agnostic capability descriptor (RDR-007). A superset of `Backend`:

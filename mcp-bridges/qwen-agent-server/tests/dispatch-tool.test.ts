@@ -7,15 +7,46 @@
 // (tests/integration/dispatch-base-commit.test.ts).
 
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import {
   makeSupervisorQwenSpawnEffects,
+  qwenDispatchInputShape,
   QwenDispatchError,
   runQwenDispatch,
   type QwenDispatchInput,
 } from "../src/dispatch-tool.js";
 import { makeQwenSpawnDispatch, type Dispatch } from "../src/dispatch.js";
 import type { AgentProvider, AgentResult, AgentTask } from "../src/types.js";
+
+describe("qwenDispatchInputShape — input validation", () => {
+  const schema = z.object(qwenDispatchInputShape);
+  const base = { prompt: "fix it", base_commit: "abc123" };
+
+  it("rejects a relative worktree path (would make `git -C` diff the wrong tree)", () => {
+    const r = schema.safeParse({ ...base, worktree: "relative/path" });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => /absolute/.test(i.message))).toBe(true);
+    }
+  });
+
+  it("accepts an absolute worktree path", () => {
+    expect(schema.safeParse({ ...base, worktree: "/abs/wt" }).success).toBe(true);
+  });
+
+  it("rejects an unknown agent_kind at input validation (not downstream as 'no provider')", () => {
+    expect(schema.safeParse({ ...base, worktree: "/wt", agent_kind: "claude-local" }).success).toBe(
+      false,
+    );
+  });
+
+  it("accepts the known agent_kind 'qwen-local'", () => {
+    expect(
+      schema.safeParse({ ...base, worktree: "/wt", agent_kind: "qwen-local" }).success,
+    ).toBe(true);
+  });
+});
 
 const qwenProvider: AgentProvider = {
   id: "qwen-coder-mac",
