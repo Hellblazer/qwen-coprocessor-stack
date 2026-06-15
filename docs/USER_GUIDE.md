@@ -1,0 +1,279 @@
+# User Guide
+
+Task-oriented recipes for actually getting work out of the stack. If you want
+the design picture first, read the [Architecture](ARCHITECTURE.md); if you want
+to build, test, or operate it, see the [Development & Operations guide](DEVELOPMENT.md).
+
+This guide assumes the stack is installed and at least one backend is healthy.
+If not, start with the [Quick start](../README.md#quick-start) and confirm with
+`/qwen-stack:status`.
+
+---
+
+## Mental model: three shapes of work
+
+The `qwen_*` tools come in three shapes. Pick by the shape of your task, not by
+habit.
+
+| Shape | Tools | Use when |
+|---|---|---|
+| **Stateful session** | `qwen_spawn` · `qwen_poll` · `qwen_send` · `qwen_stop` | Multi-turn work where context should persist and the prefix cache should stay warm: a coding grind, an interactive investigation. |
+| **One-shot** | `qwen_oneshot` (text) · `qwen_oneshot_vision` (image+text) | A single request/response, optionally schema-bounded. Bulk extraction, classification, OCR, synthesis. |
+| **Direct modality** | `qwen_embed` · `qwen_rerank` · `qwen_tokenize` · `qwen_chat` | A specific OpenAI-compat endpoint, stateless, no agentic loop. |
+
+In Claude Code you rarely call these by hand — you ask Claude to delegate, and
+Claude picks the tool. The recipes below show the underlying call so you know
+what to ask for and what comes back.
+
+---
+
+## Recipe: delegate a multi-turn task
+
+Spawn returns immediately with a `task_id`; the model runs asynchronously. Poll
+until terminal, answer any clarifying question with `send`, then stop.
+
+```mermaid
+sequenceDiagram
+  participant You as Caller (Claude)
+  participant Sup as Supervisor
+  participant Qwen as Qwen backend
+  You->>Sup: qwen_spawn({task})
+  Sup-->>You: {task_id, chosen_backend}
+  loop until state is terminal
+    You->>Sup: qwen_poll({task_id, opts:{since}})
+    Sup->>Qwen: (async inference)
+    Sup-->>You: {state, recent_events, latest_event_id, budget}
+  end
+  opt model asked a question (state=idle)
+    You->>Sup: qwen_send({task_id, message})
+  end
+  You->>Sup: qwen_stop({task_id})
+```
+
+Practical notes:
+
+- **Poll incrementally.** Pass the previous `latest_event_id` as `opts.since` so
+  each poll returns only new events.
+- **`idle` is not done.** A session goes `idle` when the model finished a turn
+  and is waiting for input (often a clarifying question surfaced as plain text —
+  the supervisor deliberately does not give the inner Qwen an
+  `ask_user_question` tool). Resume with `qwen_send`. Terminal states are
+  `complete` and `error`.
+- **Watch the `budget`.** Every poll carries `budget: { est_tokens, max_tokens,
+  tool_calls, max_tool_calls }`. If `est_tokens` is climbing toward `max_tokens`,
+  wind the task down — see [Tune the session budget](#recipe-tune-the-session-budget).
+- **`qwen_stop` is idempotent.** Stopping an unknown `task_id` returns
+  `{ ack: false }`, never an error.
+
+Inspect what is live at any time with `qwen_sessions` (task_id, backend, state,
+last poll, turns, live budget).
+
+---
+
+## Recipe: schema-bounded one-shot extraction
+
+For bulk "read this, give me structured JSON" work, use `qwen_oneshot` with a
+JSON schema. It is the drop-in for `claude -p --json-schema`-style dispatch:
+spawn → wait → parse → retry on parse failure → stop, all in one call.
+
+```jsonc
+qwen_oneshot({
+  task: "Extract the title, authors, and year from this paper:\n\n<text>",
+  opts: {
+    json_schema: {
+      type: "object",
+      required: ["title", "authors", "year"],
+      properties: {
+        title:   { type: "string" },
+        authors: { type: "array", items: { type: "string" } },
+        year:    { type: "integer" }
+      }
+    },
+    max_attempts: 3
+  }
+})
+// → { ok: true, result: "<raw>", parsed: { title, authors, year }, attempts, elapsed_ms, continuation_id }
+```
+
+- `parsed` is the validated object; `result` is the raw model text. On parse
+  failure the call retries up to `max_attempts`, then returns `ok: false` with
+  `error.code = "validation_failed"`.
+- Markdown code fences around the JSON are stripped automatically before parsing
+  (Qwen wraps JSON in ```` ```json ```` more often than it should).
+- **Thread follow-ups** with `opts.continuation_id` — pass back the
+  `continuation_id` from a prior call to prepend that conversation (3-hour TTL,
+  20-turn cap, in-process; shared with `qwen_oneshot_vision`). If the thread has
+  expired the response carries `continuation_reset: true` so you know prior
+  context was lost.
+
+---
+
+## Recipe: vision / OCR
+
+`qwen_oneshot_vision` is multimodal (image+text → text). It bypasses the SDK and
+POSTs an OpenAI-compat content array directly to a `multimodal` backend, so it
+needs a backend with the vision projector loaded (`--mmproj`).
+
+```jsonc
+qwen_oneshot_vision({
+  task: "Transcribe all text in this screenshot, preserving layout.",
+  images: [{ path: "/Users/me/Desktop/shot.png" }],   // or {url} or {base64, mime}
+  opts: { backend: "qwentescence" }                    // optional pin
+})
+```
+
+Setup and safety:
+
+- **Enable vision on the backend.** Download the matching `mmproj-*.gguf` from
+  the same HF repo as your LM weights, place it beside them, and restart
+  `llama-server` with `--mmproj <path>`. The bundled launchers
+  (`scripts/start-stack.sh`, `scripts/launch-llama-vulkan.cmd`) already pass the
+  flag when the file is present. Verify with
+  `curl http://<backend>/v1/models` → `capabilities` includes `multimodal`.
+- **Image-path inputs are sandboxed.** `{path}` is `realpath`'d and rejected if
+  the canonical path escapes the allowed roots (`$HOME` and the temp dir by
+  default). Extend with `QWEN_VISION_IMAGE_PATHS=/extra/dir1:/extra/dir2`.
+  Symlink escapes fail because realpath runs before the allowlist check.
+- **URL inputs** are restricted to `http://`, `https://`, `data:`; `file:` and
+  other schemes are rejected at the supervisor.
+- If you pin a non-multimodal backend you get `error.code = "wrong_modality"`
+  up front; if the backend lacks `--mmproj` you get `"backend_no_mmproj"` — both
+  clean errors, not crashes.
+
+---
+
+## Recipe: embeddings, rerank, tokenize
+
+Three direct, stateless endpoints. Each requires a backend declaring the
+matching modality (except tokenize, which works against any text/multimodal
+backend since the tokenizer is colocated with the model).
+
+```jsonc
+qwen_embed({ texts: ["first chunk", "second chunk"] })
+// → vectors, one per input
+
+qwen_rerank({ query: "how does routing work?", documents: ["doc a", "doc b", "doc c"] })
+// → documents scored against the query
+
+qwen_tokenize({ content: "count my tokens" })
+// → { tokens, count }   (does not consume a generation slot)
+```
+
+`qwen_chat` is the text twin of vision-oneshot: a direct POST to
+`/v1/chat/completions`, bypassing the agentic harness — fast and crash-free for
+plain operator dispatch when you do not need tools or a session.
+
+---
+
+## Recipe: add and pool backends
+
+Backends are pure config. The primary surface is
+`~/.qwen-coprocessor-stack/config.json`; start from
+[`config.example.json`](../config.example.json).
+
+```jsonc
+{
+  "backends": [
+    { "id": "local-27b",  "url": "http://localhost:8080/v1", "model": "qwen3.6-27b-instruct",
+      "tier": "local",  "capacity": "fast",  "weight": 1, "ctx_size": 32768 },
+    { "id": "qwentescence", "url": "http://qwentescence:1234/v1", "model": "qwen3.6-35b-a3b",
+      "tier": "remote", "capacity": "heavy", "weight": 1, "ctx_size": 131072, "modality": "multimodal" },
+    { "id": "embed-local", "url": "http://localhost:8081/v1", "model": "bge-m3",
+      "tier": "local", "capacity": "fast", "modality": "embedding" }
+  ]
+}
+```
+
+Then manage it with slash commands (they edit the file in place and the
+supervisor hot-applies on the next spawn — no restart):
+
+| Command | Does |
+|---|---|
+| `/qwen-stack:status` | One-glance health, build freshness, env overrides, red flags. |
+| `/qwen-stack:backends list \| add \| remove \| test` | Backend lifecycle + connectivity test. |
+| `/qwen-stack:defaults list \| set <a,b,c> \| set --none \| clear` | Session-default extension list. |
+| `/qwen-stack:budget list \| set […] \| clear [field]` | The session-budget caps. |
+
+Field reference:
+
+- `tier` — `local` or `remote`; the router prefers within the requested tier and
+  falls back to local if a tier's pool is all unhealthy.
+- `capacity` — `fast` or `heavy`; the router classifies each prompt and matches.
+- `weight` — load-balancing share (default 1; `≤ 0` is treated as 1).
+- `ctx_size` — the backend's context window; drives the default budget
+  (`floor(0.85 × ctx_size)`).
+- `modality` — `text` (default) / `multimodal` / `embedding` / `rerank`. **This
+  is the gate that makes a mixed pool safe** — declare it correctly.
+- `api_key_env` (preferred) or `api_key`, plus `headers` — for bearer-gated
+  remote endpoints (OpenRouter / Together / Fireworks). The literal key never
+  lands in the file when you use `api_key_env`, and auth values are never logged.
+
+Environment variables (`QWEN_BACKENDS`, `QWEN_DEFAULT_EXTENSIONS`,
+`QWEN_MAX_CONTEXT_TOKENS`, `QWEN_MAX_TOOL_CALLS`) override the file when set.
+
+---
+
+## Recipe: tune the session budget
+
+If long tasks crash with `ECONNRESET`, the inner Qwen is overrunning its context
+window. Cap it.
+
+```jsonc
+{
+  "session_budget": {
+    "max_context_tokens": 111000,   // chars/4 estimate; 0 = no cap
+    "max_tool_calls": 0             // 0 = unlimited
+  }
+}
+```
+
+Or per call via `opts`, or via `/qwen-stack:budget set --max-context-tokens N
+--max-tool-calls M`. Resolution priority: per-spawn `opts` → env → config →
+`floor(0.85 × backend.ctx_size)` → hardcoded `111000`. Hitting a cap fires
+`state="error"`, `error.code="context_exceeded"` with both counters in the
+message. The `context_pressure` events at 50/75/90% are your cue to wind down
+before that.
+
+---
+
+## Recipe: use it from your own application
+
+The stack is the supervisor; your app wires its dispatch through it. Two patterns
+(the reference is the [nexus integration](integrations/qwen-dispatch-nexus.md)):
+
+1. **Hot path — talk to llama-server directly.** For schema-bounded oneshots and
+   large-context extraction, skip the supervisor and pool entirely: POST
+   OpenAI-compat to the backend's `/v1` from your own HTTP client. Lowest latency;
+   you give up pooling and KV-affinity, which a stateless oneshot does not need.
+2. **Agentic path — call `qwen_dispatch`.** For a one-shot agentic task that
+   edits a repo, call the `qwen_dispatch` MCP operator with a `prompt` and either
+   a caller-supplied `worktree` (absolute path) or a `repo` slug (the executor
+   materializes a throwaway worktree), plus the `base_commit` to diff against. You
+   get back a typed `Artifact[]` (`patch` / `value`) you fold into your own
+   ledger. The wire shape is published and conformance-tested — see
+   [`docs/contracts/qwen-dispatch-operator-contract.md`](contracts/qwen-dispatch-operator-contract.md)
+   and the [Architecture](ARCHITECTURE.md#the-dispatch-contract-stack).
+
+> **If a client speaks raw MCP stdio:** the supervisor writes logs to **stderr**
+> and keeps stdout clean for JSON-RPC frames. A client that rejects non-JSON on
+> stdout (the strict Python MCP SDK does) needs a supervisor build that includes
+> this — every published build does.
+
+---
+
+## Troubleshooting
+
+| Symptom / `error.code` | Cause | Fix |
+|---|---|---|
+| `context_exceeded` (`state=error`) | Session overran `max_context_tokens`. | Raise the cap, or have the orchestrator react to `context_pressure` events and wind down. |
+| `ECONNRESET` mid-task | Context overrun crashed the backend HTTP layer before the budget caught it. | Lower `max_context_tokens` so the clean abort fires first; confirm `ctx_size` is declared on the backend. |
+| `wrong_modality` | Pinned a backend whose modality does not match the call (e.g. a text backend for vision). | Pin a backend with the right `modality`, or drop the pin and let the router pick. |
+| `backend_no_mmproj` | Multimodal call hit a backend without the vision projector. | Restart `llama-server` with `--mmproj`; verify via `/v1/models` capabilities. |
+| `backend_offline` / `backend_internal` | Backend unreachable or returned 5xx. | `/qwen-stack:backends test`; check the server is up and the `url` is right. |
+| Image path rejected ("outside the allowed roots") | `{path}` resolves outside `$HOME`/temp. | Add the dir to `QWEN_VISION_IMAGE_PATHS`, or pass the image as `{base64}`. |
+| Session went `idle` and "hung" | The model asked a clarifying question (plain text, no tool). | Read the last assistant text and answer with `qwen_send`. |
+| Cold spawn slow on first call | Backend model load (minutes off external SSD). | Expected once per model load; subsequent spawns are warm. Keep the backend resident. |
+| Config edit not taking effect | An env override is masking the file, or you are reading an in-flight session. | `/qwen-stack:status` shows env overrides; remember edits apply to *new* spawns only. |
+
+Start any diagnosis with `/qwen-stack:status` — it surfaces process state, build
+freshness, per-backend health, env overrides, and obvious red flags in one shot.
