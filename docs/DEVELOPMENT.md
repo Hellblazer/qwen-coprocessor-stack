@@ -75,35 +75,17 @@ rerank. Vision tests fail on text-only models by design.
 
 ---
 
-## Codebase map
+## Where to start in the code
 
-### Supervisor (`mcp-bridges/qwen-agent-server/src/`)
+The file names say what they are; the [Architecture](ARCHITECTURE.md) explains
+how they fit. Two entry points:
 
-| File | Contents |
-|---|---|
-| `server.ts` | The MCP tool surface: registers all 15 `qwen_*` tools, Zod-validates inputs, owns shutdown and the reaper interval. Start here. |
-| `backends.ts` | `chooseBackend` and its modality/role variants; config load + mtime cache; health probing; weighted round-robin; `classifyCapacity`. |
-| `session.ts` | One pooled session: state machine, the `streamInput` multi-turn generator, the budget enforcement. |
-| `pool.ts` | The session pool: LRU eviction, idle reaper. |
-| `dispatch.ts` | The RDR-007 `dispatch()` contract, the one-shot poll-to-completion runner, the harvesters. |
-| `dispatch-tool.ts` | The `qwen_dispatch` tool: input schema, worktree resolution, the supervisor effects adapter. |
-| `dispatch-registry.ts` | The `DispatcherKind → Dispatch` registry. |
-| `types.ts` | The wire types: `SessionState`, `AgentOutcome`, the `Artifact` union, `DispatcherKind`. |
-| `vision.ts`, `embed.ts`, `rerank.ts`, `tokenize.ts`, `chat.ts`, `openai-compat.ts` | Direct, stateless modality handlers; the shared OpenAI-compat POST helper. |
-| `threads.ts` | In-process conversation threading for the oneshot tools. |
-| `permissions.ts` | SDK tool classification; the write-tool gate. |
-| `shutdown.ts`, `serialize.ts`, `worktree.ts`, `extensions.ts`, `pool.ts` | Graceful shutdown, per-backend serialization, git worktree prep, extension resolution. |
-
-### Eval harness (`scripts/coding-eval/`)
-
-| File | Contents |
-|---|---|
-| `run_arm.py` | The shared fairness spine: prompt, patch extraction, timeout, outcome classification, prediction writer. |
-| `arm_a.py` / `arm_b.py` / `arm_c.py` | The three arm drivers (supervisor / raw CLI / `claude -p`). |
-| `orchestrate.py` | Drives a run end to end. |
-| `score.py`, `report.py` | Harness scoring and report rendering. |
-| `subset.py`, `materialize.py`, `telemetry.py` | Instance selection, repo mirroring, per-instance telemetry. |
-| `variance.py`, `bestofk.py` | The statistical probes. |
+- **Supervisor** (`mcp-bridges/qwen-agent-server/src/`): start at `server.ts` (the
+  tool surface) and `backends.ts` (the router). `session.ts` is one session's
+  state machine; `dispatch*.ts` is the executor contract; `types.ts` holds the
+  wire types.
+- **Eval harness** (`scripts/coding-eval/`): `run_arm.py` is the shared fairness
+  spine; `arm_a/b/c.py` are the three drivers; `orchestrate.py` runs it all.
 
 ---
 

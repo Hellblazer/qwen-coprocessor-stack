@@ -194,22 +194,12 @@ supervisor hot-applies on the next spawn — no restart):
 | `/qwen-stack:defaults list \| set <a,b,c> \| set --none \| clear` | Session-default extension list. |
 | `/qwen-stack:budget list \| set […] \| clear [field]` | The session-budget caps. |
 
-Field reference:
-
-- `tier` — `local` or `remote`; the router prefers within the requested tier and
-  falls back to local if a tier's pool is all unhealthy.
-- `capacity` — `fast` or `heavy`; the router classifies each prompt and matches.
-- `weight` — load-balancing share (default 1; `≤ 0` is treated as 1).
-- `ctx_size` — the backend's context window; drives the default budget
-  (`floor(0.85 × ctx_size)`).
-- `modality` — `text` (default) / `multimodal` / `embedding` / `rerank`. **This
-  is the gate that makes a mixed pool safe** — declare it correctly.
-- `api_key_env` (preferred) or `api_key`, plus `headers` — for bearer-gated
-  remote endpoints (OpenRouter / Together / Fireworks). The literal key never
-  lands in the file when you use `api_key_env`, and auth values are never logged.
-
-Environment variables (`QWEN_BACKENDS`, `QWEN_DEFAULT_EXTENSIONS`,
-`QWEN_MAX_CONTEXT_TOKENS`, `QWEN_MAX_TOOL_CALLS`) override the file when set.
+The one field to get right is **`modality`** (`text` / `multimodal` /
+`embedding` / `rerank`). It's the gate that lets the router pick the right
+backend for each kind of call, so a mixed pool stays safe. For remote endpoints
+behind a key, use `api_key_env` so the key is read from the environment and never
+sits in the file. Every field is documented inline in
+[`config.example.json`](../config.example.json).
 
 ---
 
@@ -263,17 +253,17 @@ The stack is the supervisor; your app wires its dispatch through it. Two pattern
 
 ## Troubleshooting
 
-| Symptom / `error.code` | Cause | Fix |
-|---|---|---|
-| `context_exceeded` (`state=error`) | Session overran `max_context_tokens`. | Raise the cap, or have the orchestrator react to `context_pressure` events and wind down. |
-| `ECONNRESET` mid-task | Context overrun crashed the backend HTTP layer before the budget caught it. | Lower `max_context_tokens` so the clean abort fires first; confirm `ctx_size` is declared on the backend. |
-| `wrong_modality` | Pinned a backend whose modality does not match the call (e.g. a text backend for vision). | Pin a backend with the right `modality`, or drop the pin and let the router pick. |
-| `backend_no_mmproj` | Multimodal call hit a backend without the vision projector. | Restart `llama-server` with `--mmproj`; verify via `/v1/models` capabilities. |
-| `backend_offline` / `backend_internal` | Backend unreachable or returned 5xx. | `/qwen-stack:backends test`; check the server is up and the `url` is right. |
-| Image path rejected ("outside the allowed roots") | `{path}` resolves outside `$HOME`/temp. | Add the dir to `QWEN_VISION_IMAGE_PATHS`, or pass the image as `{base64}`. |
-| Session went `idle` and "hung" | The model asked a clarifying question (plain text, no tool). | Read the last assistant text and answer with `qwen_send`. |
-| Cold spawn slow on first call | Backend model load (minutes off external SSD). | Expected once per model load; subsequent spawns are warm. Keep the backend resident. |
-| Config edit not taking effect | An env override is masking the file, or you are reading an in-flight session. | `/qwen-stack:status` shows env overrides; remember edits apply to *new* spawns only. |
+Start with `/qwen-stack:status` — it shows process state, build freshness,
+per-backend health, and env overrides in one shot. The error codes are
+self-describing; these are the few cases where the cause isn't obvious from the
+message:
 
-Start any diagnosis with `/qwen-stack:status` — it surfaces process state, build
-freshness, per-backend health, env overrides, and obvious red flags in one shot.
+- **A session went `idle` and seems hung.** It isn't stuck — the model asked a
+  clarifying question (as plain text; the inner Qwen has no question tool). Read
+  the last assistant message and reply with `qwen_send`.
+- **`ECONNRESET` mid-task.** The context overran and crashed the backend before
+  the budget abort fired. Lower `max_context_tokens` so the clean
+  `context_exceeded` abort wins, and make sure the backend declares `ctx_size`.
+- **A config edit did nothing.** Either an env var is overriding the file
+  (`/qwen-stack:status` flags this), or you're looking at an in-flight session —
+  edits only apply to new spawns.

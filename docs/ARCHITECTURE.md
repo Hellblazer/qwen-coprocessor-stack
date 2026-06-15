@@ -106,16 +106,9 @@ flowchart TB
   ROUTER -->|HTTP| LB
 ```
 
-| Area | File(s) | Responsibility |
-|---|---|---|
-| MCP tool surface | `server.ts` | Registers all 15 `qwen_*` tools; Zod-validates inputs; owns the shutdown sequence and the reaper interval. |
-| Session pool | `pool.ts`, `session.ts` | Per-`task_id` session lifecycle, LRU eviction, idle reaper, the multi-turn `streamInput` generator, the session budget. |
-| Backend router | `backends.ts` | `chooseBackend` and the modality/role variants; config load + mtime cache; health probing; weighted round-robin. |
-| Dispatch executor | `dispatch.ts`, `dispatch-tool.ts`, `dispatch-registry.ts` | The RDR-007/008 `dispatch()` contract, the one-shot poll-to-completion runner, the harvest envelope. |
-| Direct modality | `vision.ts`, `embed.ts`, `rerank.ts`, `tokenize.ts`, `chat.ts`, `openai-compat.ts` | Stateless per-request handlers that bypass the SDK and POST OpenAI-compat directly. |
-| Permission gate | `permissions.ts` | Classifies SDK tools; write tools require explicit authority. |
-| Oneshot threading | `threads.ts` | In-process conversation memory for `qwen_oneshot` / `qwen_oneshot_vision`. |
-| Lifecycle | `shutdown.ts`, `serialize.ts`, `worktree.ts`, `extensions.ts` | Graceful shutdown, per-backend serialization, git worktree prep, extension resolution. |
+The node labels are the source files; read them for the detail. The rest of this
+document covers the three parts worth understanding before you do: the session
+pool, the router, and the dispatch contract.
 
 ---
 
