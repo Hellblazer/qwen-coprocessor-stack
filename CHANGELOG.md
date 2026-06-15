@@ -14,6 +14,48 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.10] - 2026-06-14
+
+Code-review remediation across the supervisor and the eval harness, plus a full
+documentation rebuild. No behavior changes to the tool surface; the supervisor
+fixes are correctness hardening.
+
+### Fixed
+
+- **Router:** `classifyCapacity` now guards `ROUTER_HEAVY_THRESHOLD_TOKENS`
+  against a malformed value — a non-numeric env var previously parsed to `NaN`,
+  making every large prompt classify as `fast` and silently routing it to a
+  small backend. `roundRobin` clamps an explicit `weight: 0` to 1 instead of
+  zeroing the pool weight.
+- **Shutdown:** the tool-handler shutdown guard is now actually activated on
+  SIGTERM/SIGINT, so `qwen_spawn`/`qwen_oneshot_vision`/`qwen_chat` reject new
+  work during shutdown instead of slipping through.
+- **Dispatch (`qwen_dispatch`):** `worktree` is validated as an absolute path,
+  `agent_kind` is validated against the known dispatcher set, and a wall-clock
+  timeout now reaps the spawned session instead of leaving it running until the
+  periodic sweep.
+- **Inputs:** `qwen_spawn` `task` and `qwen_send` `message` reject empty strings
+  at the validation boundary.
+- **Oneshot threading:** an expired or unknown `continuation_id` now surfaces
+  `continuation_reset: true` so a caller can tell prior context was lost.
+- **Vision:** the image-path allowlist is resolved once and memoized instead of
+  re-running blocking `realpath` syscalls per image on every multi-image request.
+- **Eval harness:** the scoring subprocess is killed (process-group SIGKILL) on
+  timeout instead of orphaning Docker containers; corrupt telemetry lines are
+  skipped with a warning instead of aborting the report phase; diff-header
+  parsing no longer truncates paths containing spaces.
+
+### Documentation
+
+- Composed `docs/ARCHITECTURE.md`, `docs/USER_GUIDE.md`, and
+  `docs/DEVELOPMENT.md`, and rebuilt the README around what problem the stack
+  solves, why to use it, how to install it, and where to go next. Diagrams are
+  Mermaid.
+
+### Internal
+
+- Root `node_modules/` is gitignored; a stray empty directory was removed.
+
 ## [0.11.9] - 2026-06-13
 
 Vision-on-Mac topology hardening plus a silent-correctness fix for concurrent
