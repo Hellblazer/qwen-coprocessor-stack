@@ -257,6 +257,17 @@ describe("approxTokens / classifyCapacity", () => {
     expect(classifyCapacity("a tricky problem")).toBe("heavy");
     expect(classifyCapacity("an architectural choice")).toBe("fast"); // arch* no longer keyword
   });
+
+  it("falls back to the default threshold on a malformed ROUTER_HEAVY_THRESHOLD_TOKENS (regression: NaN must not disable token classification)", () => {
+    // A bare parseInt would yield NaN here and `tokens >= NaN` is always false,
+    // silently routing every large prompt to a 'fast' backend. The guarded
+    // parse must ignore the junk value and apply the 2000-token default.
+    process.env["ROUTER_HEAVY_THRESHOLD_TOKENS"] = "abc";
+    const huge = Array.from({ length: 3000 }, () => "word").join(" ");
+    expect(classifyCapacity(huge)).toBe("heavy");
+    // And a small prompt with no keyword still classifies fast.
+    expect(classifyCapacity("fix this typo")).toBe("fast");
+  });
 });
 
 describe("chooseBackend — routing algorithm", () => {
@@ -347,6 +358,20 @@ describe("chooseBackend — routing algorithm", () => {
     // weight 1 vs 9 → expected ~10% / ~90%, allow generous tolerance
     expect(counts["weighted"]).toBeGreaterThan(800);
     expect(counts["local-27b"]).toBeGreaterThan(50);
+  });
+
+  it("explicit weight:0 degrades to equal weighting (not NaN-index last-pin)", async () => {
+    // `?? 1` lets an explicit 0 through, which zeroed totalWeight -> NaN index
+    // -> the for-loop fell through and always returned the LAST candidate. The
+    // clamp must make both zero-weight backends reachable.
+    const a = { ...local27, id: "zero-a", weight: 0 };
+    const b = { ...local27, id: "zero-b", weight: 0 };
+    const picks = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      const r = await chooseBackend([a, b], {}, "x", allHealthy);
+      if (r) picks.add(r.id);
+    }
+    expect(picks).toEqual(new Set(["zero-a", "zero-b"]));
   });
 
   it("when all backends unhealthy and no local available, returns null", async () => {

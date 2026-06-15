@@ -281,6 +281,52 @@ describe("makeQwenSpawnDispatch", () => {
     expect(harvest).toHaveBeenCalledTimes(1);
   });
 
+  it("wall-clock timeout reaps the session via the stop effect", async () => {
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValue(TASK.timeout + 1);
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "task-xyz",
+      poll: async () => ({ state: "running" }),
+      harvest: patchHarvest("partial"),
+      sleep: async () => {},
+      now,
+      stop,
+    }, OPTS);
+    const r = await dispatch(TASK, qwenProvider);
+    expect(r.outcome).toBe("timeout");
+    // The orphaned session must be stopped with the spawned task id.
+    expect(stop).toHaveBeenCalledWith("task-xyz");
+  });
+
+  it("does NOT call stop on a clean terminal exit", async () => {
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "t",
+      poll: async () => ({ state: "complete" }),
+      harvest: patchHarvest(""),
+      sleep: async () => {},
+      now: () => 0,
+      stop,
+    }, OPTS);
+    await dispatch(TASK, qwenProvider);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("a throwing stop effect does not mask the timeout result", async () => {
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValue(TASK.timeout + 1);
+    const stop = vi.fn().mockRejectedValue(new Error("stop failed"));
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "t",
+      poll: async () => ({ state: "running" }),
+      harvest: patchHarvest("partial"),
+      sleep: async () => {},
+      now,
+      stop,
+    }, OPTS);
+    const r = await dispatch(TASK, qwenProvider);
+    expect(r.outcome).toBe("timeout");
+  });
+
   it("rejects a model-endpoint provider before spawning", async () => {
     const spawn = vi.fn();
     const dispatch = makeQwenSpawnDispatch({

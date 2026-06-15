@@ -12,6 +12,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  _resetAllowedRootsCache,
   dispatchVisionOneshot,
   normalizeImage,
   type VisionImageInput,
@@ -31,6 +32,12 @@ const ONE_PX_PNG_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 describe("normalizeImage", () => {
+  // resolveAllowedRoots is memoized at module scope; reset between tests so a
+  // QWEN_VISION_IMAGE_PATHS change in one test can't leak into the next (and so
+  // the env-extension test below genuinely re-resolves after setting the var).
+  beforeEach(() => _resetAllowedRootsCache());
+  afterEach(() => _resetAllowedRootsCache());
+
   it("passes url inputs through verbatim", async () => {
     const block = await normalizeImage({ url: "data:image/png;base64,FOO" });
     expect(block).toEqual({
@@ -127,10 +134,11 @@ describe("normalizeImage", () => {
       // tmpdir(), already in the allowlist).
       const block = await normalizeImage({ path: inside });
       expect(block.image_url.url).toMatch(/^data:image\/png;base64,/);
-      // The env-var path is exercised in resolveAllowedRoots(); here
-      // we only confirm the function inspects the env on each call by
-      // setting + immediately consuming.
+      // The env-var path is read in resolveAllowedRoots(), which is memoized —
+      // so a mid-test env change only takes effect after a cache reset. Reset,
+      // then confirm the extended allowlist is honoured.
       process.env["QWEN_VISION_IMAGE_PATHS"] = customRoot;
+      _resetAllowedRootsCache();
       const block2 = await normalizeImage({ path: inside });
       expect(block2.image_url.url).toMatch(/^data:image\/png;base64,/);
     } finally {

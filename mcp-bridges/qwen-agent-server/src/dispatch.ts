@@ -258,6 +258,11 @@ export interface QwenSpawnEffects {
   sleep: (ms: number) => Promise<void>;
   /** Monotonic clock in ms. Injected for deterministic deadline tests. */
   now: () => number;
+  /** Optional: stop/remove the session. Called fire-and-forget on a wall-clock
+   *  timeout so the spawned session does not sit `running` in the pool until the
+   *  periodic reaper sweep. Omitted in tests that don't exercise the path; a
+   *  terminal-state exit needs no stop (the session already finished). */
+  stop?: (taskId: string) => Promise<void>;
 }
 
 /** Terminal session states for a one-shot agentic run: the agent has finished
@@ -294,6 +299,14 @@ export function makeQwenSpawnDispatch(
         break;
       }
       await effects.sleep(pollIntervalMs);
+    }
+
+    // On timeout the session is still `running` in the pool; stop it so it does
+    // not linger until the periodic reaper. Fire-and-forget (swallow errors):
+    // cleanup is best-effort and must not mask the timeout result. A terminal
+    // exit needs no stop — the session already reached a terminal state.
+    if (timedOut && effects.stop !== undefined) {
+      void effects.stop(taskId).catch(() => {});
     }
 
     const outcome: AgentOutcome = timedOut

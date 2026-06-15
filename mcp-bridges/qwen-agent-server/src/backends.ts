@@ -436,10 +436,12 @@ export function approxTokens(text: string): number {
  *    "prove,derive,architect,design"); whole-word case-insensitive.
  */
 export function classifyCapacity(prompt: string): Backend["capacity"] {
-  const threshold = parseInt(
-    process.env["ROUTER_HEAVY_THRESHOLD_TOKENS"] ?? String(HEAVY_THRESHOLD_DEFAULT),
-    10,
-  );
+  // parseNumericEnv guards NaN/negatives (warns + returns null); a bare
+  // parseInt here would yield NaN on a malformed value, making the
+  // `>= threshold` test always false and silently routing every large
+  // prompt to a 'fast' backend.
+  const threshold =
+    parseNumericEnv("ROUTER_HEAVY_THRESHOLD_TOKENS", process.env) ?? HEAVY_THRESHOLD_DEFAULT;
   if (approxTokens(prompt) >= threshold) return "heavy";
 
   const kwRaw = process.env["ROUTER_HEAVY_KEYWORDS"] ?? HEAVY_KEYWORDS_DEFAULT;
@@ -570,13 +572,18 @@ function roundRobin<T extends { weight?: number }>(key: string, candidates: T[])
     throw new Error("roundRobin called with empty candidates");
   }
   // Weighted? Expand into a virtual list; otherwise plain RR.
-  const totalWeight = candidates.reduce((s, b) => s + (b.weight ?? 1), 0);
+  // `?? 1` only substitutes null/undefined, so an explicit `weight: 0`
+  // would survive and could zero out totalWeight -> NaN index. Clamp every
+  // weight to >= 1 so a misconfigured zero degrades to equal weighting
+  // instead of silently pinning all traffic to the last candidate.
+  const effectiveWeight = (b: T) => Math.max(b.weight ?? 1, 1);
+  const totalWeight = candidates.reduce((s, b) => s + effectiveWeight(b), 0);
   if (candidates.some((b) => b.weight !== undefined)) {
     const i = (rrCounters.get(key) ?? 0) % totalWeight;
     rrCounters.set(key, i + 1);
     let cum = 0;
     for (const b of candidates) {
-      cum += b.weight ?? 1;
+      cum += effectiveWeight(b);
       if (i < cum) return b;
     }
     return candidates[candidates.length - 1]!;

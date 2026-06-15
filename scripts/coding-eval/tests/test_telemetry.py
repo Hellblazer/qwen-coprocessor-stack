@@ -100,6 +100,20 @@ def test_diffstat_empty_patch():
     assert telemetry.diffstat("   \n  ") == {"added": 0, "removed": 0, "files": 0}
 
 
+def test_diffstat_counts_file_with_spaces_in_path():
+    # `\S+` truncated the path at the first space and miscounted the file header;
+    # `(.+) b/(.+)$` keeps spaced paths intact so the file is counted once.
+    diff = (
+        "diff --git a/my dir/my file.py b/my dir/my file.py\n"
+        "--- a/my dir/my file.py\n"
+        "+++ b/my dir/my file.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert telemetry.diffstat(diff) == {"added": 1, "removed": 1, "files": 1}
+
+
 def test_diffstat_excludes_file_headers():
     # The +++/--- header lines must NOT be counted as added/removed body lines.
     ds = telemetry.diffstat(SINGLE_FILE_DIFF)

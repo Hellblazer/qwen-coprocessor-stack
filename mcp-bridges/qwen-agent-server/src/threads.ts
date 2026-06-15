@@ -83,27 +83,34 @@ export class ThreadStore {
    * unknown, a fresh thread is created; when known, its expiry is
    * refreshed.
    *
-   * Returns the canonical id (caller-supplied or newly minted) plus
-   * the current turns in chronological order.
+   * Returns the canonical id (caller-supplied or newly minted), the
+   * current turns in chronological order, and `was_reset`: true when the
+   * caller supplied a `continuation_id` whose thread was unknown or had
+   * expired, so the returned thread is empty and prior context is gone.
+   * `was_reset` is false for a known live thread and for a freshly minted
+   * id (the caller supplied none, so there was nothing to lose). Callers
+   * should surface a true value so a chained conversation can detect that
+   * continuity was silently lost (process bounce / TTL expiry).
    */
-  resolve(id: string | undefined): { id: string; turns: Turn[] } {
+  resolve(id: string | undefined): { id: string; turns: Turn[]; was_reset: boolean } {
     if (id !== undefined && id !== "") {
       const existing = this.threads.get(id);
       if (existing !== undefined && existing.expires_at > Date.now()) {
         existing.expires_at = Date.now() + this.ttl_ms;
-        return { id, turns: [...existing.turns] };
+        return { id, turns: [...existing.turns], was_reset: false };
       }
-      // Honour caller-supplied id even if unknown — they may be
+      // Honour caller-supplied id even if unknown/expired — they may be
       // restarting a thread after a process bounce. v1 starts a fresh
-      // thread under the supplied id rather than rejecting; this is
-      // the more useful default.
+      // thread under the supplied id rather than rejecting; this is the
+      // more useful default, but flag was_reset so the caller knows the
+      // prior context did not survive.
       const fresh: Thread = {
         id,
         turns: [],
         expires_at: Date.now() + this.ttl_ms,
       };
       this.threads.set(id, fresh);
-      return { id, turns: [] };
+      return { id, turns: [], was_reset: true };
     }
     const newId = randomUUID();
     const fresh: Thread = {
@@ -112,7 +119,7 @@ export class ThreadStore {
       expires_at: Date.now() + this.ttl_ms,
     };
     this.threads.set(newId, fresh);
-    return { id: newId, turns: [] };
+    return { id: newId, turns: [], was_reset: false };
   }
 
   /**

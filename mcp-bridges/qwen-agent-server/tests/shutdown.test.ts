@@ -87,6 +87,26 @@ describe("setupShutdown", () => {
     expect(isShuttingDown()).toBe(true);
   });
 
+  it("invokes onShutdownStart once, synchronously, at the start of shutdown", async () => {
+    const pool = makePool([]);
+    const onShutdownStart = vi.fn();
+    const { handleSignal } = setupShutdown(
+      mockServer as Parameters<typeof setupShutdown>[0],
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
+      onShutdownStart,
+    );
+
+    const p = handleSignal("SIGTERM");
+    // Synchronous: the tool-handler guard must flip before the first await
+    // (server.close) so no new spawn slips through the shutdown window.
+    expect(onShutdownStart).toHaveBeenCalledOnce();
+    await p;
+    // A second signal is a no-op (shutdownStarted guard) — not re-invoked.
+    await handleSignal("SIGINT");
+    expect(onShutdownStart).toHaveBeenCalledOnce();
+  });
+
   // ── clean shutdown path ───────────────────────────────────
 
   it("calls stop() on each live session", async () => {

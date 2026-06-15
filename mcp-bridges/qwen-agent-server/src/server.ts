@@ -647,6 +647,7 @@ export function createToolHandlers(
           ...(last_budget !== undefined ? { budget: last_budget } : {}),
           elapsed_ms: Date.now() - oneshot_start,
           continuation_id,
+          ...(thread.was_reset ? { continuation_reset: true } : {}),
         };
       }
       // Defensive: Qwen3.6 frequently wraps schema-conforming JSON in
@@ -668,6 +669,7 @@ export function createToolHandlers(
           ...(last_budget !== undefined ? { budget: last_budget } : {}),
           elapsed_ms: Date.now() - oneshot_start,
           continuation_id,
+          ...(thread.was_reset ? { continuation_reset: true } : {}),
         };
       } catch (err) {
         last_error = {
@@ -809,7 +811,11 @@ export function createToolHandlers(
         content: result.result,
       });
     }
-    return { ...result, continuation_id };
+    return {
+      ...result,
+      continuation_id,
+      ...(thread.was_reset ? { continuation_reset: true } : {}),
+    };
   };
 
   // ── qwen_embed / qwen_rerank / qwen_tokenize ────────────────
@@ -911,7 +917,11 @@ export function createToolHandlers(
       threads.append(continuation_id, { role: "user", content: task });
       threads.append(continuation_id, { role: "assistant", content: result.result });
     }
-    return { ...result, continuation_id };
+    return {
+      ...result,
+      continuation_id,
+      ...(thread.was_reset ? { continuation_reset: true } : {}),
+    };
   };
 
   const qwen_embed: ToolHandlers["qwen_embed"] = async ({ texts, opts }) => {
@@ -1205,7 +1215,7 @@ async function main(): Promise<void> {
     "qwen_spawn",
     "Spawn a new Qwen Code session. Returns task_id and chosen_backend immediately; inference runs async.",
     {
-      task: z.string().describe("The task/prompt to run"),
+      task: z.string().min(1, "task must be non-empty").describe("The task/prompt to run"),
       opts: qwenSpawnOptsSchema,
     },
     async (args) => {
@@ -1246,7 +1256,7 @@ async function main(): Promise<void> {
     "Push the next user message into a running or idle session. Wakes idle sessions for the next turn.",
     {
       task_id: z.string().describe("Session task ID"),
-      message: z.string().describe("The answer or message to deliver"),
+      message: z.string().min(1, "message must be non-empty").describe("The answer or message to deliver"),
     },
     async (args) => {
       const result = await handlers.qwen_send(args);
@@ -1364,7 +1374,13 @@ async function main(): Promise<void> {
       // "patch" — coding runs unchanged). Resolved here at the tool layer and
       // injected; AgentTask / Dispatch stay untouched.
       const effects = makeSupervisorQwenSpawnEffects(
-        { qwen_spawn: handlers.qwen_spawn, qwen_poll: handlers.qwen_poll },
+        {
+          qwen_spawn: handlers.qwen_spawn,
+          qwen_poll: handlers.qwen_poll,
+          // Reap a timed-out dispatch session promptly instead of leaving it
+          // running until the periodic reaper sweep.
+          qwen_stop: handlers.qwen_stop,
+        },
         gitExtractPatch,
         { harvest: selectHarvester(args.harvest ?? "patch", gitExtractPatch) },
       );
@@ -1379,17 +1395,29 @@ async function main(): Promise<void> {
           loadProviders: loadAgentProviders,
           resolveDispatch: (provider, baseCommit) =>
             createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit }).resolve(provider),
-          resolveWorktree: (input) =>
-            input.repo !== undefined
-              ? executorManagedWorktree({
-                  repo: input.repo,
-                  baseCommit: input.base_commit,
-                  instanceId: randomUUID(),
-                  cacheRoot: wtCacheRoot,
-                  workRoot: wtWorkRoot,
-                  ...(input.repo_url !== undefined ? { repoUrl: input.repo_url } : {}),
-                })
-              : callerSuppliedWorktree(input.worktree!),
+          resolveWorktree: (input) => {
+            if (input.repo !== undefined) {
+              return executorManagedWorktree({
+                repo: input.repo,
+                baseCommit: input.base_commit,
+                instanceId: randomUUID(),
+                cacheRoot: wtCacheRoot,
+                workRoot: wtWorkRoot,
+                ...(input.repo_url !== undefined ? { repoUrl: input.repo_url } : {}),
+              });
+            }
+            // runQwenDispatch enforces the repo-XOR-worktree invariant before
+            // invoking this resolver, so worktree is defined here. Guard with the
+            // typed error anyway rather than a `!` that silently relies on a
+            // distant check.
+            if (input.worktree === undefined) {
+              throw new QwenDispatchError(
+                "invalid_worktree_spec",
+                `qwen_dispatch requires exactly one of "worktree" or "repo"; got neither.`,
+              );
+            }
+            return callerSuppliedWorktree(input.worktree);
+          },
         });
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       } catch (err) {
@@ -1600,6 +1628,9 @@ async function main(): Promise<void> {
     mcpServer,
     pool,
     process.exit,
+    // Activate the tool-handler shutdown guard so qwen_spawn/vision/chat reject
+    // new work immediately on signal (the closure flag is otherwise never set).
+    () => handlers.__setShuttingDown(true),
   );
 
   process.on("SIGTERM", () => {

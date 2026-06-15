@@ -128,6 +128,19 @@ def test_summarize_arm_requires_arm():
         variance.summarize_arm("", {"a": [True, True, True]})
 
 
+def test_summarize_arm_warns_when_n_reps_below_two():
+    # A single rep can never flip, so flip_rate is a vacuous 0.0 that report.py
+    # would render as a deceptively clean band. summarize_arm must warn.
+    with pytest.warns(RuntimeWarning, match="n_reps=1 < 2"):
+        rec = variance.summarize_arm("A", {"a": [True]}, n_reps=1)
+    assert rec.flip_rate == 0.0
+
+
+def test_summarize_arm_no_warning_at_two_reps(recwarn):
+    variance.summarize_arm("A", {"a": [True, False]}, n_reps=2)
+    assert not [w for w in recwarn.list if "n_reps" in str(w.message)]
+
+
 # ── probe orchestration (injectable run_and_score seam) ────────────────────
 
 

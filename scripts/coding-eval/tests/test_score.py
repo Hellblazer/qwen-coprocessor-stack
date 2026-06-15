@@ -145,6 +145,16 @@ def test_parse_report_counts(tmp_path):
     assert norm["snapshot_revision"] == subset.SNAPSHOT_REVISION
 
 
+def test_parse_report_rejects_non_dict_json(tmp_path):
+    # A harness report that is a bare array / string / null would make
+    # raw.get(...) raise an opaque AttributeError; parse_report must fail with a
+    # clear message naming the file and shape instead.
+    rep_file = tmp_path / "m.run.json"
+    rep_file.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="not a JSON object"):
+        score.parse_report(rep_file, ["i-1"], run_id="run")
+
+
 def test_parse_report_missing_instance_counts_unresolved(tmp_path):
     """An instance we asked to score but absent from the harness report (error /
     empty-patch / incomplete) is counted unresolved — no crash."""
@@ -359,20 +369,26 @@ def test_make_default_runner_returns_callable_per_timeout():
 
 def test_score_predictions_threads_harness_timeout_to_built_runner(tmp_path, monkeypatch):
     # When no runner is injected, score_predictions builds one with the given
-    # harness_timeout; verify the timeout reaches subprocess.run.
+    # harness_timeout; verify the timeout reaches the subprocess wait. The
+    # default runner uses Popen + wait(timeout=) (start_new_session) so a hung
+    # harness's whole process group can be SIGKILLed on timeout.
     captured = {}
 
-    class _Done:
-        returncode = 0
+    class _FakeProc:
+        pid = 4321
 
-    def fake_run(argv, cwd=None, timeout=None):
-        captured["timeout"] = timeout
-        # Write a minimal harness report so parse_report succeeds.
-        rep = score.report_path(tmp_path / "preds.jsonl", "rid", tmp_path)
-        rep.write_text('{"resolved_ids": [], "completed_ids": []}', encoding="utf-8")
-        return _Done()
+        def wait(self, timeout=None):
+            captured["timeout"] = timeout
+            # Write a minimal harness report so parse_report succeeds.
+            rep = score.report_path(tmp_path / "preds.jsonl", "rid", tmp_path)
+            rep.write_text('{"resolved_ids": [], "completed_ids": []}', encoding="utf-8")
+            return 0
 
-    monkeypatch.setattr("subprocess.run", fake_run)
+    def fake_popen(argv, cwd=None, start_new_session=False):
+        captured["start_new_session"] = start_new_session
+        return _FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
     preds = tmp_path / "preds.jsonl"
     _write_preds(preds, "gold", ["x"])
     score.score_predictions(
@@ -380,6 +396,39 @@ def test_score_predictions_threads_harness_timeout_to_built_runner(tmp_path, mon
         harness_timeout=12345, cwd=tmp_path, report_out=tmp_path / "out.json",
     )
     assert captured["timeout"] == 12345
+    assert captured["start_new_session"] is True
+
+
+def test_default_runner_kills_process_group_on_timeout(tmp_path, monkeypatch):
+    # A harness that exceeds the cutoff must have its whole process group
+    # SIGKILLed (not merely abandoned, which orphans Docker containers), and the
+    # runner must return the distinct 124 code.
+    import signal
+    import subprocess
+
+    killed = {}
+
+    class _HangingProc:
+        pid = 9999
+
+        def __init__(self):
+            self._waits = 0
+
+        def wait(self, timeout=None):
+            self._waits += 1
+            if self._waits == 1:
+                raise subprocess.TimeoutExpired(cmd="harness", timeout=timeout)
+            return 0  # bounded reap after kill
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: _HangingProc())
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("os.killpg", lambda pgid, sig: killed.update(pgid=pgid, sig=sig))
+
+    runner = score._make_default_runner(timeout_seconds=0.01)
+    rc = runner(["harness"], tmp_path)
+    assert rc == 124
+    assert killed["pgid"] == 9999
+    assert killed["sig"] == signal.SIGKILL
 
 
 def test_build_argv_max_workers_default_and_override():

@@ -46,7 +46,14 @@ const ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "data:"]);
  *  paths). The defaults cover the two common drop-zones — the user's
  *  home directory (screenshots, downloads, image collections) and
  *  os.tmpdir() (clipboard / pasted-image pipelines). */
+let _allowedRootsCache: string[] | null = null;
+
 function resolveAllowedRoots(): string[] {
+  // Memoized: tmpdir, homedir, and QWEN_VISION_IMAGE_PATHS are all
+  // process-stable, but normalizeImage runs per-image via Promise.all, so an
+  // un-cached version fires N×(2+|extra|) blocking realpathSync syscalls on the
+  // event loop for an N-image request. Resolve once, reuse.
+  if (_allowedRootsCache !== null) return _allowedRootsCache;
   const roots = new Set<string>();
   const tmp = fs_realpathSync(os.tmpdir());
   const home = fs_realpathSync(os.homedir());
@@ -62,7 +69,14 @@ function resolveAllowedRoots(): string[] {
       if (real) roots.add(real);
     }
   }
-  return [...roots];
+  _allowedRootsCache = [...roots];
+  return _allowedRootsCache;
+}
+
+/** Test-only: clear the memoized allowlist so a test can re-resolve after
+ *  changing QWEN_VISION_IMAGE_PATHS. */
+export function _resetAllowedRootsCache(): void {
+  _allowedRootsCache = null;
 }
 
 /** Synchronously realpath a directory, returning undefined on any

@@ -20,6 +20,7 @@ backends/Docker); the live adapter wires that seam to the real arm runners.
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -105,6 +106,17 @@ def summarize_arm(
     """Build the per-arm FlipRateRecord from a probe's verdict matrix."""
     if not arm:
         raise ValueError("arm is required")
+    if n_reps < 2:
+        # A single rep can never disagree with itself, so instance_flipped is
+        # always False and flip_rate/band_points are a vacuous 0.0 — which
+        # report.py would render as a deceptively clean "no variance" band.
+        # Warn rather than silently report zero.
+        warnings.warn(
+            f"arm {arm}: n_reps={n_reps} < 2; flip rate is vacuously 0.0 "
+            "(a single rep cannot flip). The reported band is not meaningful.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     fr = flip_rate(verdicts_by_instance)
     n_flipped = sum(
         1 for v in verdicts_by_instance.values() if instance_flipped(v)
