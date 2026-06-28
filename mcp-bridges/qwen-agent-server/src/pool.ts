@@ -49,6 +49,14 @@ export interface SessionPool {
   backends: Backend[];
   qwenRealBin: string;
   wrapperPath: string;
+  /**
+   * Backend ids already warned about un-forwardable `headers` on the agentic
+   * path (RDR-012 §Decision item 2 / gate S2). Pool-level + per-process so the
+   * WARN fires once per distinct backend across many spawns, while a
+   * headers-bearing backend added via config hot-reload still warns on first
+   * use (a single global flag would miss it; per-spawn would storm the log).
+   */
+  headersWarned: Set<string>;
 }
 
 export interface CreatePoolOpts {
@@ -73,7 +81,37 @@ export function createPool(opts: CreatePoolOpts = {}): SessionPool {
     backends,
     qwenRealBin: opts.qwenRealBin ?? "",
     wrapperPath: opts.wrapperPath ?? "",
+    headersWarned: new Set(),
   };
+}
+
+/**
+ * WARN once (per `backend.id`, per process) when an agentic spawn routes to a
+ * backend that declares custom `headers` (RDR-012 §Decision item 2, gate S2).
+ *
+ * Those headers (e.g. OpenRouter's `HTTP-Referer` / `X-Title` attribution) are
+ * NOT forwarded on the agentic path: `@qwen-code/sdk` authenticates via env and
+ * exposes no request-header channel. They ARE honored on the direct-HTTP tools
+ * (qwen_chat / qwen_oneshot_vision / qwen_embed / qwen_rerank / qwen_tokenize).
+ * OpenRouter functions without them; only dashboard attribution is affected.
+ *
+ * Logs only the header NAMES (keys), never their values. The dedup Set lives on
+ * the pool so the warning fires once per distinct backend, not per spawn.
+ */
+export function warnAgenticHeadersDropped(pool: SessionPool, backend: Backend): void {
+  const names = backend.headers ? Object.keys(backend.headers) : [];
+  if (names.length === 0) return;
+  if (pool.headersWarned.has(backend.id)) return;
+  pool.headersWarned.add(backend.id);
+  log.warn(
+    {
+      event_type: "agentic_headers_not_forwarded",
+      backend_id: backend.id,
+      header_names: names,
+    },
+    "backend.headers are not forwarded on the agentic path (SDK has no header " +
+      "channel); they are honored only on the direct-HTTP tools",
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -189,6 +227,10 @@ export async function spawnSession(
   if (!backend) {
     throw new Error("no backend available");
   }
+
+  // RDR-012 Item2: surface (once per backend) that any declared custom headers
+  // won't reach the inner qwen-code on this agentic path.
+  warnAgenticHeadersDropped(pool, backend);
 
   // Fill in budget defaults now that the backend is known. Caller-set
   // opts win; otherwise env / config / floor(0.85 * backend.ctx_size) /
