@@ -26,4 +26,5 @@ namespace) for cross-session discoverability.
 | 009 | closed (implemented)  | architecture | [Generalized harvest envelope — dispatch returns a typed Artifact[] (push+pull) instead of a patch; nexus owns the ledger](RDR-009-harvest-envelope.md) |
 | 010 | closed (implemented)  | design       | [Executor value-harvest — a dispatched leaf returns its structured finalMessage as a {kind:value} artifact](RDR-010-executor-value-harvest.md) |
 | 011 | closed (implemented)  | design       | [Entity/tier producer contract — what an orchestrator must emit for the entity/tier Artifact kinds, and how they compose with executor patch/value artifacts](RDR-011-entity-tier-producer-contract.md) |
+| 013 | accepted              | design       | [Per-spawn MCP server forwarding — let qwen_spawn/qwen_oneshot provision the inner qwen-code agent with per-task MCP tools](RDR-013-per-spawn-mcp-forwarding.md) |
 | 012 | closed (implemented)  | design       | [Agentic-path remote credentials — forward per-backend auth so qwen_spawn/qwen_oneshot can drive authenticated remote OpenAI-compatible providers (OpenRouter, Together, Fireworks)](RDR-012-agentic-path-remote-credentials.md) |
