@@ -14,6 +14,41 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.11] - 2026-06-28
+
+Remote authenticated providers on the **agentic** path (RDR-012). The
+direct-HTTP tools already honored per-backend credentials; this closes the gap
+so `qwen_spawn`/`qwen_oneshot` can drive authenticated remote OpenAI-compatible
+providers (OpenRouter, Together, Fireworks). Enables, e.g., GLM 5.2
+(`z-ai/glm-5.2`) as an agentic backend.
+
+### Added
+
+- **Per-backend credentials on the agentic path.** The SDK env's
+  `OPENAI_API_KEY` is now resolved from the chosen backend's own
+  `api_key` / `api_key_env` (shared precedence helper `resolveBackendKey`,
+  also used by `resolveAuthHeaders`), instead of a single process-global key.
+  A credentialed remote agentic backend can now be pooled alongside a local
+  no-auth llama-server. Local-only behavior is unchanged (the no-credential
+  case still falls back to `OPENAI_API_KEY ?? "sk-local"`).
+- **Headers-not-forwarded warning.** When an agentic spawn routes to a backend
+  declaring custom `headers` (e.g. OpenRouter `HTTP-Referer`/`X-Title`), the
+  supervisor warns once per `backend.id` (`agentic_headers_not_forwarded`):
+  `@qwen-code/sdk` has no request-header channel, so those headers reach only
+  the direct-HTTP tools. Logs header names, never values.
+- **`scripts/shakeout-openrouter.py`** — stdlib-only shakeout for an
+  authenticated remote endpoint (auth handshake, chat, JSON-schema,
+  tool-calling); plus `config/coprocessor-pool-openrouter.example.json` and
+  `config/openrouter.env.example` (1Password secret references).
+
+### Security
+
+- A declared-but-unset `api_key_env` resolves to an explicit empty bearer
+  (clean provider rejection) — it does **not** fall back to the `sk-local`
+  placeholder and does **not** inherit a process-global `OPENAI_API_KEY`
+  (which would leak it to the remote provider); the misconfig is logged with
+  the backend id + variable name (never the value).
+
 ## [0.11.10] - 2026-06-14
 
 Code-review remediation across the supervisor and the eval harness, plus a full
