@@ -67,6 +67,17 @@ Stateful Node **MCP supervisor** (`mcp-bridges/qwen-agent-server/`) with **confi
 
 **Remote auth'd backends (RDR-012).** A backend may carry `api_key` / `api_key_env` (bearer; prefer the env form) and `headers` for remote OpenAI-compatible providers (OpenRouter, Together, Fireworks) — see `config/coprocessor-pool-openrouter.example.json`. Credentials reach **both** paths. **Headers asymmetry:** `headers` (e.g. OpenRouter `HTTP-Referer`/`X-Title`) are honored on the **direct-HTTP tools** (`qwen_chat`/`qwen_oneshot_vision`/`qwen_embed`/`qwen_rerank`/`qwen_tokenize`) but **not** on the **agentic path** (`qwen_spawn`/`qwen_oneshot`) — `@qwen-code/sdk` has no request-header channel; the supervisor WARNs once per backend (`agentic_headers_not_forwarded`). OpenRouter works without them (attribution-only). Remote agentic backends bypass the prompt-size capacity heuristic by design — pin via `opts.backend` or route by `role`.
 
+**Per-spawn MCP tools + subagents (RDR-013).** `qwen_spawn` / `qwen_oneshot` accept `opts.mcpServers` (a record of stdio `{command,args,env,cwd}` / SSE `{url}` / HTTP `{httpUrl,headers}` server configs) and `opts.agents` (qwen-code subagent definitions). They're forwarded into the inner qwen-code agent via the `@qwen-code/sdk` control-protocol `initialize` (the supervisor sets `queryOptions.mcpServers`/`agents`; the RDR-002 wrapper bridge is not involved). This is how you give a coprocessor the exact tools a task needs without a host-installed extension. Example:
+```jsonc
+qwen_spawn({ task: "...", opts: {
+  backend: "glm-openrouter",
+  mcpServers: { "lsp": { "command": "agent-lsp", "args": ["--stdio"] } },
+  agents: [{ name: "reviewer", description: "...", systemPrompt: "..." }],
+  allow_subagents: true
+}})
+```
+Two invariants: (1) `agents[]` is only reachable when `allow_subagents: true` — otherwise the `agent` tool is excluded and the agents are dead config (the supervisor WARNs `agents_without_allow_subagents`). (2) **`mcpServers` is trusted input, not permission-gated:** a stdio server's `command` is spawned at SDK session init, *before* any tool call, so it is NOT governed by `permissionMode`/`canUseTool` — `write_authority: false` does **not** make a session with stdio `mcpServers` read-only. The in-process `type:"sdk"` config form is rejected at the tool boundary (it can't cross MCP); use stdio/SSE/HTTP.
+
 ## Operational Runbook & Hard-Won Lessons
 
 **Hardware.** Box = `qwentescence` (Windows, AMD Radeon 8060S iGPU on Ryzen AI Max+ 395; 128 GB unified, BIOS carveout ~96 GB GPU / ~32 GB system; Vulkan sees ~106 GB; ~256 GB/s). Mac = M4 Max, 128 GB unified, ~546 GB/s, serves via **MLX**. Both can host ~30–120B small-active-MoE models; bandwidth (not capacity) is the decode bottleneck.
