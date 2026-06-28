@@ -324,6 +324,95 @@ describe("MCP tool handlers", () => {
       // Absolute path still accepted.
       expect(qwenSpawnOptsSchema.parse({ cwd: "/abs/path" })!.cwd).toBe("/abs/path");
     });
+
+    // ── RDR-013 Item1: mcpServers / agents schema validation ──
+
+    it("Zod schema accepts a stdio mcpServers config", () => {
+      const parsed = qwenSpawnOptsSchema.safeParse({
+        mcpServers: {
+          "my-server": { command: "node", args: ["x.js"] },
+        },
+      });
+      expect(parsed.success).toBe(true);
+    });
+
+    it("Zod schema accepts an HTTP mcpServers config and preserves httpUrl", () => {
+      const parsed = qwenSpawnOptsSchema.safeParse({
+        mcpServers: {
+          "http-server": { httpUrl: "http://h/mcp" },
+        },
+      });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect((parsed.data!.mcpServers as Record<string, { httpUrl?: string }>)["http-server"]?.httpUrl)
+          .toBe("http://h/mcp");
+      }
+    });
+
+    it("Zod schema REJECTS a type:sdk mcpServers entry (S2)", () => {
+      const parsed = qwenSpawnOptsSchema.safeParse({
+        mcpServers: {
+          "sdk-server": { type: "sdk", name: "x" },
+        },
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    it("Zod schema accepts an SSE mcpServers config and preserves url", () => {
+      const parsed = qwenSpawnOptsSchema.safeParse({
+        mcpServers: {
+          "sse-server": { url: "http://localhost:3000/sse" },
+        },
+      });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect((parsed.data!.mcpServers as Record<string, { url?: string }>)["sse-server"]?.url)
+          .toBe("http://localhost:3000/sse");
+      }
+    });
+
+    it("stdio mcpServers round-trips through buildSpawnOptsFromRaw (fields preserved)", () => {
+      const servers = { "s": { command: "node", args: ["x.js"] } };
+      const parsed = qwenSpawnOptsSchema.safeParse({ mcpServers: servers });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        const built = buildSpawnOptsFromRaw(parsed.data);
+        expect(built.mcpServers).toEqual(servers);
+      }
+    });
+
+    it("Zod schema accepts agents config and buildSpawnOptsFromRaw round-trips it", () => {
+      const agentsPayload = [{
+        name: "researcher",
+        description: "A research subagent",
+        systemPrompt: "You are a researcher.",
+        level: "session",
+      }];
+      const parsed = qwenSpawnOptsSchema.safeParse({ agents: agentsPayload });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        const built = buildSpawnOptsFromRaw(parsed.data);
+        expect(built.agents).toEqual(agentsPayload);
+      }
+    });
+
+    it("Zod schema omits mcpServers from buildSpawnOptsFromRaw when not provided", () => {
+      const parsed = qwenSpawnOptsSchema.safeParse({});
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        const built = buildSpawnOptsFromRaw(parsed.data);
+        expect("mcpServers" in built).toBe(false);
+      }
+    });
+
+    it("Zod schema omits agents from buildSpawnOptsFromRaw when not provided", () => {
+      const parsed = qwenSpawnOptsSchema.safeParse({});
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        const built = buildSpawnOptsFromRaw(parsed.data);
+        expect("agents" in built).toBe(false);
+      }
+    });
   });
 
   // ── qwen_poll ──────────────────────────────────────────────

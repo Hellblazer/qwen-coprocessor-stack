@@ -5,6 +5,8 @@
 // contract. Changes here ripple through session.ts / backends.ts /
 // permissions.ts / server.ts.
 
+import type { McpServerConfig, SubagentConfig } from "@qwen-code/sdk";
+
 /**
  * One Qwen inference backend the supervisor can route to.
  *
@@ -286,6 +288,42 @@ export interface SpawnOpts {
    * spawn + wait + JSON.parse + optional retry.
    */
   json_schema?: Record<string, unknown>;
+  /**
+   * Per-spawn MCP servers forwarded to the inner qwen-code agent via
+   * `QueryOptions.mcpServers`. Each entry is a named server config that
+   * the SDK passes to the CLI at session initialization.
+   *
+   * **Security note (S3):** a stdio server's `command` is spawned at SDK
+   * *session initialization*, BEFORE any tool call. This spawn is NOT gated
+   * by `permissionMode` / `canUseTool` — the `canUseTool` callback only
+   * intercepts *tool invocations*, not MCP server process launches. Therefore
+   * `write_authority: false` does NOT make a session with stdio `mcpServers`
+   * read-only: the stdio process runs regardless, and any tool it exposes
+   * through the MCP protocol is available to the inner agent (subject to
+   * `excludeTools` / `canUseTool` on each individual tool call, but NOT subject
+   * to a blanket write block). Treat `mcpServers` as trusted input — the
+   * supervisor does not sandbox or restrict the spawned server processes.
+   *
+   * Accepts the JSON-serializable CLI shapes (stdio: `command`/`args`/`env`/
+   * `cwd`; SSE: `url`; HTTP: `httpUrl`/`headers`). The in-process `type: "sdk"`
+   * shape is rejected at the MCP schema boundary (it carries a live `McpServer`
+   * instance that cannot cross the wire). When unset, the field is absent from
+   * `QueryOptions` and behavior is byte-for-byte unchanged.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
+  /**
+   * Per-spawn subagent definitions forwarded to the inner qwen-code agent via
+   * `QueryOptions.agents`. Each entry is a `SubagentConfig` that the inner agent
+   * can invoke via the `agent` tool.
+   *
+   * **Reachability note (S1):** `agents[]` is only reachable when
+   * `allow_subagents === true`. When `allow_subagents` is false (the default),
+   * the `agent` tool is in `excludeTools` and these subagent definitions are a
+   * dead config — the inner agent cannot invoke them. The supervisor emits a
+   * structured WARN when `agents` is non-empty but `allow_subagents` is not set,
+   * so the operator knows the config is unreachable.
+   */
+  agents?: SubagentConfig[];
 }
 
 /**

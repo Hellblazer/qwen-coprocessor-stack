@@ -167,6 +167,58 @@ export const qwenSpawnOptsSchema = z.object({
   max_tool_calls: z.number().int().nonnegative().optional(),
   thinking_mode: z.boolean().optional(),
   json_schema: z.record(z.string(), z.unknown()).optional(),
+  // RDR-013 Item1: per-spawn MCP servers forwarded to the inner qwen-code agent.
+  // Accepts the JSON-serializable CLI shapes (stdio/SSE/HTTP). REJECTS the
+  // in-process `type: "sdk"` shape which carries a live McpServer instance that
+  // cannot cross the MCP wire — safeParse fails (a validation error, NOT a
+  // silent strip). The CLI shapes have NO `type` field; only the SDK shape has
+  // `type: "sdk"`, so the rule is "reject any entry whose type === 'sdk'".
+  mcpServers: z.record(
+    z.string(),
+    z.object({
+      command: z.string().optional(),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string(), z.string()).optional(),
+      cwd: z.string().optional(),
+      url: z.string().optional(),
+      httpUrl: z.string().optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+      tcp: z.string().optional(),
+      timeout: z.number().optional(),
+      trust: z.boolean().optional(),
+      description: z.string().optional(),
+      includeTools: z.array(z.string()).optional(),
+      excludeTools: z.array(z.string()).optional(),
+      extensionName: z.string().optional(),
+      type: z.string().optional(),
+    }).superRefine((val, ctx) => {
+      if (val.type === "sdk") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "type: 'sdk' (in-process MCP server) cannot cross the MCP wire — use stdio/SSE/HTTP config instead",
+          path: ["type"],
+        });
+      }
+    }),
+  ).optional(),
+  // RDR-013 Item1: per-spawn subagent definitions forwarded to the inner
+  // qwen-code agent. Only reachable when allow_subagents === true (session.ts
+  // emits a WARN otherwise). Matches the SDK's SubagentConfig shape.
+  agents: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+    tools: z.array(z.string()).optional(),
+    systemPrompt: z.string(),
+    level: z.literal("session"),
+    filePath: z.string().optional(),
+    model: z.string().optional(),
+    runConfig: z.object({
+      max_time_minutes: z.number().optional(),
+      max_turns: z.number().optional(),
+    }).optional(),
+    color: z.string().optional(),
+    isBuiltin: z.boolean().optional(),
+  })).optional(),
 }).optional();
 
 type RawSpawnOpts = z.infer<typeof qwenSpawnOptsSchema>;
@@ -208,6 +260,9 @@ export function buildSpawnOptsFromRaw(rawOpts: RawSpawnOpts): Partial<SpawnOpts>
   if (rawOpts.max_tool_calls !== undefined) spawnOpts.max_tool_calls = rawOpts.max_tool_calls;
   if (rawOpts.thinking_mode !== undefined) spawnOpts.thinking_mode = rawOpts.thinking_mode;
   if (rawOpts.json_schema !== undefined) spawnOpts.json_schema = rawOpts.json_schema;
+  // RDR-013 Item1: forward per-spawn MCP servers and subagents.
+  if (rawOpts.mcpServers !== undefined) spawnOpts.mcpServers = rawOpts.mcpServers as Record<string, import("@qwen-code/sdk").McpServerConfig>;
+  if (rawOpts.agents !== undefined) spawnOpts.agents = rawOpts.agents as import("@qwen-code/sdk").SubagentConfig[];
   return spawnOpts;
 }
 
