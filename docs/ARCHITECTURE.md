@@ -67,7 +67,15 @@ record.
    ([RDR-007](rdr/RDR-007-unified-agent-dispatch-contract.md)
    → [RDR-011](rdr/RDR-011-entity-tier-producer-contract.md))
 
-4. **An evaluation harness.** A three-arm SWE-bench harness measures the
+4. **Per-spawn tool provisioning.** A `qwen_spawn`/`qwen_oneshot` can carry its
+   own MCP servers and subagent definitions (`opts.mcpServers` / `opts.agents`),
+   forwarded into the inner agent for that one spawn — no host-installed
+   extension. `codeIntel: true` is a pre-packaged case: it synthesizes an
+   agent-lsp symbol-graph server scoped to ten read-only nav tools.
+   ([RDR-013](rdr/RDR-013-per-spawn-mcp-forwarding.md),
+   [RDR-014](rdr/RDR-014-agent-lsp-codeintel-optin.md))
+
+5. **An evaluation harness.** A three-arm SWE-bench harness measures the
    supervisor path against the raw CLI and against Claude, with a shared
    fairness spine and the methodology invariants built in.
    ([RDR-006](rdr/RDR-006-coding-agent-eval.md))
@@ -207,6 +215,16 @@ flowchart TB
 - **Weighted round-robin** is the load-balancer: `weight` biases the share;
   `weight ≤ 0` is clamped to 1 so a misconfigured zero degrades to equal
   weighting rather than starving the pool.
+- **Control flags** carve a backend out of one path each: `vision_only` (kept out
+  of the text pool), `no_agentic` (out of `qwen_spawn`/`qwen_oneshot`),
+  `no_tokenize`, `no_schema`. A caller can also route by **`roles`** (a soft hint,
+  `chooseBackendByRole`) or pin an id outright with `opts.backend`.
+- **Remote authed backends** ([RDR-012](rdr/RDR-012-agentic-path-remote-credentials.md))
+  carry `api_key`/`api_key_env` and `headers`. Credentials reach both the direct
+  and agentic paths; `headers` reach only the direct-HTTP tools (the agentic SDK
+  has no request-header channel — the supervisor warns once per backend). The
+  prompt-size capacity heuristic isn't meaningful for a remote heavy endpoint, so
+  pin it (`opts.backend`) or route by role rather than leaning on auto-capacity.
 
 Config is read from `~/.qwen-coprocessor-stack/config.json`, mtime-cached, and
 hot-applied on the next spawn. In-flight sessions stay pinned to their original

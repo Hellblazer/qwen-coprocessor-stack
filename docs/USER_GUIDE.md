@@ -196,10 +196,60 @@ supervisor hot-applies on the next spawn — no restart):
 
 The one field to get right is **`modality`** (`text` / `multimodal` /
 `embedding` / `rerank`). It's the gate that lets the router pick the right
-backend for each kind of call, so a mixed pool stays safe. For remote endpoints
-behind a key, use `api_key_env` so the key is read from the environment and never
-sits in the file. Every field is documented inline in
-[`config.example.json`](../config.example.json).
+backend for each kind of call, so a mixed pool stays safe. Every field is
+documented inline in [`config.example.json`](../config.example.json); the ones
+worth knowing:
+
+- **`tier`** (`local` / `remote`) and **`capacity`** (`fast` / `heavy`) — the
+  router classifies each task (prompt size + a few keywords) and prefers a
+  matching backend, falling back to local if nothing remote is healthy.
+- **`weight`** — relative share within a `tier:capacity` pool (weighted
+  round-robin).
+- **`roles`** — soft routing hints (e.g. `["glm"]`, `["code"]`); a caller can
+  route by role instead of pinning an id.
+- **Control flags**, each excluding the backend from one path: `vision_only`
+  (multimodal backend kept out of the text pool — dedicated to
+  `qwen_oneshot_vision`), `no_agentic` (excluded from `qwen_spawn`/`qwen_oneshot`;
+  use for endpoints that choke on the agentic request shape), `no_tokenize`
+  (excluded from unpinned `qwen_tokenize`), `no_schema` (excluded from
+  schema-bounded oneshots).
+
+### Remote, authed backends (RDR-012)
+
+A backend pointed at a hosted provider (OpenRouter, Together, Fireworks) carries
+credentials. Prefer **`api_key_env`** so the key is read from the environment at
+request time and never sits in the file; `api_key` (a literal) is also accepted
+and wins if both are set. Extra `headers` (e.g. OpenRouter's attribution
+`HTTP-Referer` / `X-Title`) can be attached too.
+
+```jsonc
+{
+  "id": "glm-openrouter",
+  "url": "https://openrouter.ai/api/v1",
+  "model": "z-ai/glm-5.2",
+  "tier": "remote", "capacity": "heavy", "modality": "text",
+  "roles": ["glm"],
+  "api_key_env": "OPENROUTER_API_KEY",
+  "headers": { "HTTP-Referer": "https://github.com/you/your-repo", "X-Title": "your-app" }
+}
+```
+
+Start from [`config/coprocessor-pool-openrouter.example.json`](../config/coprocessor-pool-openrouter.example.json).
+Two things to know:
+
+- **The supervisor must be launched with the env var set** (e.g.
+  `OPENROUTER_API_KEY=… ` in its environment) — `api_key_env` names the variable,
+  it does not read a secrets manager. If the variable is unset, the agentic path
+  sends no credential and logs `agentic_api_key_env_unset` (the provider then
+  rejects the request); the direct-HTTP path just omits the header.
+- **`headers` are honored on the direct-HTTP tools** (`qwen_chat`,
+  `qwen_oneshot_vision`, `qwen_embed`, `qwen_rerank`, `qwen_tokenize`) but **not
+  on the agentic path** (`qwen_spawn`/`qwen_oneshot`) — the `@qwen-code/sdk` has
+  no request-header channel, so the supervisor warns `agentic_headers_not_forwarded`
+  once per backend. OpenRouter works without them (attribution only). The
+  prompt-size capacity heuristic isn't meaningful for a remote heavy endpoint —
+  pin it with `opts.backend` or route by `role` rather than leaning on
+  auto-capacity.
 
 ---
 
@@ -223,6 +273,46 @@ Or per call via `opts`, or via `/qwen-stack:budget set --max-context-tokens N
 `state="error"`, `error.code="context_exceeded"` with both counters in the
 message. The `context_pressure` events at 50/75/90% are your cue to wind down
 before that.
+
+---
+
+## Recipe: give a spawn its own tools and subagents (`mcpServers`, `agents`)
+
+`qwen_spawn` / `qwen_oneshot` can hand the inner agent extra MCP servers and
+subagent definitions for the life of that one spawn — no host-installed
+extension. They are forwarded into the qwen-code agent via the SDK's
+control-protocol `initialize`.
+
+```jsonc
+qwen_spawn({
+  task: "Review the changed files and suggest fixes",
+  opts: {
+    backend: "glm-openrouter",
+    mcpServers: {
+      "lsp": { "command": "agent-lsp", "args": ["--stdio"] }   // stdio
+      // or SSE:  { "url": "https://…/sse" }
+      // or HTTP: { "httpUrl": "https://…", "headers": { … } }
+    },
+    agents: [{ name: "reviewer", description: "…", systemPrompt: "…", level: "session" }],
+    allow_subagents: true
+  }
+})
+```
+
+Two invariants worth internalizing:
+
+- **`agents[]` only work with `allow_subagents: true`.** Otherwise the `agent`
+  tool is excluded, the definitions are dead config, and the supervisor warns
+  `agents_without_allow_subagents`.
+- **`mcpServers` is trusted input, not permission-gated.** A stdio server's
+  `command` is spawned at SDK session init — *before* any tool call — so it is
+  not governed by `write_authority` / permission mode. A read-only spawn with a
+  stdio `mcpServers` entry is not actually read-only. Only pass servers you
+  trust. The in-process `type: "sdk"` form is rejected at the tool boundary (it
+  can't cross MCP); use stdio / SSE / HTTP.
+
+`codeIntel: true` (next recipe) is the pre-packaged version of this for code
+navigation.
 
 ---
 
