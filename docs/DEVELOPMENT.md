@@ -186,21 +186,36 @@ and [`docs/qwen-coding-agent-eval-postmortem.md`](qwen-coding-agent-eval-postmor
 
 The plugin uses a **pinned-source release model**. The marketplace entry points
 at an immutable release tag; `main` can advance freely, and installed plugins
-only update when a new tag is cut. Releases are hand-cut — CI runs on every push
-but does not publish on merge; the tag push triggers publish.
+only update when a new tag is cut. The supervisor itself ships as the npm package
+`qwen-agent-server`; the plugin's `mcpServers` runs it via
+`npx -y qwen-agent-server@<version>`. Releases are hand-cut — CI runs on every
+push but does not publish on merge; the tag push triggers publish.
 
-Bumping `v<X.Y.Z>` updates these in lock-step, on a branch, in one commit:
+There are **five version sites**, and hand-editing them is how a release once
+shipped with a mismatch. Do not edit them by hand — run the script:
 
-- `pyproject.toml`, `mcpb/pyproject.toml`, `mcpb/manifest.json`
-- `marketplace.json` `.metadata.version`, `.plugins[].version`,
-  `.plugins[].source.ref`
-- `plugin/.claude-plugin/plugin.json`
-- a `CHANGELOG.md` entry
+```bash
+scripts/bump-version.sh 0.11.13   # rewrites all five + stubs a CHANGELOG entry, then verifies
+```
 
-Then PR to `main`, merge, tag `v<X.Y.Z>` on the merge commit, push the tag. The
-parity check `source.ref == "v" + pyproject.version` must hold. Cadence tracks
-user-visible impact, not commit volume: a session of related PRs ships as one
-bump. The "cut the release" instruction is always a human one.
+The five sites it keeps in lock-step:
+
+1. `mcp-bridges/qwen-agent-server/package.json` (+ `package-lock.json`)
+2. `mcp-bridges/qwen-agent-server/src/version.ts` — `SUPERVISOR_VERSION`
+3. `.claude-plugin/marketplace.json` — `.metadata.version` + `.plugins[0].version`
+4. `.claude-plugin/marketplace.json` — `.plugins[0].source.ref` (`"v<X.Y.Z>"`)
+5. `plugins/qwen-stack/.claude-plugin/plugin.json` — `version` + the `qwen-agent-server@<X.Y.Z>` npx pin
+
+Then fill in the CHANGELOG section, PR to `main`, merge, tag `v<X.Y.Z>` on the
+merge commit, and push the tag. The tag push fires `.github/workflows/release.yml`
+(OIDC npm publish + GitHub Release). The parity test (`tests/version.test.ts`)
+asserts that `SUPERVISOR_VERSION` (from `src/version.ts`) matches `plugin.json`
+and both `marketplace.json` version fields, so a missed site there fails CI; site
+4 (`source.ref`) is updated by the bump script but is not separately verified by
+the test, so don't hand-edit it. Cadence tracks user-visible impact, not commit
+volume: a session of
+related PRs ships as one bump. The "cut the release" / "tag and push" instruction
+is always a human one — the AI prepares the branch and PR, never the tag.
 
 ---
 

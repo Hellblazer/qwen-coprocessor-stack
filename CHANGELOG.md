@@ -14,6 +14,47 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.13] - 2026-06-28
+
+Ships the RDR-014 `codeIntel` opt-in: a one-flag way to give a spawned
+coprocessor read-only code-navigation tools (agent-lsp) without hand-wiring an
+`mcpServers` entry. Built on RDR-013 per-spawn forwarding. Before this release
+the code lived only on `main`; the published supervisor silently ignored
+`opts.codeIntel` (unknown opt). This release makes it live for plugin installs.
+
+### Added
+
+- **`opts.codeIntel` opt-in agent-lsp provider (RDR-014).** `qwen_spawn` /
+  `qwen_oneshot` accept `opts.codeIntel?: boolean`. When `true` the supervisor
+  synthesizes, server-side at the opts boundary (`applyCodeIntel`), three
+  RDR-013-shaped inputs before the session is built: (1) an **agent-lsp** stdio
+  `mcpServers` entry under the reserved key `agent-lsp`, launched via
+  `uvx agent-lsp` and scoped via `includeTools` to 10 high-signal read-only
+  navigation tools; (2) a **symbol-graph guidance** block folded into the system
+  prompt (agent-lsp returns a scored symbol-graph, not `file:line` — the guidance
+  points the model at the location-yielding tools); (3) a **`max_tool_calls`
+  default of 12**, applied only when the caller left it `undefined` (`0` =
+  unbounded is preserved). Unset leaves behavior unchanged. (#74)
+
+### Notes / invariants (RDR-014)
+
+- **Caller-wins on the reserved key.** A caller-supplied `agent-lsp` `mcpServers`
+  entry is kept untouched (WARN `codeintel_lsp_key_present`) and the synthesized
+  guidance is suppressed (it names agent-lsp's tools specifically); the
+  `max_tool_calls` default still applies.
+- **`includeTools` is enforced** at MCP discovery on the bare tool name (RF-4):
+  the 10-tool surface is a hard scope, not advisory.
+- **Trust model inherited from RDR-013.** `uvx agent-lsp` launches at SDK init
+  regardless of `write_authority` — `codeIntel` is trusted input, not
+  permission-gated.
+- **Prereq is host-side.** `uvx` + `agent-lsp` must be available on the
+  coprocessor host (not installed by the supervisor); a missing binary degrades
+  only that spawn (the agent-lsp tools are absent) — it does not fail the spawn.
+- Live-validated against a local build: GLM 5.2 drove 7 scoped agent-lsp tools to
+  locate a symbol and its callers, completing in 9/12 tool calls with no
+  rabbit-hole. Example config: `config/coprocessor-pool-codeintel.example.json`;
+  usage recipe in `docs/USER_GUIDE.md`. (#74, #75)
+
 ## [0.11.12] - 2026-06-28
 
 Two coprocessor-provisioning features: per-request model override on `qwen_chat`,
