@@ -94,8 +94,11 @@ ceiling RDR-006's eval work kept hitting with local models.
    `api_key_env` but the named variable is unset/empty at request time, the resolver must
    **not** silently fall through to `"sk-local"` — that would ship a bogus bearer to a remote
    provider and surface as an ambiguous 401. Instead: emit a WARN naming `backend.id` and the
-   missing variable name (never the value) and resolve to `undefined` so the provider rejects
-   on a clean, distinguishable "no credential" path. This is a deliberate divergence from the
+   missing variable name (never the value) and resolve to an **explicit empty string** so the
+   provider rejects on a clean, distinguishable "no credential" path. (Empty string, not
+   `undefined`/omitted: omitting the env key would let the SDK child inherit any process-global
+   `OPENAI_API_KEY` and leak it to the remote provider; an explicit `""` overrides it.) This is
+   a deliberate divergence from the
    direct-HTTP path only in *logging* — `resolveAuthHeaders` already resolves the same unset
    case to "no Authorization header" (openai-compat.ts:78-80), which is the correct quiet
    behavior there; the agentic path adds the WARN because its placeholder fallback would
