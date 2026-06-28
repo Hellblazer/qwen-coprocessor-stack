@@ -115,12 +115,21 @@ def t_auth_models() -> bool:
 
 def t_chat() -> None:
     t0 = time.time()
+    # Reasoning models (GLM 5.2, Qwen3.6, …) emit a think block BEFORE content;
+    # a small max_tokens is consumed entirely by reasoning → finish_reason=length
+    # with empty content. Budget generously (mirrors scripts/shakeout.py=768) and
+    # surface the starvation case explicitly rather than reporting a false FAIL.
     r = chat(
         [{"role": "user", "content": "Reply with exactly one word: the capital of France."}],
-        max_tokens=64,
+        max_tokens=800,
     )
     out = content_of(r)
     dt = time.time() - t0
+    fin = r["choices"][0].get("finish_reason")
+    if not out and fin == "length":
+        rec("text-chat", False,
+            f"{dt:.1f}s reasoning starved output (finish=length) — raise max_tokens")
+        return
     rec("text-chat", "paris" in out.lower(), f"{dt:.1f}s -> {out!r}")
 
 
