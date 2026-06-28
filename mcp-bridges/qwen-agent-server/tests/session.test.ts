@@ -7,6 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QueryOptions, SDKMessage } from "@qwen-code/sdk";
 import type { Backend, SpawnOpts } from "../src/types.js";
 import { QwenSession, _resetEventSeq } from "../src/session.js";
+// RDR-014: the server-side codeIntel expansion (applyCodeIntel) is composed with
+// buildSpawnOptsFromRaw exactly as the qwen_spawn/qwen_oneshot wire handlers do
+// it; these tests assert the resolved opts flow through QwenSession into the
+// captured SDK QueryOptions (the spec-mandated capturedOptions layer).
+import { applyCodeIntel, buildSpawnOptsFromRaw } from "../src/server.js";
 
 // ─────────────────────────────────────────────────────────────────
 // SDK Mock
@@ -415,6 +420,70 @@ describe("QwenSession", () => {
 
       new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
       expect(capturedOptions?.agents).toBeUndefined();
+      ctrl.end();
+    });
+  });
+
+  // ── RDR-014 Item1: codeIntel expansion → captured QueryOptions ──────
+  //
+  // These mirror the wire handlers' composition
+  // `applyCodeIntel(buildSpawnOptsFromRaw(args.opts))` and assert the result
+  // lands in the SDK QueryOptions after QwenSession construction — the
+  // integration seam (applyCodeIntel → buildSystemPrompt → systemPrompt, and
+  // the mcpServers passthrough) that the standalone applyCodeIntel unit tests
+  // in codeintel.test.ts cannot reach.
+  describe("codeIntel expansion (RDR-014, captured QueryOptions)", () => {
+    // Reproduce the wire handler's exact composition.
+    const resolve = (raw: Parameters<typeof buildSpawnOptsFromRaw>[0]): SpawnOpts =>
+      applyCodeIntel(buildSpawnOptsFromRaw(raw)) as SpawnOpts;
+
+    it("(ci-a) codeIntel:true → captured mcpServers['agent-lsp'] is the uvx entry with the pinned includeTools", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", resolve({ codeIntel: true, cwd: "/work/repo" }));
+      const entry = capturedOptions?.mcpServers?.["agent-lsp"] as
+        | { command?: string; args?: string[]; includeTools?: string[] }
+        | undefined;
+      expect(entry?.command).toBe("uvx");
+      expect(entry?.args).toEqual(["agent-lsp"]);
+      expect(entry?.includeTools).toContain("find_symbol");
+      expect(entry?.includeTools).toContain("start_lsp");
+      ctrl.end();
+    });
+
+    it("(ci-g) codeIntel:true → captured systemPrompt carries the symbol-graph guidance; user task untouched", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "my task text", resolve({ codeIntel: true }));
+      expect(capturedOptions?.systemPrompt).toContain("agent-lsp");
+      expect(capturedOptions?.systemPrompt).toContain("symbol-GRAPH");
+      ctrl.end();
+    });
+
+    it("(ci-b) codeIntel unset → no agent-lsp server AND no guidance in captured systemPrompt", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", resolve({}));
+      expect(capturedOptions?.mcpServers).toBeUndefined();
+      expect(capturedOptions?.systemPrompt ?? "").not.toContain("agent-lsp");
+      ctrl.end();
+    });
+
+    it("(ci-c) caller-supplied agent-lsp → caller entry preserved, no guidance in captured systemPrompt (C2)", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(
+        LOCAL_BACKEND,
+        "task",
+        resolve({ codeIntel: true, mcpServers: { "agent-lsp": { command: "my-own-lsp" } } }),
+      );
+      const entry = capturedOptions?.mcpServers?.["agent-lsp"] as { command?: string } | undefined;
+      expect(entry?.command).toBe("my-own-lsp");
+      expect(capturedOptions?.systemPrompt ?? "").not.toContain("symbol-GRAPH");
       ctrl.end();
     });
   });

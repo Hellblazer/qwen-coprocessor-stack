@@ -290,7 +290,10 @@ const CODEINTEL_LSP_KEY = "agent-lsp";
 // and the inner model never sees it. Covers the spike's working set plus the
 // location-yielding tools (find_symbol/go_to_definition/get_symbol_source/
 // find_callers) that fix the spike's "graph nodes won't convert to file:line"
-// friction. Excludes every editing/execution/session/skill/cache tool.
+// friction. Excludes every editing/execution/session/skill/cache tool, plus
+// blast_radius (used in the spike but it is write-impact analysis, not read
+// navigation — reconsidered for Item1 per the RF-4 memo and deliberately kept
+// out; re-add here if a read-nav need for it surfaces).
 const CODEINTEL_INCLUDE_TOOLS: readonly string[] = [
   "start_lsp",
   "list_symbols",
@@ -355,10 +358,18 @@ export function applyCodeIntel(opts: Partial<SpawnOpts>): Partial<SpawnOpts> {
       {
         event_type: "codeintel_lsp_key_present",
         backend_id: opts.backend ?? null,
+        // Surface the budget side-effect: the max_tool_calls default below is
+        // applied regardless of this collision (the caller opted into
+        // codeIntel), so an operator debugging an early context_exceeded on
+        // their own server sees WHY here. Null when the caller set it.
+        max_tool_calls_default_applied: opts.max_tool_calls === undefined,
       },
       `codeIntel: true but caller already supplied an '${CODEINTEL_LSP_KEY}' mcpServers ` +
         "entry; keeping caller's server untouched and suppressing the synthesized " +
-        "guidance (it describes agent-lsp's tool surface specifically)",
+        "guidance (it describes agent-lsp's tool surface specifically). NOTE: the " +
+        `max_tool_calls default (${CODEINTEL_DEFAULT_MAX_TOOL_CALLS}) still applies ` +
+        "unless you set max_tool_calls explicitly — it is tuned for the agent-lsp " +
+        "workload, not your server.",
     );
   } else {
     // Inject the agent-lsp stdio server scoped to the high-signal allow-list.

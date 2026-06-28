@@ -111,6 +111,19 @@ describe("RDR-014 codeIntel (applyCodeIntel)", () => {
     expect(warned("codeintel_lsp_key_present")).toBe(true);
     // guidance NOT injected (coupling C2)
     expect(opts.system).toBe("caller system");
+    // budget default STILL applies on collision (independent of server injection)
+    expect(opts.max_tool_calls).toBe(12);
+  });
+
+  it("(c') collision but caller set max_tool_calls → caller value preserved (no re-cap)", () => {
+    const opts: Partial<SpawnOpts> = {
+      codeIntel: true,
+      max_tool_calls: 3,
+      mcpServers: servers({ [LSP_KEY]: { command: "x" } }),
+    };
+    applyCodeIntel(opts);
+    expect(opts.max_tool_calls).toBe(3);
+    expect(warned("codeintel_lsp_key_present")).toBe(true);
   });
 
   it("(d) codeIntel:true, max_tool_calls undefined → defaults to 12", () => {
@@ -134,10 +147,17 @@ describe("RDR-014 codeIntel (applyCodeIntel)", () => {
   it("(g) codeIntel:true, no collision → guidance present in system, no WARN, caller system preserved as prefix", () => {
     const opts: Partial<SpawnOpts> = { codeIntel: true, system: "caller system" };
     applyCodeIntel(opts);
-    expect(opts.system).toContain("caller system");
+    // precise: caller system, then a blank-line separator, then the guidance.
+    expect(opts.system?.startsWith("caller system\n\n")).toBe(true);
     expect(opts.system).toContain("agent-lsp");
     expect(opts.system).toContain("symbol-GRAPH");
     expect(warned("codeintel_lsp_key_present")).toBe(false);
+  });
+
+  it("(g''') codeIntel:true, empty-string system → treated as unset (guidance is the whole prompt, no leading separator)", () => {
+    const opts: Partial<SpawnOpts> = { codeIntel: true, system: "" };
+    applyCodeIntel(opts);
+    expect(opts.system?.startsWith("## Code intelligence")).toBe(true);
   });
 
   it("(g') codeIntel:true, no caller system → guidance becomes the system prompt", () => {
@@ -170,7 +190,7 @@ describe("RDR-014 codeIntel (applyCodeIntel)", () => {
     expect(buildSpawnOptsFromRaw(undefined).codeIntel).toBeUndefined();
   });
 
-  it("(oneshot) qwen_oneshot's extended schema also accepts codeIntel (both call sites covered)", () => {
+  it("(oneshot) qwen_oneshot's extended schema accepts codeIntel + applyCodeIntel composition path (wire-line coverage is in session.test.ts capturedOptions cases)", () => {
     const oneshotSchema = qwenSpawnOptsSchema.unwrap().extend({});
     expect(oneshotSchema.safeParse({ codeIntel: true }).success).toBe(true);
     // and the full pipeline through buildSpawnOptsFromRaw + applyCodeIntel
