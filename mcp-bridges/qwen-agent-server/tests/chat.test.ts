@@ -124,4 +124,25 @@ describe("dispatchChat", () => {
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe("no_choices");
   });
+
+  it("uses opts.model override in the request body when set", async () => {
+    mockJson(200, chatResponse("ok"));
+    await dispatchChat(BACKEND, "x", { model: "qwen3-235b-a22b" });
+    const sent = JSON.parse((fetchSpy.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(sent.model).toBe("qwen3-235b-a22b");
+  });
+
+  it("falls back to backend.model when opts.model is absent", async () => {
+    mockJson(200, chatResponse("ok"));
+    await dispatchChat(BACKEND, "x");
+    const sent = JSON.parse((fetchSpy.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(sent.model).toBe(BACKEND.model);
+  });
+
+  it("falls back to backend.model when opts.model is empty string", async () => {
+    mockJson(200, chatResponse("ok"));
+    await dispatchChat(BACKEND, "x", { model: "" });
+    const sent = JSON.parse((fetchSpy.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(sent.model).toBe(BACKEND.model);
+  });
 });

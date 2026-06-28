@@ -53,6 +53,13 @@ export interface ChatOpts {
    * the SDK/agentic qwen_oneshot cannot.
    */
   grammar?: string;
+  /**
+   * Per-request model override. When set to a non-empty string, the
+   * outgoing chat-completions request uses THIS model id instead of
+   * `backend.model`. Lets a single backend URL (e.g. an OpenRouter
+   * endpoint) serve many models without separate backend entries.
+   */
+  model?: string;
 }
 
 /** Result shape. Mirrors OneshotResult / VisionOneshotResult for parity. */
@@ -114,7 +121,7 @@ export async function dispatchChat(
   messages.push({ role: "user", content: userText });
 
   const body: Record<string, unknown> = {
-    model: backend.model,
+    model: opts.model && opts.model !== "" ? opts.model : backend.model,
     messages,
     max_tokens,
     temperature,

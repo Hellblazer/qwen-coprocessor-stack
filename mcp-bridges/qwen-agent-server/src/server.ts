@@ -1506,6 +1506,7 @@ async function main(): Promise<void> {
         backend: z.string().optional().describe("Pin to a specific backend by id (highest precedence). Default: weighted text-backend selection, multimodal fallback."),
         role: z.string().optional().describe("Explicit operator role to route by (e.g. 'general'/'reasoning' → a general-instruct model, 'code' → the coding pool). Resolves to a healthy backend whose configured `roles` includes this. Ignored if `backend` is also set. See bead k8j."),
         continuation_id: z.string().optional().describe("Thread id from a prior qwen_chat / qwen_oneshot / qwen_oneshot_vision call; prior turns are prepended. Same in-process thread store (3h TTL, 20-turn cap)."),
+        model: z.string().optional().describe("Per-request model override. When set to a non-empty string, the outgoing request uses THIS model id instead of the backend's configured model. Lets a single backend URL (e.g. an OpenRouter endpoint) serve many models without separate backend entries."),
       }).optional(),
     },
     async (args) => {
