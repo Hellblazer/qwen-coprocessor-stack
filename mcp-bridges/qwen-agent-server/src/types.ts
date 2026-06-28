@@ -324,6 +324,35 @@ export interface SpawnOpts {
    * so the operator knows the config is unreachable.
    */
   agents?: SubagentConfig[];
+  /**
+   * Opt-in agent-lsp code-intelligence provider (RDR-014). When `true`, the
+   * supervisor synthesizes — server-side, at the opts-resolution boundary,
+   * before the session is constructed — three RDR-013-shaped inputs:
+   *
+   *   1. an agent-lsp stdio `mcpServers` entry under the reserved key
+   *      `agent-lsp`, scoped via `includeTools` to a high-signal read-only
+   *      navigation set (`includeTools` is ENFORCED at MCP discovery — a tool
+   *      not in the list is never registered, RDR-014 RF-4; bare-name match);
+   *   2. a symbol-graph guidance block folded into `system` (agent-lsp returns
+   *      a scored symbol-*graph*, not raw `file:line`);
+   *   3. a `max_tool_calls` default of 12 — applied ONLY when the caller left
+   *      `max_tool_calls` undefined (0 is the explicit "unbounded" sentinel and
+   *      is preserved).
+   *
+   * **Caller-wins (C2 coupling):** if the caller already supplied an `agent-lsp`
+   * key in `mcpServers`, theirs is kept untouched, a `codeintel_lsp_key_present`
+   * WARN is logged, and the guidance injection is SUPPRESSED too (the guidance
+   * describes agent-lsp's tool surface specifically — injecting it against an
+   * unknown caller server would re-create the search-loop failure).
+   *
+   * **Security note (inherited RDR-013 trust model):** `codeIntel: true`
+   * launches `uvx agent-lsp` at SDK session init regardless of
+   * `write_authority` — stdio `mcpServers` commands are not permission-gated.
+   *
+   * Unset/`false` → byte-for-byte unchanged behavior. agent-lsp-specific
+   * boolean by deliberate YAGNI; no preset registry, no second provider.
+   */
+  codeIntel?: boolean;
 }
 
 /**

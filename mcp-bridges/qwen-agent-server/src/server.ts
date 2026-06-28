@@ -219,6 +219,12 @@ export const qwenSpawnOptsSchema = z.object({
     color: z.string().optional(),
     isBuiltin: z.boolean().optional(),
   })).optional(),
+  // RDR-014: opt-in agent-lsp code-intelligence provider. When true, the
+  // supervisor synthesizes an agent-lsp mcpServers entry + symbol-graph
+  // guidance + a max_tool_calls default (see applyCodeIntel). Boolean only;
+  // explicit false === unset (byte-for-byte unchanged path). Non-boolean
+  // rejected at the schema boundary.
+  codeIntel: z.boolean().optional(),
 }).optional();
 
 type RawSpawnOpts = z.infer<typeof qwenSpawnOptsSchema>;
@@ -263,7 +269,121 @@ export function buildSpawnOptsFromRaw(rawOpts: RawSpawnOpts): Partial<SpawnOpts>
   // RDR-013 Item1: forward per-spawn MCP servers and subagents.
   if (rawOpts.mcpServers !== undefined) spawnOpts.mcpServers = rawOpts.mcpServers as Record<string, import("@qwen-code/sdk").McpServerConfig>;
   if (rawOpts.agents !== undefined) spawnOpts.agents = rawOpts.agents as import("@qwen-code/sdk").SubagentConfig[];
+  // RDR-014: carry the opt-in flag through; expansion happens in applyCodeIntel
+  // at the tool-handler boundary (NOT here — buildSpawnOptsFromRaw is a pure
+  // raw→resolved translation; codeIntel synthesis needs process.cwd() fallback
+  // and emits a WARN, both of which belong at the call site).
+  if (rawOpts.codeIntel !== undefined) spawnOpts.codeIntel = rawOpts.codeIntel;
   return spawnOpts;
+}
+
+// ── RDR-014: codeIntel (agent-lsp) opt-in expansion ──────────────────────────
+//
+// Reserved key for the synthesized agent-lsp server. NOT the generic `lsp` a
+// caller might use for their own language-server integration.
+const CODEINTEL_LSP_KEY = "agent-lsp";
+
+// High-signal read-only navigation allow-list, pinned from agent-lsp v0.15.0's
+// advertised tool set (it exposes 65 tools — wander risk). includeTools is
+// ENFORCED at MCP discovery on the BARE tool name (RDR-014 RF-4, bead
+// qwen-coprocessor-stack-60v): a tool absent from this list is never registered
+// and the inner model never sees it. Covers the spike's working set plus the
+// location-yielding tools (find_symbol/go_to_definition/get_symbol_source/
+// find_callers) that fix the spike's "graph nodes won't convert to file:line"
+// friction. Excludes every editing/execution/session/skill/cache tool.
+const CODEINTEL_INCLUDE_TOOLS: readonly string[] = [
+  "start_lsp",
+  "list_symbols",
+  "find_symbol",
+  "find_references",
+  "find_callers",
+  "inspect_symbol",
+  "explore_symbol",
+  "go_to_definition",
+  "get_symbol_source",
+  "get_diagnostics",
+];
+
+// The spike's working cap: clean context_exceeded abort observed at 13/12 with
+// room to do real work. Applied ONLY when the caller left max_tool_calls
+// undefined (0 is the explicit "unbounded" sentinel — preserved; see C1).
+const CODEINTEL_DEFAULT_MAX_TOOL_CALLS = 12;
+
+// Symbol-graph guidance. agent-lsp returns a scored symbol-GRAPH, not raw
+// file:line; the spike's GLM looped trying to convert graph nodes to locations.
+// Coupled to the server injection (suppressed on caller collision).
+const CODEINTEL_GUIDANCE = [
+  "## Code intelligence (agent-lsp)",
+  "",
+  "You have an `agent-lsp` MCP server connected for code navigation. Key facts:",
+  "",
+  "- agent-lsp returns a scored symbol-GRAPH (e.g. `@NNN <kind> <name> SCORE lsp_resolved`),",
+  "  NOT plain `file:line`. Resolved file paths live ON the graph nodes.",
+  "- Call `start_lsp` first to initialize the language server for the workspace.",
+  "- Use `list_symbols` for a file outline (large token savings vs reading the whole file).",
+  "- To get a concrete location for a symbol, use `find_symbol`, `go_to_definition`,",
+  "  or `get_symbol_source` — these resolve to file paths. Use `find_references` /",
+  "  `find_callers` for usages, and `inspect_symbol` / `explore_symbol` for detail.",
+  "- Do NOT loop trying to reformat graph output into file:line by hand — call the",
+  "  location-yielding tool above instead.",
+].join("\n");
+
+/**
+ * RDR-014: expand `opts.codeIntel === true` into the three RDR-013-shaped inputs
+ * (agent-lsp mcpServers entry + symbol-graph guidance + max_tool_calls default).
+ *
+ * Mutates and returns the resolved opts in place. No-op unless
+ * `opts.codeIntel === true`. Invariants (do not regress):
+ *  - reserved key is `agent-lsp`; caller-supplied `agent-lsp` wins (kept
+ *    untouched, WARN emitted), and on that collision the guidance is SUPPRESSED
+ *    too (C2 coupling) — the guidance names agent-lsp's tools specifically.
+ *  - includeTools uses BARE tool names (enforced match, RF-4).
+ *  - the synthesized server cwd resolves to the session cwd, falling back to
+ *    process.cwd() (matches session.ts:286) since opts.cwd may be unset here.
+ *  - max_tool_calls default applies ONLY when `=== undefined` (0 = unbounded
+ *    sentinel, preserved — never a `??`/falsy coalesce; this is the C1 guard).
+ */
+export function applyCodeIntel(opts: Partial<SpawnOpts>): Partial<SpawnOpts> {
+  if (opts.codeIntel !== true) return opts;
+
+  const callerHasLspKey =
+    opts.mcpServers !== undefined && opts.mcpServers[CODEINTEL_LSP_KEY] !== undefined;
+
+  if (callerHasLspKey) {
+    // Caller-wins: keep theirs, warn, and SUPPRESS guidance (C2 coupling).
+    log.warn(
+      {
+        event_type: "codeintel_lsp_key_present",
+        backend_id: opts.backend ?? null,
+      },
+      `codeIntel: true but caller already supplied an '${CODEINTEL_LSP_KEY}' mcpServers ` +
+        "entry; keeping caller's server untouched and suppressing the synthesized " +
+        "guidance (it describes agent-lsp's tool surface specifically)",
+    );
+  } else {
+    // Inject the agent-lsp stdio server scoped to the high-signal allow-list.
+    const agentLspConfig: import("@qwen-code/sdk").McpServerConfig = {
+      command: "uvx",
+      args: ["agent-lsp"],
+      cwd: opts.cwd ?? process.cwd(),
+      includeTools: [...CODEINTEL_INCLUDE_TOOLS],
+    };
+    opts.mcpServers = { ...(opts.mcpServers ?? {}), [CODEINTEL_LSP_KEY]: agentLspConfig };
+    // Fold guidance into opts.system so the existing buildSystemPrompt(opts.system, …)
+    // (session.ts:225) picks it up with no signature change; caller `task` untouched.
+    opts.system =
+      opts.system !== undefined && opts.system !== ""
+        ? `${opts.system}\n\n${CODEINTEL_GUIDANCE}`
+        : CODEINTEL_GUIDANCE;
+  }
+
+  // Budget default — independent of the collision branch (the caller opted into
+  // codeIntel either way). C1: `=== undefined` ONLY; a caller `0` stays `0`.
+  if (opts.max_tool_calls === undefined) {
+    opts.max_tool_calls = CODEINTEL_DEFAULT_MAX_TOOL_CALLS;
+  }
+
+  return opts;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1274,7 +1394,7 @@ async function main(): Promise<void> {
       opts: qwenSpawnOptsSchema,
     },
     async (args) => {
-      const spawnOpts = buildSpawnOptsFromRaw(args.opts);
+      const spawnOpts = applyCodeIntel(buildSpawnOptsFromRaw(args.opts));
       const result = await handlers.qwen_spawn({ task: args.task, opts: spawnOpts });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -1383,7 +1503,7 @@ async function main(): Promise<void> {
       }).optional(),
     },
     async (args, extra) => {
-      const baseOpts = buildSpawnOptsFromRaw(args.opts);
+      const baseOpts = applyCodeIntel(buildSpawnOptsFromRaw(args.opts));
       const oneshotOpts: Partial<SpawnOpts> & { timeout_ms?: number; max_attempts?: number; continuation_id?: string } = { ...baseOpts };
       if (args.opts?.timeout_ms !== undefined) oneshotOpts.timeout_ms = args.opts.timeout_ms;
       if (args.opts?.max_attempts !== undefined) oneshotOpts.max_attempts = args.opts.max_attempts;
