@@ -38,6 +38,7 @@ import type {
 } from "./types.js";
 import { makeCanUseTool } from "./permissions.js";
 import type { ResolveExtensionsResult } from "./extensions.js";
+import { resolveAgenticApiKey } from "./openai-compat.js";
 
 /**
  * Per-spawn bridge infrastructure (RDR-002).
@@ -220,9 +221,26 @@ export class QwenSession {
     const bridgeActive =
       infra !== undefined && infra.qwenRealBin !== "" && infra.wrapperPath !== "";
 
+    // RDR-012 Item1: resolve OPENAI_API_KEY from the CHOSEN backend's own
+    // credential (api_key / api_key_env), not a single process-global key, so a
+    // credentialed remote agentic backend (OpenRouter, Together, …) can be
+    // pooled alongside a local no-auth llama-server. `resolveAgenticApiKey` owns
+    // the whole decision incl. the `?? "sk-local"` local fallback — consumed
+    // VERBATIM here, with NO extra `??` (a re-applied fallback would let the
+    // declared-but-unset api_key_env case silently degrade to sk-local; gate S1).
     const env: Record<string, string> = {
       OPENAI_BASE_URL: backend.url,
-      OPENAI_API_KEY: process.env["OPENAI_API_KEY"] ?? "sk-local",
+      OPENAI_API_KEY: resolveAgenticApiKey(backend, process.env, (envVar) =>
+        log.warn(
+          {
+            event_type: "agentic_api_key_env_unset",
+            backend_id: backend.id,
+            env_var: envVar,
+          },
+          "backend.api_key_env names an unset/empty variable; sending no valid " +
+            "credential (provider will reject) — NOT falling back to sk-local",
+        ),
+      ),
       QWEN_MODEL: backend.model,
     };
     if (bridgeActive) {

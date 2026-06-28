@@ -1,0 +1,70 @@
+{
+  "_comment": "OpenRouter / remote-provider example pool (RDR-012). Shows how to add authenticated remote OpenAI-compatible backends alongside the local fleet. Credentials resolve from env at request time via api_key_env (preferred over a literal api_key — keeps secrets out of any tree the supervisor reads). Set OPENROUTER_API_KEY / TOGETHER_API_KEY in the supervisor's environment. NOTE (RDR-012): the `headers` field (OpenRouter HTTP-Referer/X-Title attribution) is honored on the DIRECT-HTTP tools (qwen_chat / qwen_oneshot_vision / qwen_embed / qwen_rerank / qwen_tokenize) but NOT on the agentic path (qwen_spawn / qwen_oneshot) — the @qwen-code SDK has no header channel. OpenRouter works without them; only dashboard attribution is affected. Remote agentic backends bypass the prompt-size capacity heuristic by design: pin them via opts.backend or route by role, don't expect the size heuristic to pick them.",
+  "backends": [
+    {
+      "_comment": "THE local coder (box, llama.cpp). Unchanged from the vision pool — agentic coding default. No auth (local llama-server). Pooled with the remote agentic backend below by tier=remote/capacity=heavy IF you want weighted round-robin across them; otherwise pin per call.",
+      "id": "coder-box",
+      "url": "http://qwentescence:1235/v1",
+      "model": "qwen",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 3,
+      "ctx_size": 32768,
+      "modality": "text",
+      "roles": ["code"]
+    },
+    {
+      "_comment": "Remote AGENTIC backend via OpenRouter — a frontier model for the hard tail. RDR-012 lets qwen_spawn/qwen_oneshot carry this backend's api_key. Pin via opts.backend='openrouter-sonnet' for the hard SWE-bench tail, or give it a low weight to pool it with coder-box. capacity=heavy + tier=remote so it sits in the heavy/remote pool. The headers below apply only to direct-HTTP tools (see top comment).",
+      "id": "openrouter-sonnet",
+      "url": "https://openrouter.ai/api/v1",
+      "model": "anthropic/claude-sonnet-4.5",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 200000,
+      "modality": "text",
+      "roles": ["reasoning", "code"],
+      "api_key_env": "OPENROUTER_API_KEY",
+      "headers": {
+        "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
+        "X-Title": "qwen-coprocessor-stack"
+      }
+    },
+    {
+      "_comment": "Remote CHAT/operator backend via OpenRouter — direct-HTTP path (qwen_chat role=general). Full header support here (direct-HTTP). A cheap fast model for operator-side synthesis. no_agentic keeps it out of the agentic coding pool.",
+      "id": "openrouter-general",
+      "url": "https://openrouter.ai/api/v1",
+      "model": "google/gemini-2.0-flash-001",
+      "tier": "remote",
+      "capacity": "fast",
+      "weight": 1,
+      "ctx_size": 1000000,
+      "modality": "text",
+      "roles": ["general"],
+      "no_agentic": true,
+      "api_key_env": "OPENROUTER_API_KEY",
+      "headers": {
+        "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
+        "X-Title": "qwen-coprocessor-stack"
+      }
+    },
+    {
+      "_comment": "Remote embeddings via Together (direct-HTTP modality select). Demonstrates a second provider + a literal-key-free env credential. Selected by qwen_embed.",
+      "id": "together-embed",
+      "url": "https://api.together.xyz/v1",
+      "model": "BAAI/bge-large-en-v1.5",
+      "tier": "remote",
+      "capacity": "fast",
+      "modality": "embedding",
+      "api_key_env": "TOGETHER_API_KEY"
+    },
+    {
+      "id": "embed-local",
+      "url": "http://localhost:8081/v1",
+      "model": "bge-m3",
+      "tier": "local",
+      "capacity": "fast",
+      "modality": "embedding"
+    }
+  ]
+}

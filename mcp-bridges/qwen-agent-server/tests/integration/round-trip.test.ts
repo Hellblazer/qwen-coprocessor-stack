@@ -214,13 +214,22 @@ exit 42
 
       // Poll the filesystem for the captured log; wrapper writes it
       // synchronously after the SDK exec hands off to the subprocess.
+      // NOTE: the fake bin writes via `{ … } > logPath`, which TRUNCATES the
+      // file at redirect-open before the echoes flush — so `existsSync` alone
+      // races (file present but empty, readFileSync → ""). Poll until the LAST
+      // line the script emits (ENV.QWEN_REAL_BIN) is present, guaranteeing the
+      // full content is on disk. (Flaky-in-CI fix.)
       const start = Date.now();
-      while (!existsSync(logPath) && Date.now() - start < 20_000) {
+      let log = "";
+      while (Date.now() - start < 20_000) {
+        if (existsSync(logPath)) {
+          log = readFileSync(logPath, "utf8");
+          if (/ENV\.QWEN_REAL_BIN=\[/.test(log)) break;
+        }
         await new Promise((r) => setTimeout(r, 100));
       }
       expect(existsSync(logPath), "wrapper subprocess did not produce a log").toBe(true);
-
-      const log = readFileSync(logPath, "utf8");
+      expect(log, "wrapper log present but empty/incomplete").not.toBe("");
       // (a) The resolved env reached the wrapper subprocess.
       expect(log).toMatch(/ENV\.QWEN_AGENT_EXTENSIONS=\[none\]/);
       expect(log).toMatch(new RegExp(`ENV\\.QWEN_REAL_BIN=\\[${fakeBin.replace(/\//g, "\\/")}\\]`));

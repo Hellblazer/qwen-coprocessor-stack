@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildRequestUrl,
   dispatchOpenAIPost,
+  resolveAgenticApiKey,
   resolveAuthHeaders,
+  resolveBackendKey,
 } from "../src/openai-compat.js";
 import type { Backend } from "../src/types.js";
 
@@ -85,6 +87,96 @@ describe("resolveAuthHeaders", () => {
       headers: { Authorization: "Custom override" },
     };
     expect(resolveAuthHeaders(b).Authorization).toBe("Custom override");
+  });
+});
+
+describe("resolveBackendKey (RDR-012 shared precedence)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("none when backend declares no credential", () => {
+    expect(resolveBackendKey(LOCAL_BACKEND)).toEqual({ kind: "none" });
+  });
+
+  it("resolved from api_key literal", () => {
+    const b: Backend = { ...LOCAL_BACKEND, api_key: "sk-lit" };
+    expect(resolveBackendKey(b)).toEqual({ kind: "resolved", key: "sk-lit" });
+  });
+
+  it("resolved from api_key_env at call time", () => {
+    vi.stubEnv("PROV_KEY", "sk-env");
+    const b: Backend = { ...LOCAL_BACKEND, api_key_env: "PROV_KEY" };
+    expect(resolveBackendKey(b)).toEqual({ kind: "resolved", key: "sk-env" });
+  });
+
+  it("literal wins over api_key_env", () => {
+    vi.stubEnv("PROV_KEY", "sk-env");
+    const b: Backend = { ...LOCAL_BACKEND, api_key: "sk-lit", api_key_env: "PROV_KEY" };
+    expect(resolveBackendKey(b)).toEqual({ kind: "resolved", key: "sk-lit" });
+  });
+
+  it("declared_unset when api_key_env names an unset var", () => {
+    const b: Backend = { ...LOCAL_BACKEND, api_key_env: "DEFINITELY_NOT_SET_xyz" };
+    expect(resolveBackendKey(b)).toEqual({ kind: "declared_unset", envVar: "DEFINITELY_NOT_SET_xyz" });
+  });
+
+  it("declared_unset when api_key_env names an empty var", () => {
+    vi.stubEnv("PROV_KEY", "");
+    const b: Backend = { ...LOCAL_BACKEND, api_key_env: "PROV_KEY" };
+    expect(resolveBackendKey(b)).toEqual({ kind: "declared_unset", envVar: "PROV_KEY" });
+  });
+
+  it("empty-string api_key / api_key_env are treated as not declared", () => {
+    expect(resolveBackendKey({ ...LOCAL_BACKEND, api_key: "" })).toEqual({ kind: "none" });
+    expect(resolveBackendKey({ ...LOCAL_BACKEND, api_key_env: "" })).toEqual({ kind: "none" });
+  });
+});
+
+describe("resolveAgenticApiKey (RDR-012 Item1 — agentic OPENAI_API_KEY, gate S1)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("(a) returns the api_key literal verbatim", () => {
+    const b: Backend = { ...LOCAL_BACKEND, api_key: "sk-lit" };
+    expect(resolveAgenticApiKey(b, {})).toBe("sk-lit");
+  });
+
+  it("(b) returns the api_key_env value, read at call time", () => {
+    const b: Backend = { ...LOCAL_BACKEND, api_key_env: "PROV_KEY" };
+    expect(resolveAgenticApiKey(b, { PROV_KEY: "sk-env" })).toBe("sk-env");
+  });
+
+  it("(c) no credential declared → process-global OPENAI_API_KEY", () => {
+    expect(resolveAgenticApiKey(LOCAL_BACKEND, { OPENAI_API_KEY: "sk-global" })).toBe("sk-global");
+  });
+
+  it("(c) no credential declared and no global → sk-local fallback (unchanged local behavior)", () => {
+    expect(resolveAgenticApiKey(LOCAL_BACKEND, {})).toBe("sk-local");
+  });
+
+  it("(e) declared-but-unset api_key_env → '' (NOT sk-local, NOT the leaked global) + WARN", () => {
+    const warn = vi.fn();
+    // The global IS set, to prove S1: we must NOT fall through to it (would leak
+    // an unrelated key to a remote provider) and must NOT use sk-local.
+    const got = resolveAgenticApiKey(
+      { ...LOCAL_BACKEND, api_key_env: "PROV_KEY" },
+      { OPENAI_API_KEY: "sk-global" },
+      warn,
+    );
+    expect(got).toBe("");
+    expect(got).not.toBe("sk-local");
+    expect(got).not.toBe("sk-global");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith("PROV_KEY");
+  });
+
+  it("(e) the WARN callback receives only the var NAME, never the value (secret hygiene)", () => {
+    const warn = vi.fn();
+    resolveAgenticApiKey({ ...LOCAL_BACKEND, api_key_env: "PROV_KEY" }, { PROV_KEY: "" }, warn);
+    // PROV_KEY was empty here; assert no value (even empty) leaks — only the name.
+    expect(warn).toHaveBeenCalledExactlyOnceWith("PROV_KEY");
   });
 });
 

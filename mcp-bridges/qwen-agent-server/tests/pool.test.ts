@@ -61,6 +61,28 @@ const { mockSessions, MockSession, getMockCounter, resetMockCounter } = vi.hoist
   };
 });
 
+const DEFAULT_BACKEND = {
+  id: "local-27b",
+  url: "http://localhost:8080/v1",
+  model: "qwen3.6-27b-instruct",
+  tier: "local" as const,
+  capacity: "fast" as const,
+};
+
+// Mutable holder so a test can make chooseBackend return a headers-bearing
+// backend (RDR-012 S2). Reset to the default in beforeEach.
+const backendHolder = vi.hoisted(() => ({ current: null as unknown }));
+
+// Capture pool log lines so the WARN-once can be asserted (RDR-012 S2).
+const logCapture = vi.hoisted(() => ({ lines: [] as unknown[][] }));
+vi.mock("../src/log.js", () => {
+  const make = () => {
+    const rec = (...args: unknown[]) => { logCapture.lines.push(args); };
+    return { info: rec, warn: rec, error: rec, debug: rec, trace: rec, fatal: rec, child: () => make() };
+  };
+  return { createLogger: () => make() };
+});
+
 vi.mock("../src/session.js", () => ({
   QwenSession: MockSession,
   _resetEventSeq: () => { /* noop */ },
@@ -68,17 +90,9 @@ vi.mock("../src/session.js", () => ({
 
 // Mock backends so loadBackends() is predictable
 vi.mock("../src/backends.js", () => {
-  const backend = {
-    id: "local-27b",
-    url: "http://localhost:8080/v1",
-    model: "qwen3.6-27b-instruct",
-    tier: "local" as const,
-    capacity: "fast" as const,
-  };
-
   return {
-    loadBackends: () => [backend],
-    chooseBackend: async () => backend,
+    loadBackends: () => [backendHolder.current],
+    chooseBackend: async () => backendHolder.current,
     getCachedHealth: async () => true,
     resetHealthCache: () => { /* noop */ },
     // pool.spawnSession calls this to fill in budget defaults after
@@ -97,6 +111,7 @@ import {
   removeSession,
   lruEvict,
   reapSweep,
+  warnAgenticHeadersDropped,
 } from "../src/pool.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -116,6 +131,8 @@ const LOCAL_BACKEND: Backend = {
 describe("SessionPool", () => {
   beforeEach(() => {
     resetMockCounter();
+    backendHolder.current = { ...DEFAULT_BACKEND };
+    logCapture.lines.length = 0;
     vi.useFakeTimers();
   });
 
@@ -332,6 +349,74 @@ describe("SessionPool", () => {
 
       lruEvict(pool);
       expect(pool.sessions.size).toBe(2);
+    });
+  });
+
+  // ── Agentic headers WARN-once (RDR-012 §Decision item 2 / gate S2) ──
+  describe("warnAgenticHeadersDropped", () => {
+    const HEADERS_BACKEND: Backend = {
+      ...LOCAL_BACKEND,
+      id: "openrouter",
+      headers: { "HTTP-Referer": "https://example.com", "X-Title": "app" },
+    };
+
+    const headerWarns = () =>
+      logCapture.lines.filter(
+        (a) => (a[0] as { event_type?: string })?.event_type === "agentic_headers_not_forwarded",
+      );
+
+    it("warns once for a backend declaring headers, logging names not values", () => {
+      const pool = createPool();
+      warnAgenticHeadersDropped(pool, HEADERS_BACKEND);
+      const warns = headerWarns();
+      expect(warns).toHaveLength(1);
+      const fields = warns[0]![0] as { backend_id?: string; header_names?: string[] };
+      expect(fields.backend_id).toBe("openrouter");
+      expect(fields.header_names).toEqual(["HTTP-Referer", "X-Title"]);
+      // header VALUES must never be logged.
+      expect(JSON.stringify(warns)).not.toContain("https://example.com");
+    });
+
+    it("does NOT warn again for the same backend.id (dedup at pool level)", () => {
+      const pool = createPool();
+      warnAgenticHeadersDropped(pool, HEADERS_BACKEND);
+      warnAgenticHeadersDropped(pool, HEADERS_BACKEND);
+      warnAgenticHeadersDropped(pool, HEADERS_BACKEND);
+      expect(headerWarns()).toHaveLength(1);
+    });
+
+    it("warns again for a DIFFERENT backend.id", () => {
+      const pool = createPool();
+      warnAgenticHeadersDropped(pool, HEADERS_BACKEND);
+      warnAgenticHeadersDropped(pool, { ...HEADERS_BACKEND, id: "together" });
+      expect(headerWarns()).toHaveLength(2);
+    });
+
+    it("never warns for a backend with no headers (or empty headers)", () => {
+      const pool = createPool();
+      warnAgenticHeadersDropped(pool, LOCAL_BACKEND); // no headers field
+      warnAgenticHeadersDropped(pool, { ...LOCAL_BACKEND, id: "x", headers: {} });
+      expect(headerWarns()).toHaveLength(0);
+    });
+
+    it("fires on the spawn path, once across multiple spawns to the same backend", async () => {
+      backendHolder.current = HEADERS_BACKEND;
+      const pool = createPool();
+      await spawnSession(pool, "task A", {});
+      await spawnSession(pool, "task B", {});
+      expect(headerWarns()).toHaveLength(1);
+    });
+
+    it("dedup survives a backend-list hot-reload (Set lives on the persistent pool)", async () => {
+      // refreshPoolBackends() splices pool.backends in place — the pool object
+      // (and its headersWarned Set) persists, so a same-id backend re-added by a
+      // config hot-reload must NOT re-warn. Simulate the in-place list swap.
+      backendHolder.current = HEADERS_BACKEND;
+      const pool = createPool();
+      await spawnSession(pool, "task A", {});
+      pool.backends.splice(0, pool.backends.length, { ...HEADERS_BACKEND });
+      await spawnSession(pool, "task B", {});
+      expect(headerWarns()).toHaveLength(1);
     });
   });
 

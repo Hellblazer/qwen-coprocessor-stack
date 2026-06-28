@@ -59,27 +59,66 @@ export type DispatchOutcome =
     };
 
 /**
- * Resolve the Authorization + extra headers to send to this backend.
+ * Outcome of resolving a backend's OWN credential (RDR-012). The single
+ * source of truth for the `api_key` literal vs `api_key_env` precedence,
+ * shared by `resolveAuthHeaders` (direct-HTTP path) and `resolveAgenticApiKey`
+ * (the agentic SDK env path) so the two cannot drift.
  *
- * - If `backend.api_key` is set, use it directly.
- * - Else if `backend.api_key_env` is set, read `process.env[that]` at
- *   request time (rotations apply on next call, no supervisor reload).
+ * - `resolved`       — a non-empty key was found (literal wins over env).
+ * - `declared_unset` — the backend declares `api_key_env` but the named var
+ *   is unset/empty at call time. This is a MISCONFIG, distinct from `none`:
+ *   the operator asked for a credential and it isn't there. The two consumers
+ *   handle it differently (header path: quiet no-header; agentic path: WARN +
+ *   reject — see `resolveAgenticApiKey`).
+ * - `none`           — the backend declares no credential (the local
+ *   llama-server case).
+ *
+ * An empty-string `api_key` and an empty-string `api_key_env` are both treated
+ * as "not declared" (back-compat with the prior `resolveAuthHeaders` logic).
+ */
+export type BackendKeyResolution =
+  | { kind: "resolved"; key: string }
+  | { kind: "declared_unset"; envVar: string }
+  | { kind: "none" };
+
+export function resolveBackendKey(
+  backend: Backend,
+  env: NodeJS.ProcessEnv = process.env,
+): BackendKeyResolution {
+  if (backend.api_key !== undefined && backend.api_key !== "") {
+    return { kind: "resolved", key: backend.api_key };
+  }
+  if (backend.api_key_env !== undefined && backend.api_key_env !== "") {
+    const v = env[backend.api_key_env];
+    if (v !== undefined && v !== "") return { kind: "resolved", key: v };
+    return { kind: "declared_unset", envVar: backend.api_key_env };
+  }
+  return { kind: "none" };
+}
+
+/**
+ * Resolve the Authorization + extra headers to send to this backend on the
+ * DIRECT-HTTP path.
+ *
+ * - If the backend resolves a key (literal or env), set `Authorization: Bearer`.
+ * - `declared_unset` and `none` both yield NO Authorization header — for the
+ *   direct-HTTP path "no header" is the correct quiet behavior (no header beats
+ *   a wrong one; the provider rejects cleanly). The agentic path differs because
+ *   its placeholder fallback would otherwise mask the misconfig (RDR-012 S1).
  * - Then merge `backend.headers` (caller overrides built-ins).
  *
  * Returns an empty object for backends with no auth (the common local
  * llama-server case).
  */
-export function resolveAuthHeaders(backend: Backend): Record<string, string> {
+export function resolveAuthHeaders(
+  backend: Backend,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
   const headers: Record<string, string> = {};
 
-  let key: string | undefined;
-  if (backend.api_key !== undefined && backend.api_key !== "") {
-    key = backend.api_key;
-  } else if (backend.api_key_env !== undefined && backend.api_key_env !== "") {
-    key = process.env[backend.api_key_env];
-  }
-  if (key !== undefined && key !== "") {
-    headers["Authorization"] = `Bearer ${key}`;
+  const r = resolveBackendKey(backend, env);
+  if (r.kind === "resolved") {
+    headers["Authorization"] = `Bearer ${r.key}`;
   }
 
   if (backend.headers !== undefined) {
@@ -87,6 +126,40 @@ export function resolveAuthHeaders(backend: Backend): Record<string, string> {
   }
 
   return headers;
+}
+
+/**
+ * Resolve the `OPENAI_API_KEY` value to hand the agentic SDK env for this
+ * backend (RDR-012 Item1). Owns the ENTIRE decision — the caller MUST consume
+ * the return VERBATIM and must NOT re-apply a
+ * `?? process.env["OPENAI_API_KEY"] ?? "sk-local"` fallback, which would defeat
+ * the `declared_unset` guard (gate finding S1).
+ *
+ *  - `resolved`       → the backend's own key.
+ *  - `none`           → `env["OPENAI_API_KEY"] ?? "sk-local"`, preserving the
+ *    pre-RDR-012 local-only behavior byte-for-byte.
+ *  - `declared_unset` → `""` (explicit empty). This intentionally does NOT fall
+ *    back to `sk-local` and does NOT inherit any process-global
+ *    `OPENAI_API_KEY` (an omitted env key would let the SDK leak the global to
+ *    the remote provider). An empty bearer makes the provider reject on a clean,
+ *    distinguishable auth path. `onDeclaredUnset(envVar)` fires so the operator
+ *    sees the misconfig; it receives the variable NAME only, never a value.
+ */
+export function resolveAgenticApiKey(
+  backend: Backend,
+  env: NodeJS.ProcessEnv = process.env,
+  onDeclaredUnset?: (envVar: string) => void,
+): string {
+  const r = resolveBackendKey(backend, env);
+  switch (r.kind) {
+    case "resolved":
+      return r.key;
+    case "declared_unset":
+      onDeclaredUnset?.(r.envVar);
+      return "";
+    case "none":
+      return env["OPENAI_API_KEY"] ?? "sk-local";
+  }
 }
 
 /**

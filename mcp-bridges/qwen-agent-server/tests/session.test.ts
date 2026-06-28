@@ -97,6 +97,23 @@ vi.mock("@qwen-code/sdk", () => {
   return { query };
 });
 
+// Capture every log line emitted on the spawn path (RDR-012 test (d) — secret
+// hygiene). The mock createLogger records all call args into a hoisted buffer so
+// a test can assert a resolved credential never appears in any emitted line.
+const logCapture = vi.hoisted(() => ({ lines: [] as unknown[][] }));
+vi.mock("../src/log.js", () => {
+  const make = () => {
+    const rec = (...args: unknown[]) => {
+      logCapture.lines.push(args);
+    };
+    return {
+      info: rec, warn: rec, error: rec, debug: rec, trace: rec, fatal: rec,
+      child: () => make(),
+    };
+  };
+  return { createLogger: () => make() };
+});
+
 // ─────────────────────────────────────────────────────────────────
 // Helpers
 
@@ -188,10 +205,15 @@ describe("QwenSession", () => {
     capturedOptions = null;
     _makeIter = null;
     _resetEventSeq();
+    logCapture.lines.length = 0;
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    // RDR-012 review: unstub env in afterEach (not inline in a test body) so a
+    // failed assertion mid-test cannot leak a stubbed OPENAI_API_KEY into the
+    // next test and cause cascading false failures.
+    vi.unstubAllEnvs();
   });
 
   // ── Backend pinning ──────────────────────────────────────────
@@ -375,6 +397,78 @@ describe("QwenSession", () => {
       expect(env?.["QWEN_MODEL"]).toBe(LOCAL_BACKEND.model);
       expect(typeof env?.["OPENAI_API_KEY"]).toBe("string");
       ctrl.end();
+    });
+
+    it("forwards the backend's own api_key as OPENAI_API_KEY (RDR-012)", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const remote: Backend = { ...LOCAL_BACKEND, id: "openrouter", api_key: "sk-remote-123" };
+      new QwenSession(remote, "task", makeSpawnOpts());
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["OPENAI_API_KEY"]).toBe("sk-remote-123");
+      ctrl.end();
+    });
+
+    it("resolves api_key_env to OPENAI_API_KEY at call time (RDR-012 wiring)", () => {
+      vi.stubEnv("PROV_KEY", "sk-from-env");
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const remote: Backend = { ...LOCAL_BACKEND, id: "openrouter", api_key_env: "PROV_KEY" };
+      new QwenSession(remote, "task", makeSpawnOpts());
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["OPENAI_API_KEY"]).toBe("sk-from-env");
+      ctrl.end();
+    });
+
+    it("declared-but-unset api_key_env → OPENAI_API_KEY is '' not sk-local + WARN (gate S1)", () => {
+      // Prove S1 at the wiring level: even with a process-global OPENAI_API_KEY
+      // set, a backend declaring an UNSET api_key_env must NOT degrade to
+      // sk-local nor leak the global — it gets an explicit empty bearer, and the
+      // misconfig is surfaced via a WARN naming backend.id + the env var.
+      vi.stubEnv("OPENAI_API_KEY", "sk-global-should-not-leak");
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const remote: Backend = {
+        ...LOCAL_BACKEND,
+        id: "openrouter",
+        api_key_env: "DEFINITELY_NOT_SET_xyz",
+      };
+      new QwenSession(remote, "task", makeSpawnOpts());
+      const env = capturedOptions?.env as Record<string, string> | undefined;
+      expect(env?.["OPENAI_API_KEY"]).toBe("");
+      expect(env?.["OPENAI_API_KEY"]).not.toBe("sk-local");
+      expect(env?.["OPENAI_API_KEY"]).not.toBe("sk-global-should-not-leak");
+
+      // WARN fired with the structured fields (closes the wiring-level gap so a
+      // future refactor dropping the callback is caught here, not just in the
+      // resolveAgenticApiKey unit test).
+      const warned = logCapture.lines.some((args) => {
+        const f = args[0] as { event_type?: string; backend_id?: string; env_var?: string };
+        return (
+          f?.event_type === "agentic_api_key_env_unset" &&
+          f?.backend_id === "openrouter" &&
+          f?.env_var === "DEFINITELY_NOT_SET_xyz"
+        );
+      });
+      expect(warned).toBe(true);
+      ctrl.end();
+    });
+
+    it("(d) a resolved api_key never appears in any log line on the spawn path", () => {
+      const SECRET = "sk-distinctive-secret-DO-NOT-LOG-9f3a";
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const remote: Backend = { ...LOCAL_BACKEND, id: "openrouter", api_key: SECRET };
+      new QwenSession(remote, "task", makeSpawnOpts());
+      ctrl.end();
+
+      // Serialize EVERY captured log call's args and assert the key is absent.
+      const serialized = JSON.stringify(logCapture.lines);
+      expect(serialized).not.toContain(SECRET);
     });
 
     it("does NOT set pathToQwenExecutable when infra is omitted", () => {
