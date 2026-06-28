@@ -318,6 +318,105 @@ describe("QwenSession", () => {
       expect(capturedOptions?.timeout?.canUseTool).toBe(600_000);
       ctrl.end();
     });
+
+    // ── RDR-013 Item1: mcpServers / agents forwarding ──────────
+
+    it("(a) forwards opts.mcpServers to QueryOptions.mcpServers", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const mcpServers = {
+        "my-server": { command: "node", args: ["server.js"] },
+        "http-server": { httpUrl: "http://localhost:3000/mcp" },
+      };
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ mcpServers }));
+      expect(capturedOptions?.mcpServers).toEqual(mcpServers);
+      ctrl.end();
+    });
+
+    it("(b) omits mcpServers from QueryOptions when not provided", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      expect(capturedOptions?.mcpServers).toBeUndefined();
+      ctrl.end();
+    });
+
+    it("(c) forwards opts.agents to QueryOptions.agents AND keeps the 'agent' tool when allow_subagents===true", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const agents = [{
+        name: "researcher",
+        description: "A research subagent",
+        systemPrompt: "You are a researcher.",
+        level: "session" as const,
+      }];
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ agents, allow_subagents: true }));
+      expect(capturedOptions?.agents).toEqual(agents);
+      expect(capturedOptions?.excludeTools).not.toContain("agent");
+      ctrl.end();
+    });
+
+    it("(c2) emits agents_without_allow_subagents WARN when opts.agents present but allow_subagents is not true", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const agents = [{
+        name: "researcher",
+        description: "A research subagent",
+        systemPrompt: "You are a researcher.",
+        level: "session" as const,
+      }];
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts({ agents, allow_subagents: false }));
+      // The WARN must be in the captured log lines.
+      const warned = logCapture.lines.some((args) => {
+        const f = args[0] as { event_type?: string; backend_id?: string; count?: number };
+        return (
+          f?.event_type === "agents_without_allow_subagents" &&
+          f?.backend_id === LOCAL_BACKEND.id &&
+          f?.count === 1
+        );
+      });
+      expect(warned).toBe(true);
+      // 'agent' tool is still excluded.
+      expect(capturedOptions?.excludeTools).toContain("agent");
+      // ...but agents are STILL forwarded (spec: WARN, not suppress). Asserting
+      // this guards against a future change that silently drops the dead config.
+      expect(capturedOptions?.agents).toEqual(agents);
+      ctrl.end();
+    });
+
+    it("(c3) emits the WARN when allow_subagents is OMITTED (the common operator default)", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      const agents = [{
+        name: "researcher",
+        description: "A research subagent",
+        systemPrompt: "You are a researcher.",
+        level: "session" as const,
+      }];
+      // makeSpawnOpts here would default allow_subagents:false; construct opts
+      // WITHOUT the field to exercise the `undefined` branch of `!== true`.
+      new QwenSession(LOCAL_BACKEND, "task", { agents } as unknown as ReturnType<typeof makeSpawnOpts>);
+      const warned = logCapture.lines.some((args) => {
+        const f = args[0] as { event_type?: string };
+        return f?.event_type === "agents_without_allow_subagents";
+      });
+      expect(warned).toBe(true);
+      ctrl.end();
+    });
+
+    it("(b2) omits agents from QueryOptions when not provided", () => {
+      const ctrl = makeControllableIter();
+      _makeIter = () => ctrl.iter;
+
+      new QwenSession(LOCAL_BACKEND, "task", makeSpawnOpts());
+      expect(capturedOptions?.agents).toBeUndefined();
+      ctrl.end();
+    });
   });
 
   // ── RDR-002 wrapper-script bridge ───────────────────────────

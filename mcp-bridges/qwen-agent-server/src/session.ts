@@ -205,6 +205,20 @@ export class QwenSession {
       ? DEFAULT_EXCLUDED_TOOLS.filter((t) => t !== "agent")
       : [...DEFAULT_EXCLUDED_TOOLS];
 
+    // S1: when agents[] is non-empty but allow_subagents is not true, the
+    // 'agent' tool is excluded and forwarded subagents are unreachable dead
+    // config. Emit a structured WARN so the operator knows.
+    if (opts.agents !== undefined && opts.agents.length > 0 && opts.allow_subagents !== true) {
+      log.warn(
+        {
+          event_type: "agents_without_allow_subagents",
+          backend_id: backend.id,
+          count: opts.agents.length,
+        },
+        "opts.agents provided but allow_subagents is not true; agent tool is excluded, subagents are unreachable",
+      );
+    }
+
     // Build system prompt: coprocessor preamble + caller's system +
     // prior_context + optional JSON-schema directive when opts.json_schema
     // is supplied (RDR-002 v0.8 amendment).
@@ -283,6 +297,11 @@ export class QwenSession {
         : {}),
       systemPrompt,
       ...(bridgeActive ? { pathToQwenExecutable: infra.wrapperPath } : {}),
+      // RDR-013 Item1: forward per-spawn MCP servers and subagents to the
+      // inner qwen-code agent. Conditional spread per exactOptionalPropertyTypes;
+      // unset → field absent → unchanged path.
+      ...(opts.mcpServers !== undefined ? { mcpServers: opts.mcpServers } : {}),
+      ...(opts.agents !== undefined ? { agents: opts.agents } : {}),
     };
 
     this._sdkIter = query({
