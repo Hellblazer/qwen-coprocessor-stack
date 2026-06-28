@@ -14,6 +14,44 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.12] - 2026-06-28
+
+Two coprocessor-provisioning features: per-request model override on `qwen_chat`,
+and per-spawn MCP-server + subagent forwarding on the agentic path (RDR-013).
+Together they let one remote backend serve many models and let a caller hand the
+inner agent exactly the tools a task needs (e.g. an LSP code-intelligence MCP
+server) without a host-installed extension.
+
+### Added
+
+- **`qwen_chat` per-request `model` override.** When `opts.model` is a non-empty
+  string the outgoing chat-completions request uses it instead of `backend.model`;
+  absent/empty is unchanged. Lets a single remote backend URL (e.g. an OpenRouter
+  endpoint) serve many models without separate backend entries. (#68)
+- **Per-spawn `mcpServers` + `agents` forwarding (RDR-013).** `qwen_spawn` /
+  `qwen_oneshot` accept `opts.mcpServers` (stdio / SSE / HTTP server configs) and
+  `opts.agents` (subagent definitions); both are forwarded into the inner
+  qwen-code agent via the `@qwen-code/sdk` control-protocol `initialize`. Unset
+  leaves behavior byte-for-byte unchanged. The tool-boundary schema accepts only
+  the JSON-serializable external MCP shapes and **rejects** the in-process
+  `type:"sdk"` form. (#70)
+
+### Notes / invariants (RDR-013)
+
+- `opts.agents` is only reachable when `allow_subagents: true` — otherwise the
+  inner `agent` tool is excluded and the supervisor warns
+  `agents_without_allow_subagents` (the agents would be dead config).
+- `opts.mcpServers` is **trusted input**: a stdio server's `command` is spawned
+  at SDK session initialization, before any tool call, so it is NOT gated by
+  `permissionMode`/`canUseTool` — `write_authority: false` does not make a
+  session with stdio `mcpServers` read-only.
+
+### Internal
+
+- CI/release workflows bumped off the deprecated Node 20 Actions runtime
+  (`actions/checkout` + `actions/setup-node` → `@v5`). (#67)
+- Flaky `round-trip` integration test hardened (logPath truncate race).
+
 ## [0.11.11] - 2026-06-28
 
 Remote authenticated providers on the **agentic** path (RDR-012). The
