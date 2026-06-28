@@ -1,0 +1,50 @@
+{
+  "_comment": "RDR-014 codeIntel example. This is NOT a backends pool config (see coprocessor-pool-openrouter.example.json for that) — it is the per-spawn `opts` payload you pass to the qwen_spawn / qwen_oneshot MCP tools to give a coprocessor agent-lsp code intelligence. `codeIntel: true` synthesizes, server-side before the session starts: (1) an agent-lsp stdio MCP server under the reserved key 'agent-lsp', scoped via includeTools to the 10 high-signal read-only navigation tools; (2) a symbol-graph guidance block appended to the system prompt; (3) a max_tool_calls default of 12 (only if you do not set one). The tool scope is ENFORCED at MCP discovery (RDR-014 RF-4), not advisory. Prereq: `uvx` + `agent-lsp` on the coprocessor host (the supervisor does not install them) — verify with `agent-lsp doctor`. Security: agent-lsp launches at SDK init regardless of write_authority (RDR-013 trust model).",
+
+  "qwen_spawn_minimal": {
+    "_comment": "Minimal form — one flag. cwd should point at the repo root agent-lsp indexes.",
+    "task": "Find every caller of chooseBackend and summarize how each uses the result.",
+    "opts": {
+      "backend": "glm-openrouter",
+      "cwd": "/abs/path/to/repo",
+      "codeIntel": true
+    }
+  },
+
+  "qwen_spawn_tuned": {
+    "_comment": "Tuned form — larger budget for a refactor. A caller-set max_tool_calls always wins over the codeIntel default of 12; max_tool_calls: 0 means explicitly unbounded.",
+    "task": "Rename the symbol `SpawnOpts` to `SessionOpts` across the package and fix all references.",
+    "opts": {
+      "backend": "glm-openrouter",
+      "cwd": "/abs/path/to/repo",
+      "codeIntel": true,
+      "max_tool_calls": 40
+    }
+  },
+
+  "_caller_wins_note": "If you supply your own 'agent-lsp' key under opts.mcpServers, the supervisor keeps it untouched, logs a codeintel_lsp_key_present WARN, and suppresses the synthesized guidance (it describes agent-lsp's specific tools). The max_tool_calls default still applies unless you set one.",
+
+  "_synthesized_equivalent": {
+    "_comment": "For reference only — this is roughly what `codeIntel: true` expands to internally (you do NOT write this yourself; the includeTools list and guidance are supplied by the supervisor). The bare tool names below are what `includeTools` matches on at MCP discovery.",
+    "mcpServers": {
+      "agent-lsp": {
+        "command": "uvx",
+        "args": ["agent-lsp"],
+        "cwd": "/abs/path/to/repo",
+        "includeTools": [
+          "start_lsp",
+          "list_symbols",
+          "find_symbol",
+          "find_references",
+          "find_callers",
+          "inspect_symbol",
+          "explore_symbol",
+          "go_to_definition",
+          "get_symbol_source",
+          "get_diagnostics"
+        ]
+      }
+    },
+    "max_tool_calls": 12
+  }
+}

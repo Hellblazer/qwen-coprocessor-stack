@@ -69,11 +69,11 @@ We want a single opt-in flag that bundles all three so the friction can't recur,
 
 ## Decision
 
-> **RF-1/RF-2/RF-3 VERIFIED (2026-06-28).** One verification item remains —
-> **RF-4** (does the inner CLI *enforce* `includeTools`?) — with an explicit
-> fallback if unenforced (guidance + `max_tool_calls` cap carry the anti-wander
-> guarantee). RF-4 is gated into implementation §Approach Item0, not a blocking
-> design unknown. See Research Findings.
+> **RF-1/RF-2/RF-3/RF-4 all VERIFIED (2026-06-28).** RF-4 (Item0, bead
+> qwen-coprocessor-stack-60v) confirmed the inner CLI **enforces** per-server
+> `includeTools` as a hard scope at MCP discovery (bare-name match) — the
+> unenforced fallback did not trigger. The guidance + `max_tool_calls` cap remain
+> additional anti-wander legs. See Research Findings.
 
 ### In scope
 
@@ -85,16 +85,15 @@ We want a single opt-in flag that bundles all three so the friction can't recur,
    a caller would plausibly use for their own language-server integration):
    `{ command: "uvx", args: ["agent-lsp"], cwd: <session cwd>,
    includeTools: [<high-signal set>] }`. The `includeTools` allow-list
-   (field VERIFIED on `CLIMcpServerConfig`, RF-1) is **intended** to scope the
-   forwarded server to the high-signal tools (`find_symbol` / `find_references` /
-   `inspect_symbol`, plus the `start_lsp`/`list_symbols` prerequisites the spike
-   used). **Enforcement caveat (RF-4, OPEN):** RF-1 verified only that the *field
-   exists* — it did NOT verify the inner qwen-code CLI *hides* non-listed tools
-   from the model. Until RF-4 confirms enforcement, `includeTools` is a
-   best-effort scope and the symbol-graph guidance (item 3) is the load-bearing
-   anti-wander mechanism. Exact tool names pinned from `agent-lsp`'s advertised
-   `mcp__lsp__*` set during implementation (jointly with the RF-4 enforcement
-   check). **Caller-wins merge:** if the caller already supplied an `agent-lsp`
+   (field VERIFIED on `CLIMcpServerConfig`, RF-1) scopes the forwarded server to
+   the high-signal tools. **Enforcement (RF-4, VERIFIED ENFORCED):** the inner
+   qwen-code CLI hides non-listed tools at MCP discovery (bare-name match), so
+   `includeTools` is a hard scope, not best-effort; the symbol-graph guidance
+   (item 3) and `max_tool_calls` cap are additional anti-wander legs. The pinned
+   10-tool allow-list (from agent-lsp v0.15.0's 65 advertised tools): `start_lsp,
+   list_symbols, find_symbol, find_references, find_callers, inspect_symbol,
+   explore_symbol, go_to_definition, get_symbol_source, get_diagnostics`
+   (T2 `rf4-includetools-enforcement-result`). **Caller-wins merge:** if the caller already supplied an `agent-lsp`
    server in `opts.mcpServers`, respect theirs, do NOT clobber, emit a structured
    WARN (`event_type: "codeintel_lsp_key_present"`, `backend_id`), and **suppress
    the guidance injection (item 3) too** — see item 3. (Precedent: RDR-013 never
@@ -229,16 +228,22 @@ constructor. `includeTools` already passes the `qwen_spawn` zod schema
   v0.15.0 launches; `agent-lsp doctor` auto-detects typescript-language-server
   (+ clangd/gopls/jdtls) on the host. The symbol-graph output format and the
   `max_tool_calls=12` working cap are from the live spike (T2 spike findings).
-- **RF-4 — `includeTools` CLI enforcement. OPEN (verify in §Approach Item0).**
-  RF-1 confirmed `CLIMcpServerConfig.includeTools` exists in the SDK type, and the
-  SDK documents an enforced `excludeTools` at the *QueryOptions* level
-  (`index.d.ts:572` "Blocks tools completely") — but per-server
-  `CLIMcpServerConfig.includeTools` carries no enforcement docstring, and the
-  spike verified transport + output format, NOT tool-surface hiding. So whether
-  the inner qwen-code CLI actually hides non-listed agent-lsp tools from the model
-  is UNVERIFIED. The In-scope "hard-scope" language is downgraded to "intended to
-  scope" until Item0 confirms; the guidance + budget cap are the load-bearing
-  anti-wander mechanisms regardless.
+- **RF-4 — `includeTools` CLI enforcement. VERIFIED — ENFORCED (2026-06-28,
+  Item0 / bead qwen-coprocessor-stack-60v).** The inner qwen-code CLI enforces
+  per-server `includeTools` as a **hard scope at MCP discovery**, matched on the
+  **bare** tool name: a tool absent from the list is never registered and the
+  model never sees it. Triangulated three ways: (1) SDK source —
+  `cli.js` `isEnabled(funcDecl, …)` returns
+  `!includeTools || includeTools.some(t => t === funcDecl.name || …)` and is
+  called at discovery as `if (!isEnabled(...)) continue;` BEFORE
+  `discoveredTools.push(new DiscoveredMCPTool(...))`; (2) a live spawn through the
+  supervisor with a 2-tool test MCP server and `includeTools:["allowed_tool"]` —
+  the blocked tool received zero `tools/call`; (3) the driving model's own report
+  ("blocked_tool was not exposed … could not be called"). The §In-scope
+  "hard-scope" language stands; the guidance + budget cap remain additional
+  anti-wander legs. agent-lsp v0.15.0 advertises 65 tools; the pinned 10-tool
+  allow-list is in T2 `rf4-includetools-enforcement-result` and the code. The
+  RF-4 "unenforced" fallback in §Decision item 2 does NOT apply.
 
 ## Consequences
 
