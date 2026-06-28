@@ -31,6 +31,23 @@
       }
     },
     {
+      "_comment": "GLM 5.2 via OpenRouter (z-ai/glm-5.2) — reasoning-first coding model, 1M ctx, validated 4/4 by scripts/shakeout-openrouter.py incl. clean OpenAI-shape tool-calling. Dedicated role 'glm' + explicit pin (opts.backend='glm-openrouter') so it does NOT absorb coder-box/reason-mac traffic. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). Direct-HTTP (qwen_chat) works on supervisor >=0.11.8; agentic qwen_spawn needs >=0.11.11 (RDR-012 release).",
+      "id": "glm-openrouter",
+      "url": "https://openrouter.ai/api/v1",
+      "model": "z-ai/glm-5.2",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 200000,
+      "modality": "text",
+      "roles": ["glm"],
+      "api_key_env": "OPENROUTER_API_KEY",
+      "headers": {
+        "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
+        "X-Title": "qwen-coprocessor-stack"
+      }
+    },
+    {
       "_comment": "Remote CHAT/operator backend via OpenRouter — direct-HTTP path (qwen_chat role=general). Full header support here (direct-HTTP). A cheap fast model for operator-side synthesis. no_agentic keeps it out of the agentic coding pool.",
       "id": "openrouter-general",
       "url": "https://openrouter.ai/api/v1",
