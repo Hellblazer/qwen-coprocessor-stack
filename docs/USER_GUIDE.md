@@ -226,6 +226,80 @@ before that.
 
 ---
 
+## Recipe: give a coprocessor code intelligence (`codeIntel`)
+
+A coprocessor doing cross-file coding work (rename a symbol, trace callers, fix a
+type error) wastes turns grepping and reading whole files. Set one flag and it
+gets a real language-server-backed symbol graph instead:
+
+```jsonc
+qwen_spawn({
+  task: "Find every caller of chooseBackend and summarize how each uses the result",
+  opts: {
+    backend: "glm-openrouter",
+    cwd: "/abs/path/to/repo",   // the tree agent-lsp indexes
+    codeIntel: true
+  }
+})
+```
+
+`codeIntel: true` synthesizes three things into the spawn, server-side, before
+the session starts — no per-call boilerplate:
+
+1. an **agent-lsp** MCP server (stdio `uvx agent-lsp`) under the reserved key
+   `agent-lsp`, scoped to a high-signal read-only navigation tool set
+   (`start_lsp`, `list_symbols`, `find_symbol`, `find_references`, `find_callers`,
+   `inspect_symbol`, `explore_symbol`, `go_to_definition`, `get_symbol_source`,
+   `get_diagnostics`);
+2. a **guidance block** appended to the system prompt explaining agent-lsp's
+   output format (see below);
+3. a **`max_tool_calls` default of 12** — applied only if you did not set one. A
+   caller value always wins, including `0` (explicit "unbounded").
+
+**The tool scope is enforced, not advisory.** agent-lsp advertises ~65 tools;
+`includeTools` is applied at MCP discovery (the inner CLI never registers a tool
+that is not on the list), so the model only ever sees the 10 above. This is a
+hard scope, verified against the SDK and a live spawn (RDR-014 RF-4).
+
+**Symbol-graph output, not `file:line`.** agent-lsp returns a *scored symbol
+graph* — lines like `@NNN <kind> <name> SCORE lsp_resolved`, with resolved file
+paths living on the graph nodes — not plain `file:line`. The injected guidance
+tells the agent this and points it at the location-yielding tools
+(`find_symbol` / `go_to_definition` / `get_symbol_source`) so it does not loop
+trying to reformat graph output by hand. A full payload example is in
+[`config/coprocessor-pool-codeintel.example.json`](../config/coprocessor-pool-codeintel.example.json).
+
+**When to use it.** Enable for TypeScript / polyglot tasks that need cross-file
+symbol navigation; leave it off for self-contained single-file edits or
+non-coding work (it adds a process launch and 10 tools to the surface). Pair it
+with a generous `cwd` pointing at the repo root. `max_tool_calls` 12 is a sane
+default; raise it for large refactors.
+
+**Caller-wins.** If you pass your own `agent-lsp` entry in `opts.mcpServers`, the
+supervisor keeps yours untouched, logs a `codeintel_lsp_key_present` WARN, and
+suppresses the guidance (it describes agent-lsp's specific tools). The
+`max_tool_calls` default still applies unless you set one — the WARN says so.
+
+**Prerequisite (not installed for you).** `uvx` (from
+[uv](https://docs.astral.sh/uv/)) and `agent-lsp` must be present on the
+**coprocessor host** — the supervisor does not install them. Install with
+`uvx agent-lsp` (or `pip install agent-lsp`); verify the language servers it can
+reach with `agent-lsp doctor` (it auto-detects typescript-language-server,
+clangd, gopls, jdtls, …). If `uvx`/agent-lsp is missing, the spawn does **not**
+fail at the supervisor — the supervisor does not health-probe MCP servers. The
+SDK surfaces the launch failure inside the session (the `agent-lsp` tools simply
+never appear and the agent reports it cannot navigate); other backends and the
+rest of the spawn are unaffected. Distinguish it from a routing/credential
+failure by checking that the session started and only the `mcp__agent-lsp__*`
+tools are absent.
+
+**Security surface.** `codeIntel: true` launches `uvx agent-lsp` at SDK session
+init — **before any tool call, regardless of `write_authority`** (stdio
+`mcpServers` commands are not permission-gated; inherited RDR-013 trust model).
+Treat it as trusted input; it is not sandboxed here.
+
+---
+
 ## Recipe: use it from your own application
 
 The stack is the supervisor; your app wires its dispatch through it. Two patterns
@@ -267,3 +341,9 @@ message:
 - **A config edit did nothing.** Either an env var is overriding the file
   (`/qwen-stack:status` flags this), or you're looking at an in-flight session —
   edits only apply to new spawns.
+- **`codeIntel: true` but the agent can't navigate / no `mcp__agent-lsp__*`
+  tools.** `uvx` or `agent-lsp` is missing on the coprocessor host. The spawn
+  itself starts fine (the supervisor does not health-probe MCP servers); only the
+  agent-lsp tools are absent. Install on that host (`uvx agent-lsp`) and verify
+  with `agent-lsp doctor`. Confirm the session started and the backend is healthy
+  to rule out a routing/credential issue — those fail the spawn, this does not.
