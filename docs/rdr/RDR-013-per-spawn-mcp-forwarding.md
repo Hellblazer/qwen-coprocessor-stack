@@ -2,12 +2,14 @@
 title: "Per-spawn MCP server forwarding — let qwen_spawn/qwen_oneshot provision the inner qwen-code agent with per-task MCP tools"
 id: RDR-013
 type: Design
-status: accepted
+status: closed
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-28
 accepted_date: 2026-06-28
+closed_date: 2026-06-28
+close_reason: implemented
 related_issues: []
 ---
 
