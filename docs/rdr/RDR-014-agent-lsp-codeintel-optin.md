@@ -2,12 +2,14 @@
 title: "agent-lsp opt-in code-intelligence provider — one-flag opts.codeIntel that injects agent-lsp, its symbol-graph guidance, and a default tool budget into a spawn"
 id: RDR-014
 type: Design
-status: accepted
+status: closed
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-28
 accepted_date: 2026-06-28
+closed_date: 2026-06-28
+close_reason: implemented
 related_issues: []
 ---
 
