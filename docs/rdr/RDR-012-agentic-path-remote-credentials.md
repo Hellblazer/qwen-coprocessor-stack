@@ -2,12 +2,14 @@
 title: "Agentic-path remote credentials — forward per-backend auth so qwen_spawn/qwen_oneshot can drive authenticated remote OpenAI-compatible providers (OpenRouter, Together, Fireworks)"
 id: RDR-012
 type: Design
-status: accepted
+status: closed
 priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-27
 accepted_date: 2026-06-27
+closed_date: 2026-06-28
+close_reason: implemented
 related_issues: []
 ---
 
