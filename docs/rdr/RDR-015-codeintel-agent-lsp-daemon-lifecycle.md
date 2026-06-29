@@ -17,12 +17,12 @@ related_issues: []
 
 ## Status
 
-**Draft — research substantially complete (2026-06-28).** Findings 1–2
-(measured) show agent-lsp already provides warm reuse *and* a ~30 min idle
-self-reap, refuting the original accumulation premise. The RDR has narrowed from
-"build an ops-side reaper" to "document + rely on agent-lsp's lifecycle, with one
-peak-Java-burst measurement to decide a possible resident cap." Ready for the
-gate once Decision item 2 is measured or explicitly deferred.
+**Draft — research COMPLETE, gate-ready (2026-06-29).** Findings 1–3 (all
+measured) settle the design: agent-lsp already provides warm reuse + a ~30 min
+idle self-reap (so no ops-side idle reaper — refutes the original accumulation
+premise), but the Java-burst peak is material (~1.7 GB/jdtls, Finding 3), so a
+single, bounded piece of work remains: a **jdtls-weighted resident-broker cap**
+(LRU `daemon-stop`) in the keepalive, plus docs. Ready for `/conexus:rdr-gate`.
 
 Follow-up to RDR-014 (closed, shipped v0.11.13) and its
 guidance hardening (PR #77/#78, v0.11.14). RDR-014 shipped `opts.codeIntel` as
@@ -80,11 +80,16 @@ warrants a thin resident-broker cap.
 1. **Adopt + document the daemon-broker** as the warm-reuse substrate: rely on
    it; keep teardown as-is (do NOT kill brokers — that defeats reuse); state the
    ~30 min idle self-reap so operators know resident brokers are self-bounding.
-2. **Decide the peak-concurrency question with one measurement** — drive a
-   realistic Java-heavy burst (N distinct java roots within 30 min) and record
-   peak simultaneous jdtls RSS. Add a resident-broker cap (LRU `daemon-stop`)
-   **only if** that peak threatens the model's RAM headroom; otherwise close it
-   as "not needed, agent-lsp self-manages".
+2. **Resident-broker cap (jdtls-driven) — measured YES (Finding 3).** Add an
+   LRU resident-broker cap that evicts the coldest broker via `agent-lsp
+   daemon-stop` once a limit is exceeded, hosted in the keepalive LaunchAgent.
+   Because the footprint is dominated by jdtls (~1.7 GB) and TS/Go are trivial
+   (~88 MB), the cap should be **weighted/limited by Java brokers** (or a small
+   total like ~3–4) rather than a flat count that would needlessly evict cheap
+   tsserver brokers. Exact limit = f(host RAM headroom vs ~1.7 GB/jdtls); set
+   per-host (box vs Mac) in the keepalive config. Steady-state idle reaping
+   stays agent-lsp's job (30 min); the cap only bounds the *peak within* that
+   window.
 3. **Docs** — USER_GUIDE: warm-reuse is automatic + the `.agent-lsp/cache.db.gz`
    recipe; ARCHITECTURE: broker ownership + the unchanged teardown bright line.
 
@@ -110,9 +115,9 @@ agent-lsp process tree (RDR-013). Broker lifecycle is owned by agent-lsp + an
 1. Verify broker survival + reaping mechanics against the live tool — **DONE**
    (Findings 1–2: survival confirmed; ~30 min idle self-reap measured; tsserver
    footprint ~88 MB/root; jdtls is the only JVM caveat).
-2. Run the Java-burst peak measurement (Decision item 2) and decide
-   cap-or-no-cap. Implement an LRU resident-broker cap via `daemon-stop` in the
-   keepalive **only if** warranted; else record "not needed".
+2. Java-burst peak measured (~1.7 GB/jdtls, Finding 3) — **cap warranted**.
+   Implement a jdtls-weighted LRU resident-broker cap via `daemon-stop` in the
+   keepalive, with per-host limits (box vs Mac).
 3. Optionally set `AGENT_LSP_BROKER_TIMEOUT_MS` in `applyCodeIntel`'s agent-lsp
    `env` (start-timeout headroom for large cold repos — NOT an idle knob).
 4. Optionally pin an installed `agent-lsp` over `uvx agent-lsp` to drop the
@@ -169,6 +174,24 @@ Probed against live `uvx agent-lsp` (v0.15.x) via a minimal MCP stdio client:
   is **peak** simultaneous Java brokers under bursty first-class use; a thin
   resident-broker cap is the only candidate mitigation, and only if a measured
   Java-heavy burst shows it.
+
+### Finding 3 — Java burst peak is material: ~1.7 GB per jdtls (MEASURED 2026-06-29)
+
+Drove 3 distinct Java roots (`java-uuid-generator`, `evrete`, `jbizur`)
+concurrently through agent-lsp (`start_lsp(java, ready_timeout=60)`), sampling
+total `jdtls` RSS every 5 s for 60 s:
+
+- **Peak total ≈ 5.1 GB across 3 roots ⇒ ~1.7 GB per jdtls** (steady after
+  ~5 s warm-up; 3 processes). That is ~20× the tsserver footprint (~88 MB/root).
+- Extrapolation: 6 concurrent Java roots ≈ ~10 GB, held for the full 30 min idle
+  window. On the box (~32 GB system carveout) and the Mac (128 GB unified, but
+  the served model already takes ~42 GB+ and MLX runs `-w1`), an unbounded Java
+  burst can plausibly contend with the model's RAM.
+- `agent-lsp daemon-stop --root-dir=… --language=java` reaped all three cleanly
+  (0 jdtls, 0 registry entries) — confirms the eviction lever for a cap works.
+
+⇒ **Decision item 2 resolves YES: a resident-broker cap is warranted**, driven
+entirely by jdtls. tsserver/gopls bursts remain a non-issue.
 - **Persistent symbol cache** exists separately at `~/.agent-lsp/cache/`
   (committable as `.agent-lsp/cache.db.gz` — "teammates skip cold-start
   indexing"); amortizes cold-start across daemon restarts/machines.
@@ -187,15 +210,13 @@ bd memory: `codeintel-agentlsp-daemon-lifecycle-2026-06-28`,
   once, resident brokers self-bound at ~30 min idle, and the supervisor needs
   **no change**. The RDR likely lands as document-and-rely, not build.
 
-### Negative
-
-- Residual (peak) risk only: a burst of distinct **Java** roots inside the
-  30 min idle window could hold several jdtls JVMs resident at once. To be
-  confirmed/denied by the Decision-item-2 measurement; mitigation (a resident
-  cap) is added only if it bites.
-- The ~30 min idle TTL is **not env-tunable** (Finding 1) — if it ever proves
-  too long for the box, the only lever is the manual `daemon-stop`, i.e. a
-  keepalive sweep (the very thing currently scoped out).
+- Peak Java-burst footprint is **confirmed material** (Finding 3): ~1.7 GB per
+  jdtls, held up to 30 min. The mitigation (jdtls-weighted resident cap via
+  `daemon-stop` in the keepalive) is now in scope — a real, if small, ops
+  surface to build and tune per host.
+- The ~30 min idle TTL is **not env-tunable** (Finding 1) — the cap (manual
+  `daemon-stop`) is therefore the *only* lever for bounding peak; we can't just
+  shorten the TTL on the box.
 
 ### Neutral
 
