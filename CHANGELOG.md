@@ -14,6 +14,27 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.14] - 2026-06-28
+
+Tightens the RDR-014 `codeIntel` guidance so a coprocessor drives agent-lsp
+correctly on the first try, closing the "LSP workspace project resolution"
+rough edge seen after v0.11.13. Guidance/docs only — no behavior or contract
+change; `codeIntel` stays opt-in.
+
+### Changed
+
+- **`codeIntel` agent-lsp guidance** (`CODEINTEL_GUIDANCE`): now states the
+  required `start_lsp`-first ordering, that `start_lsp`'s `root_dir` must be the
+  build-manifest directory (a subdirectory in a polyglot monorepo, not the repo
+  root), the `ready_timeout_seconds`/`scope` knobs, and — for
+  typescript-language-server's "No Project" workspace-symbol behavior — to open
+  one file with `list_symbols` before retrying `find_symbol` instead of falling
+  back to text grep. "No Project" diagnostics are attributed to the emitting
+  tool so the model picks the right remedy. Root-caused and reproduced against
+  live `uvx agent-lsp` (bead `14t`, PR #77).
+- **Docs** (`USER_GUIDE.md`): the `codeIntel` recipe now tells callers to point
+  `cwd` at the project/manifest directory rather than a polyglot monorepo root.
+
 ## [0.11.13] - 2026-06-28
 
 Ships the RDR-014 `codeIntel` opt-in: a one-flag way to give a spawned
