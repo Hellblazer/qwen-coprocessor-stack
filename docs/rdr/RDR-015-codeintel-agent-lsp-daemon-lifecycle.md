@@ -128,15 +128,25 @@ Probed against live `uvx agent-lsp` (v0.15.x) via a minimal MCP stdio client:
   thin **client**; the broker is a detached, socket-registered process. ⇒ warm
   cross-spawn reuse works **today**; our `abort()`-based teardown correctly does
   not kill it, and must stay that way.
-- **No automatic idle reaping — LEAK CONFIRMED.** `AGENT_LSP_BROKER_TIMEOUT_MS`
-  is the broker *start* timeout (`brokerStartTimeout` / "broker did not start
-  within %s"), NOT an idle TTL. Reaping is **manual**: `agent-lsp daemon-stop
-  --root-dir=X --language=Y` (binary: `StopDaemon`, `stop_daemon_unix.go`,
-  "terminating daemon PID %d", and it cascade-kills the LSP child — "LSP server
-  … did not exit after 3s, killing"). Nothing reaps idle brokers on its own.
-  Evidence of the leak: orphaned `typescript-language-server` processes up to
-  **4d10h** old still resident on this host. ⇒ on the RAM-constrained box/Mac,
-  per-(root,language) brokers + jdtls JVMs accumulate without bound.
+- **Manual reap exists; automatic idle-reap UNDER MEASUREMENT (Finding 1 self-correction).**
+  `AGENT_LSP_BROKER_TIMEOUT_MS` is the broker *start* timeout (`brokerStartTimeout`
+  / "broker did not start within %s"), NOT an idle TTL. A manual reap exists:
+  `agent-lsp daemon-stop --root-dir=X --language=Y` (binary: `StopDaemon`,
+  `stop_daemon_unix.go`, "terminating daemon PID %d"; it cascade-kills the LSP
+  child — "LSP server … did not exit after 3s, killing").
+  **CORRECTION (2026-06-28):** the original "LEAK CONFIRMED — orphaned
+  typescript-language-server up to 4d10h" claim was **misattributed**. Those
+  processes are children of `claude` (Serena/Claude Code's own LSP integration),
+  **not** agent-lsp brokers — verified via `ps -o ppid`. Meanwhile the broker
+  from the original probe (created ~18:44) was **gone by ~19:14** (registry dir
+  mtime), with no client connected — i.e. it self-terminated after ~30 min idle,
+  which would mean agent-lsp **does** self-reap (the binary carries `idleTimeout`
+  / `onIdleTimeout` symbols, mixed with library noise). This is now being
+  measured directly (detached idle-watch on a fresh broker, no client) to
+  establish whether a self-reap exists and its interval. **Until that resolves,
+  the "unbounded accumulation" premise is NOT established** and the In-scope
+  reaper (items 2–3) is provisional — if agent-lsp self-reaps on a sane idle
+  TTL, the supervisor/ops side may need only a resident-cap backstop, or nothing.
 - **Persistent symbol cache** exists separately at `~/.agent-lsp/cache/`
   (committable as `.agent-lsp/cache.db.gz` — "teammates skip cold-start
   indexing"); amortizes cold-start across daemon restarts/machines.
@@ -157,11 +167,14 @@ bd memory: `codeintel-agentlsp-daemon-lifecycle-2026-06-28`,
 
 ### Negative
 
-- Without the reaper, frequent codeIntel use **leaks** brokers + JVMs and can
-  starve the served model of RAM — this is a real, measured failure mode, not
-  hypothetical.
-- The reaper adds host-state coupling (the keepalive must know about agent-lsp's
-  registry path + daemon-stop command) — a new ops surface to maintain.
+- **IF** agent-lsp does not self-reap on a sane idle TTL (under measurement —
+  see Finding 1 correction), frequent codeIntel use could accumulate brokers +
+  JVMs and starve the served model of RAM. The original "measured leak" evidence
+  was retracted (misattributed to Claude/Serena's LSP servers), so this is a
+  risk to confirm, not an established fact.
+- Any reaper we add introduces host-state coupling (the keepalive must know
+  agent-lsp's registry path + `daemon-stop`) — a new ops surface; only worth it
+  if the self-reap measurement shows a real gap.
 
 ### Neutral
 
