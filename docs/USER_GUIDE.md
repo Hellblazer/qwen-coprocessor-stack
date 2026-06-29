@@ -361,9 +361,19 @@ trying to reformat graph output by hand. A full payload example is in
 
 **When to use it.** Enable for TypeScript / polyglot tasks that need cross-file
 symbol navigation; leave it off for self-contained single-file edits or
-non-coding work (it adds a process launch and 10 tools to the surface). Pair it
-with a generous `cwd` pointing at the repo root. `max_tool_calls` 12 is a sane
-default; raise it for large refactors.
+non-coding work (it adds a process launch and 10 tools to the surface).
+`max_tool_calls` 12 is a sane default; raise it for large refactors.
+
+**Point `cwd` at the project root, not a polyglot monorepo root.** The language
+server resolves the project from a build manifest (`package.json`/`tsconfig.json`,
+`go.mod`, `Cargo.toml`, `pyproject.toml`, …). In a monorepo whose root holds *no*
+manifest (the project lives in a subdirectory), set `cwd` to that subdirectory.
+The injected guidance also tells the agent to call `start_lsp` first with
+`root_dir` = the manifest directory and a `ready_timeout_seconds`, and — when
+workspace-symbol search returns "No Project" (typescript-language-server does
+this until a file in the project is open) — to open one file with `list_symbols`
+before retrying `find_symbol`. A wrong root surfaces as the agent grepping
+instead of using the LSP tools (RDR-014 follow-up, bead `14t`).
 
 **Caller-wins.** If you pass your own `agent-lsp` entry in `opts.mcpServers`, the
 supervisor keeps yours untouched, logs a `codeintel_lsp_key_present` WARN, and

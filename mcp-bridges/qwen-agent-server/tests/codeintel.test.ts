@@ -154,6 +154,29 @@ describe("RDR-014 codeIntel (applyCodeIntel)", () => {
     expect(warned("codeintel_lsp_key_present")).toBe(false);
   });
 
+  it("(g-seq) guidance carries the start_lsp → find_symbol sequencing rules (rough-edge fix, bead 14t)", () => {
+    const opts: Partial<SpawnOpts> = { codeIntel: true };
+    applyCodeIntel(opts);
+    const sys = opts.system ?? "";
+    // start_lsp must come first, with the right root_dir and a ready-timeout.
+    expect(sys).toContain("start_lsp");
+    expect(sys).toContain("root_dir");
+    expect(sys).toContain("ready_timeout_seconds");
+    expect(sys).toContain("manifest");
+    // the tsserver "No Project" / open-a-file-before-find_symbol recovery.
+    expect(sys).toContain("No Project");
+    // Non-vacuous: pin the open-file-before-find_symbol sentence specifically.
+    // (A bare /find_symbol/ would pass on the pre-existing guidance — assert the
+    //  recovery phrase AND its ordering instead.)
+    expect(sys).toContain("open one known file first with");
+    expect(sys).toContain("retry `find_symbol`");
+    expect(sys.indexOf("open one known file first with")).toBeLessThan(
+      sys.indexOf("retry `find_symbol`"),
+    );
+    // and the explicit "don't fall back to grep" steer.
+    expect(sys.toLowerCase()).toContain("grep");
+  });
+
   it("(g''') codeIntel:true, empty-string system → treated as unset (guidance is the whole prompt, no leading separator)", () => {
     const opts: Partial<SpawnOpts> = { codeIntel: true, system: "" };
     applyCodeIntel(opts);
