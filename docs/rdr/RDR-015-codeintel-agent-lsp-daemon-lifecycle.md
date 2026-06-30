@@ -22,7 +22,8 @@ measured) settle the design: agent-lsp already provides warm reuse + a ~30 min
 idle self-reap (so no ops-side idle reaper — refutes the original accumulation
 premise), but the Java-burst peak is material (~1.7 GB/jdtls, Finding 3), so a
 single, bounded piece of work remains: a **jdtls-weighted resident-broker cap**
-(LRU `daemon-stop`) in the keepalive, plus docs. Ready for `/conexus:rdr-gate`.
+(FIFO-by-start `daemon-stop`) in the Mac keepalive, plus docs. Ready for
+`/conexus:rdr-gate`.
 
 Follow-up to RDR-014 (closed, shipped v0.11.13) and its
 guidance hardening (PR #77/#78, v0.11.14). RDR-014 shipped `opts.codeIntel` as
@@ -124,9 +125,11 @@ jdtls-weighted eviction) — never by the per-session abort path.
 1. Verify broker survival + reaping mechanics against the live tool — **DONE**
    (Findings 1–2: survival confirmed; ~30 min idle self-reap measured; tsserver
    footprint ~88 MB/root; jdtls is the only JVM caveat).
-2. Java-burst peak measured (~1.7 GB/jdtls, Finding 3) — **cap warranted**.
-   Implement a jdtls-weighted LRU resident-broker cap via `daemon-stop` in the
-   keepalive, with per-host limits (box vs Mac).
+2. Java-burst peak measured (~1.7 GB/jdtls floor, Finding 3) — **cap warranted**.
+   Implement a jdtls-weighted FIFO resident-broker cap (evict oldest-started,
+   keyed by `start_time`) via `daemon-stop` in the **Mac** keepalive (agent-lsp
+   registry is Mac-hosted; the box keepalive has no brokers), with the cap limit
+   tuned against the true post-indexing jdtls peak.
 3. Optionally set `AGENT_LSP_BROKER_TIMEOUT_MS` in `applyCodeIntel`'s agent-lsp
    `env` (start-timeout headroom for large cold repos — NOT an idle knob).
 4. Optionally pin an installed `agent-lsp` over `uvx agent-lsp` to drop the
