@@ -2,11 +2,12 @@
 title: "codeIntel agent-lsp daemon lifecycle — adopt agent-lsp's per-(root,language) daemon-broker for warm start_lsp reuse across spawns, and bound its accumulation"
 id: RDR-015
 type: Design
-status: draft
+status: accepted
 priority: medium
 author: hal
-reviewed-by: pending
+reviewed-by: self
 created: 2026-06-28
+accepted_date: 2026-06-29
 related_issues: []
 ---
 
