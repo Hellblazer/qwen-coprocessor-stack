@@ -7,7 +7,8 @@ priority: medium
 author: hal
 reviewed-by: self
 created: 2026-06-28
-accepted_date: 2026-06-29
+reopened_date: 2026-07-01
+accepted_date: 2026-07-02
 related_issues: []
 ---
 
@@ -18,13 +19,35 @@ related_issues: []
 
 ## Status
 
-**Draft — research COMPLETE, gate-ready (2026-06-29).** Findings 1–3 (all
-measured) settle the design: agent-lsp already provides warm reuse + a ~30 min
-idle self-reap (so no ops-side idle reaper — refutes the original accumulation
-premise), but the Java-burst peak is material (~1.7 GB/jdtls, Finding 3), so a
-single, bounded piece of work remains: a **jdtls-weighted resident-broker cap**
-(FIFO-by-start `daemon-stop`) in the Mac keepalive, plus docs. Ready for
-`/conexus:rdr-gate`.
+**Re-opened 2026-07-01 after a BLOCKED re-gate (supersedes the 2026-06-29
+accept).** A re-verification (Finding 4 — four probes on the same agent-lsp
+0.15.0 / jdtls 1.57.0, driven exactly as `applyCodeIntel` launches it) refuted
+the load-bearing premise: **jdtls does *not* use the daemon-broker.** It runs
+**in-process** under each spawn's `uvx agent-lsp`, as a **single shared instance
+across that spawn's Java roots**, and **dies at teardown** — it is never
+registered in `~/.cache/agent-lsp/daemons/`. The daemon-broker survival + ~30 min
+idle self-reap that Findings 1–2 measured are a **TypeScript/Go** property; they
+do **not** generalize to jdtls (the only language with material RAM, and the
+entire justification for the original cap). Consequences:
+
+- **Decision item 1 (warm cross-spawn reuse) is scoped to TS/Go.** jdtls pays a
+  full cold `start_lsp` index on **every** spawn; the cold-start amortizer for
+  jdtls is the persistent symbol cache (`.agent-lsp/cache.db.gz`), not broker
+  reuse.
+- **Decision item 2's registry `daemon-stop` FIFO cap is retracted** — it is a
+  structural no-op for jdtls (the registry it reads is always empty for Java).
+  Finding 3's "eviction lever works" did not reproduce. The real Java RAM concern
+  is **concurrent in-process jdtls across overlapping codeIntel spawns**
+  (~0.8–2 GB each, alive only for the spawn), which is **bounded and
+  self-cleaning** (no accumulation) — a *spawn-concurrency* concern, not a
+  resident-registry one. This RDR now **documents** it and **defers** any
+  spawn-concurrency cap to a future supervisor-side design, gated on measured
+  need (see In-scope item 2).
+
+The RDR therefore lands as **document the real lifecycle (TS/Go warm reuse;
+jdtls cold-per-spawn but self-cleaning) + no code build this cycle**.
+**Re-gate PASSED and re-accepted 2026-07-02** (0 critical; substantive-critic's
+2 significant folded in).
 
 Follow-up to RDR-014 (closed, shipped v0.11.13) and its
 guidance hardening (PR #77/#78, v0.11.14). RDR-014 shipped `opts.codeIntel` as
@@ -67,46 +90,62 @@ The question raised: *do we need to manage the lifecycle of the per-root
 
 ## Decision
 
-**Settled by Findings 1–3 (all measured).** agent-lsp already ships *both* halves
-of the lifecycle we were worried about: a persistent per-(root,language)
-**daemon-broker** for warm cross-spawn reuse (survives our teardown), **and** a
-~30 min idle self-reap that bounds resident brokers. So the warm-reuse benefit is
-available **today with zero supervisor change**, and the feared *steady-state*
-"unbounded accumulation" does not occur. The one residual risk — *peak*
-simultaneous Java brokers within the 30 min window — was measured and is real
-(~1.7 GB/jdtls, Finding 3). The RDR therefore lands as **document + rely on
-agent-lsp's lifecycle, plus one bounded mitigation**: a jdtls-weighted
-resident-broker cap in the keepalive.
+**Settled by Findings 1–4 (all measured), with jdtls behaving differently from
+TS/Go (Finding 4).** For **TypeScript/Go**, agent-lsp ships a persistent
+per-(root,language) **daemon-broker** for warm cross-spawn reuse (survives our
+teardown) plus a ~30 min idle self-reap that bounds resident brokers — the
+warm-reuse benefit is available today with zero supervisor change, and
+steady-state accumulation does not occur. For **jdtls**, none of that applies:
+jdtls runs **in-process** per spawn, one shared instance across that spawn's Java
+roots, and is reaped at teardown (Finding 4). So there is **no cross-spawn warm
+reuse for jdtls** and **no resident jdtls to cap** — the only Java footprint is
+the *concurrent* in-process jdtls set during overlapping spawns (~0.8–2 GB each,
+Findings 3–4), which is bounded and self-cleaning. The RDR therefore lands as
+**document the real lifecycle** and **defer** any spawn-concurrency mitigation to
+a future supervisor-side design gated on measured need — **no code build this
+cycle**.
 
 ### In scope (proposed — to be locked at gate)
 
-1. **Adopt + document the daemon-broker** as the warm-reuse substrate: rely on
-   it; keep teardown as-is (do NOT kill brokers — that defeats reuse); state the
-   ~30 min idle self-reap so operators know resident brokers are self-bounding.
-2. **Resident-broker cap (jdtls-driven) — measured YES (Finding 3).** Add a
-   resident-broker cap that evicts the **oldest-started** broker via `agent-lsp
-   daemon-stop` once a limit is exceeded, hosted in the **Mac** keepalive
-   LaunchAgent (the agent-lsp registry `~/.cache/agent-lsp/daemons/` lives on the
-   host running the `qwen-code` CLI — the Mac/Claude-Code host — *not* the box;
-   the box keepalive manages llama-server only and has no agent-lsp brokers).
-   Eviction is **FIFO by `start_time`, not true LRU** — `daemon.json`'s
-   `last_activity` is not updated per tool-use (Finding 1, verified), so a true
-   LRU key is not available from the registry; an actively-used oldest broker may
-   be evicted and simply re-warm on its next `start_lsp` (acceptable). Because
-   the footprint is dominated by jdtls (~1.7 GB floor) and TS/Go are trivial
-   (~88 MB), the cap should be **weighted/limited by Java brokers** (or a small
-   total like ~3–4) rather than a flat count that would needlessly evict cheap
-   tsserver brokers. The limit is **mandatory per-host tuning** against the true
-   post-indexing jdtls peak (Finding 3), not a shipped constant. Steady-state
-   idle reaping stays agent-lsp's job (~30 min); the cap only bounds the *peak
-   within* that window.
-3. **Docs** — USER_GUIDE: warm-reuse is automatic + the `.agent-lsp/cache.db.gz`
-   recipe; ARCHITECTURE: broker ownership + the unchanged teardown bright line.
+1. **Document the daemon-broker as the TS/Go warm-reuse substrate** (Findings
+   1–2): rely on it for TypeScript/Go; keep teardown as-is (do NOT kill brokers —
+   that defeats reuse); state the ~30 min idle self-reap so operators know
+   resident **TS/Go** brokers are self-bounding. **Explicitly scope this to
+   TS/Go**: jdtls does not use the broker (Finding 4), so there is no jdtls warm
+   reuse — each jdtls-bearing spawn pays a cold `start_lsp` index. The jdtls
+   cold-start amortizer is the persistent symbol cache (`.agent-lsp/cache.db.gz`,
+   Finding 3), not broker reuse.
+2. **jdtls concurrency footprint — documented, mitigation DEFERRED.** Finding 4
+   retracts the original registry-based cap: jdtls never registers in
+   `~/.cache/agent-lsp/daemons/`, so an `agent-lsp daemon-stop` FIFO eviction
+   reads an always-empty registry and does nothing. There is no resident jdtls
+   accumulation (each in-process jdtls dies with its spawn); the only Java RAM
+   pressure is the **concurrent** in-process jdtls set during overlapping
+   codeIntel spawns — `N_concurrent_java_spawns × ~0.8–2 GB` (Findings 3–4; the
+   per-jdtls plateau is ~2 GB on a large Maven repo, mil.1). This is **bounded
+   and self-cleaning**, so no cap is built this cycle. If measured need arises
+   (heavy parallel first-class Java use contending with the served model), the
+   correct mitigation is a **spawn-concurrency limit** on codeIntel sessions with
+   Java roots — a *supervisor-side* mechanism (the keepalive cannot mediate
+   spawns) that would **cross the RDR-013 bright line** and therefore requires its
+   own RDR. **Deferred**, not silently dropped: the operator guidance in the docs
+   (item 3) states the concurrency math so a human can bound parallel Java use
+   manually until then.
+3. **Docs** — USER_GUIDE: TS/Go warm-reuse is automatic; jdtls is cold-per-spawn
+   (self-cleaning) with the `.agent-lsp/cache.db.gz` cache recipe as the
+   cold-start amortizer; the manual jdtls-concurrency guidance. ARCHITECTURE:
+   broker ownership (TS/Go), the in-process jdtls model, and the unchanged
+   teardown bright line.
 
 ### Out of scope (proposed)
 
-- An ops-side **idle reaper** — **dropped.** agent-lsp self-reaps at ~30 min
-  (Finding 1); building our own idle sweeper would duplicate it.
+- An ops-side **idle reaper** — **dropped.** agent-lsp self-reaps TS/Go brokers
+  at ~30 min (Finding 1); jdtls is in-process and dies at teardown (Finding 4);
+  neither needs an idle sweeper.
+- A **registry-based resident-broker cap** (`daemon-stop` FIFO) — **retracted
+  (Finding 4).** It is a structural no-op for jdtls (empty registry) and TS/Go
+  are too cheap (~88 MB) to warrant capping. Superseded by the deferred
+  spawn-concurrency mitigation (In-scope item 2).
 - Building our own agent-lsp pool / shared HTTP service — agent-lsp's daemon
   already is one (YAGNI; same posture as RDR-014).
 - Pre-warming every repo at boot — pre-warm only an explicit hot-repo list, if
@@ -117,30 +156,43 @@ resident-broker cap in the keepalive.
 ### Bright line (proposed)
 
 The supervisor's teardown contract is **unchanged**: it still does not touch the
-agent-lsp process tree (RDR-013). Broker lifecycle is owned by agent-lsp (warm
-reuse + ~30 min idle self-reap) plus an **ops-side broker cap** (keepalive-hosted
-jdtls-weighted eviction) — never by the per-session abort path.
+agent-lsp process tree (RDR-013). LSP lifecycle is owned entirely by agent-lsp —
+TS/Go daemon-brokers (warm reuse + ~30 min idle self-reap) and in-process jdtls
+(reaped at teardown) — never by the per-session abort path, and this cycle adds
+**no** supervisor or keepalive code. Any future spawn-concurrency cap (In-scope
+item 2) is a supervisor-side mechanism that would cross this line and is
+therefore out of this RDR — it needs its own RDR.
 
 ### Approach (proposed — numbered for phase-review cross-walk)
 
 1. Verify broker survival + reaping mechanics against the live tool — **DONE**
-   (Findings 1–2: survival confirmed; ~30 min idle self-reap measured; tsserver
-   footprint ~88 MB/root; jdtls is the only JVM caveat).
-2. Java-burst peak measured (~1.7 GB/jdtls floor, Finding 3) — **cap warranted**.
-   Implement a jdtls-weighted FIFO resident-broker cap (evict oldest-started,
-   keyed by `start_time`) via `daemon-stop` in the **Mac** keepalive (agent-lsp
-   registry is Mac-hosted; the box keepalive has no brokers), with the cap limit
-   tuned against the true post-indexing jdtls peak.
-3. Optionally set `AGENT_LSP_BROKER_TIMEOUT_MS` in `applyCodeIntel`'s agent-lsp
-   `env` (start-timeout headroom for large cold repos — NOT an idle knob).
-4. Optionally pin an installed `agent-lsp` over `uvx agent-lsp` to drop the
-   per-spawn resolve; weigh against the RDR-014 "prereq not installed by us".
-5. Docs: USER_GUIDE warm-reuse + cache recipe; ARCHITECTURE broker-ownership +
-   the unchanged teardown bright line.
+   (Findings 1–2, **TypeScript/Go**: survival confirmed; ~30 min idle self-reap
+   measured; tsserver ~88 MB/root).
+2. Verify jdtls lifecycle — **DONE (Finding 4)**: jdtls runs **in-process**, one
+   shared instance per spawn, reaped at teardown, never in the registry. This
+   **retracts** the original registry-cap plan (no-op for jdtls). Per-jdtls peak
+   ~2 GB on a large Maven repo (mil.1). No cap is built this cycle;
+   spawn-concurrency mitigation is **deferred** to a future supervisor-side RDR
+   gated on measured need.
+3. **Deferred (optional, not this cycle):** set `AGENT_LSP_BROKER_TIMEOUT_MS` in
+   `applyCodeIntel`'s agent-lsp `env` (broker *start*-timeout headroom for large
+   cold TS/Go repos — NOT an idle knob, and no effect on the in-process jdtls
+   path, Finding 4).
+4. **Deferred (optional, not this cycle):** pin an installed `agent-lsp` over
+   `uvx agent-lsp` to drop the per-spawn resolve; weigh against the RDR-014
+   "prereq not installed by us".
+5. Docs: USER_GUIDE — TS/Go warm-reuse, jdtls cold-per-spawn + `.agent-lsp/cache.db.gz`
+   cache recipe, manual jdtls-concurrency guidance; ARCHITECTURE — broker
+   ownership (TS/Go) + in-process jdtls model + the unchanged teardown bright line.
 
 ## Research Findings
 
-### Finding 1 — daemon-broker survives teardown; no idle reaping (VERIFIED 2026-06-28)
+### Finding 1 — daemon-broker survives teardown; ~30 min idle self-reap (VERIFIED 2026-06-28, TypeScript/Go only)
+
+> **Scope correction (2026-07-01):** everything in this finding was probed with
+> **TypeScript** and holds for **TS/Go** (socket-registered daemon-broker). It
+> does **NOT** generalize to jdtls — see Finding 4, which supersedes any implied
+> jdtls broker behavior. Read "broker" below as "TS/Go broker".
 
 Probed against live `uvx agent-lsp` (v0.15.x) via a minimal MCP stdio client:
 `start_lsp(root_dir, ts, ready_timeout)` → `list_symbols` → `find_symbol`
@@ -191,19 +243,39 @@ Probed against live `uvx agent-lsp` (v0.15.x) via a minimal MCP stdio client:
 
 ### Finding 2 — footprint is small for tsserver; only peak concurrency could matter (MEASURED 2026-06-28)
 
+> **Scope correction (2026-07-01):** the per-broker RSS below is a **TS/Go**
+> (daemon-broker) measurement and stands. The "Java brokers / 30 min window /
+> resident-broker cap" framing in the JVM bullet is **superseded by Finding 4**:
+> jdtls is **not** a broker — it is in-process, held for the spawn's duration
+> (not 30 min), and is bounded by a *spawn-concurrency* cap, not a resident-broker
+> cap. Read the jdtls bullet through Finding 4.
+
 - **Per-broker RSS** (warm, idle): the `agent-lsp daemon-broker` process ~22 MB
   + its `typescript-language-server` child ~66 MB ≈ **~88 MB per (root, ts)**.
   Negligible against the box (~32 GB system) / Mac (128 GB) budgets at any
   realistic root count.
 - **The JVM caveat is jdtls.** Java roots spawn `jdtls` (a full Eclipse JDT
-  JVM, typically 300 MB–1 GB+ resident), so a burst of distinct *Java* roots
-  within the 30 min window is the only plausible footprint concern — not TS/Go.
-- ⇒ Steady-state leak is a non-issue (self-reap handles it). The residual risk
-  is **peak** simultaneous Java brokers under bursty first-class use; a thin
-  resident-broker cap is the only candidate mitigation, and only if a measured
-  Java-heavy burst shows it.
+  JVM, typically 300 MB–1 GB+ resident; ~2 GB fully indexed, mil.1), so a burst
+  of **concurrent** *Java* codeIntel spawns (each an in-process jdtls, Finding 4)
+  is the only plausible footprint concern — not TS/Go.
+- ⇒ Steady-state leak is a non-issue (TS/Go self-reap; jdtls dies at teardown).
+  The residual risk is **peak** simultaneous in-process jdtls under bursty
+  first-class Java use; a **spawn-concurrency** cap (Finding 4, In-scope item 2)
+  is the candidate mitigation, deferred until a measured Java-heavy burst warrants
+  it.
 
-### Finding 3 — Java burst peak is material: ~1.7 GB per jdtls (MEASURED 2026-06-29)
+### Finding 3 — Java burst peak is material: ~1.7 GB per jdtls (MEASURED 2026-06-29; reframed 2026-07-01)
+
+> **Reframe (2026-07-01, see Finding 4):** the RAM magnitude here stands, but its
+> *mechanism* was misattributed. The original "3 separate jdtls processes / 5.1 GB"
+> reading came from **3 separate stdio clients** (one `uvx agent-lsp` per root) →
+> 3 independent **in-process** jdtls — i.e. it measured **concurrent-spawn RAM**,
+> not 3 daemon-brokers. A one-client / three-`start_lsp` repro yields **one
+> shared jdtls** (Java roots = workspace folders), 801 MB. So this finding is best
+> read as: *K concurrent codeIntel spawns with Java roots ≈ K in-process jdtls,
+> ~0.8–2 GB each.* The **"`daemon-stop` eviction lever works" conclusion is
+> RETRACTED** — jdtls never registers in the daemon registry, so there was
+> nothing to evict (Finding 4).
 
 Drove 3 distinct Java roots (`java-uuid-generator`, `evrete`, `jbizur`)
 concurrently through agent-lsp (`start_lsp(java, ready_timeout=60)`), sampling
@@ -218,17 +290,23 @@ total `jdtls` RSS every 5 s for 60 s:
   libraries; enterprise Java repos will peak materially higher. A longer sample
   (2–5 min, or until a build-complete signal) would calibrate it — deferred to
   implementation, since the cap decision is insensitive to a 2× error here.
-- Extrapolation (linear, lower-bound): 6 concurrent Java roots ≳ ~10 GB, held up
-  to the 30 min idle window. On the box (~32 GB system carveout) and the Mac
+- Extrapolation (linear, lower-bound): 6 concurrent Java-root codeIntel spawns
+  ≳ ~10 GB, held for the overlapping spawns' active duration (jdtls dies at
+  teardown — Finding 4 — not the TS/Go 30 min idle window). On the box (~32 GB
+  system carveout) and the Mac
   (128 GB unified, but the served model already takes ~42 GB+ and MLX runs
   `-w1`), an unbounded Java burst can contend with the model's RAM.
-- `agent-lsp daemon-stop --root-dir=… --language=java` reaped all three cleanly
-  (0 jdtls, 0 registry entries) — confirms the eviction lever for a cap works.
+- `agent-lsp daemon-stop --root-dir=… --language=java` returned "0 jdtls, 0
+  registry entries" post-run. **Originally read as "eviction works" — RETRACTED
+  (Finding 4):** the registry was *already* empty (jdtls is in-process and had
+  died on client close), so `daemon-stop` had nothing to evict. The lever does
+  **not** apply to jdtls.
 
-⇒ **Decision item 2 resolves YES: a resident-broker cap is warranted**, driven
-entirely by jdtls. tsserver/gopls bursts remain a non-issue. The cap limit must
-be **tuned per host against the true (post-indexing) jdtls peak**, treating
-1.7 GB as a floor — not shipped as a fixed constant.
+⇒ **Decision item 2 revised (see Finding 4): a registry-based resident-broker cap
+is NOT applicable** — jdtls is not a broker. The RAM concern is real but is
+*concurrent-spawn* footprint (bounded, self-cleaning), documented and deferred,
+not capped this cycle. The per-jdtls peak (~1.7 GB floor here; ~2 GB on a large
+Maven repo, mil.1) informs the manual concurrency guidance in the docs.
 - **Persistent symbol cache** exists separately at `~/.agent-lsp/cache/`
   (committable as `.agent-lsp/cache.db.gz` — "teammates skip cold-start
   indexing"); amortizes cold-start across daemon restarts/machines.
@@ -238,29 +316,85 @@ inspect `~/.cache/agent-lsp/daemons/*/daemon.json` and `ps -o pid,etime,rss`.
 bd memory: `codeintel-agentlsp-daemon-lifecycle-2026-06-28`,
 `codeintel-roughedge-rootcause-2026-06-28`.
 
+### Finding 4 — jdtls runs in-process, not as a daemon-broker (VERIFIED 2026-06-30/07-01; supersedes the jdtls generalization of Findings 1 & 3)
+
+Re-verified against live `uvx agent-lsp` **0.15.0** + homebrew **jdtls 1.57.0**,
+driving `uvx agent-lsp` via a minimal `@modelcontextprotocol/sdk` stdio client —
+**the same invocation path `applyCodeIntel` uses** (RDR-014). Four probes, all
+consistent; a TypeScript control confirms the rig is valid:
+
+- **jdtls is in-process, not a broker.** Single apollo root
+  (`start_lsp(root_dir, java, ready_timeout=180)`): the `org.eclipse.jdt.ls` JVM
+  is a **child of the stdio `uvx agent-lsp`** (ppid = that process), the registry
+  `~/.cache/agent-lsp/daemons/` stays at **0 entries**, and the jdtls **dies on
+  client close**. Fully-indexed RSS ~**1.9 GB** (mil.1 plateau; ~2 GB planning
+  figure, enterprise repos higher).
+- **Not a broker-start-timeout fallback.** Same probe with
+  `AGENT_LSP_BROKER_TIMEOUT_MS=180000`: identical (in-process, registry 0, dies
+  on close). Raising the broker start timeout does not move jdtls onto the broker
+  path.
+- **One shared jdtls per client across Java roots.** Three roots via one client →
+  a **single** shared jdtls (roots become workspace folders), registry 0.
+- **Finding 3 reproduced exactly** (same 3 small libs, concurrent,
+  `ready_timeout=60`, one client): **one shared jdtls, 801 MB total** (not 3 ×
+  1.7 GB), registry 0, jdtls gone on close, and `daemon-stop --language=java`
+  returned **"no running daemon found"** for all three roots — i.e. the original
+  "eviction lever" was reaping nothing.
+- **TypeScript control (same binary, same rig):** `start_lsp(root_dir, ts)`
+  populates the registry (0→1) and the tsserver **survives** client close —
+  reproducing Finding 1. So the jdtls divergence is agent-lsp behavior, not a
+  test artifact. The agent-lsp binary special-cases jdtls
+  (`internal/lsp.(*LSPClient).isJDTLS`).
+
+⇒ **Consequences for the Decision:** (1) no cross-spawn warm reuse for jdtls —
+each spawn pays a cold index (Decision item 1 scoped to TS/Go; cache is the jdtls
+amortizer). (2) No resident jdtls accumulation and nothing in the registry to
+evict — the registry `daemon-stop` FIFO cap is retracted (Decision item 2). (3)
+The real Java RAM concern is *concurrent* in-process jdtls across overlapping
+spawns (`K × ~0.8–2 GB`, spawn-lifetime, self-cleaning) — documented, with a
+spawn-concurrency cap deferred to a future supervisor-side RDR.
+
+*Caveats:* single environment (Mac, agent-lsp 0.15.0, jdtls 1.57.0); a config/env
+that opts jdtls into broker mode was not found (env surface is
+`AGENT_LSP_BROKER_TIMEOUT_MS`/`AUDIT_LOG`/`OUTPUT_FORMAT`/`TOKEN`). Re-verify on
+agent-lsp/jdtls upgrade. bd memory: `codeintel-jdtls-inprocess-not-broker-2026-06-29`,
+`codeintel-finding3-not-reproducible-2026-06-30`, `codeintel-jdtls-plateau-measured-2026-06-29`.
+
 ## Consequences
 
 ### Positive
 
-- Warm cross-spawn `start_lsp` reuse **and** idle reaping are **both already
-  provided** by agent-lsp (measured) — first-class use pays per-root indexing
-  once, resident brokers self-bound at ~30 min idle, and the supervisor needs
-  **no change** (the only build is an ops-side cap, not core/supervisor code).
+- For **TypeScript/Go**, warm cross-spawn `start_lsp` reuse **and** idle reaping
+  are **both already provided** by agent-lsp (measured) — first-class TS/Go use
+  pays per-root indexing once and resident brokers self-bound at ~30 min idle.
+- The supervisor needs **no change** and this cycle builds **no code at all** —
+  the outcome is documentation of the real lifecycle. jdtls, though it gets no
+  warm reuse, is **self-cleaning** (in-process, reaped at teardown, Finding 4),
+  so there is no resident leak to manage and no ops surface to maintain.
 
 ### Negative
 
-- Peak Java-burst footprint is **confirmed material** (Finding 3): ~1.7 GB per
-  jdtls, held up to 30 min. The mitigation (jdtls-weighted resident cap via
-  `daemon-stop` in the keepalive) is now in scope — a real, if small, ops
-  surface to build and tune per host.
-- The ~30 min idle TTL is **not env-tunable** (Finding 1) — the cap (manual
-  `daemon-stop`) is therefore the *only* lever for bounding peak; we can't just
-  shorten the TTL on the box.
+- Peak Java-burst footprint is **confirmed material** (Findings 3–4): ~0.8–2 GB
+  per in-process jdtls. But it is held **only for the spawn's lifetime**, not
+  30 min — jdtls is not a broker (Finding 4), so it dies at teardown. The
+  footprint scales with **concurrent** Java-bearing codeIntel spawns, and there
+  is **no working automatic cap this cycle** (the registry `daemon-stop` cap was
+  a no-op and is retracted). Java-heavy parallel first-class use is bounded
+  **manually** (operator guidance) until a supervisor-side spawn-concurrency cap
+  is designed in a follow-up RDR.
+- jdtls gets **no warm cross-spawn reuse** (Finding 4): every codeIntel spawn
+  with Java roots pays a full cold `start_lsp` index. The only cold-start
+  amortizer is the persistent `.agent-lsp/cache.db.gz` symbol cache — a per-repo
+  operator choice, not something the supervisor can provide.
 
 ### Neutral
 
-- The supervisor stays out of broker lifecycle entirely (RDR-013 bright line
-  intact); all lifecycle logic lives in agent-lsp + the keepalive.
-- codeIntel posture stays opt-in until the resident cap ships; first-class use
-  on Java-heavy hosts is gated on that cap (Finding 3). TS/Go-only use is
-  already safe today (warm reuse + 30 min self-reap, trivial footprint).
+- The supervisor stays out of LSP lifecycle entirely (RDR-013 bright line
+  intact); all lifecycle logic lives in agent-lsp (TS/Go brokers + in-process
+  jdtls). This cycle adds no keepalive code either.
+- codeIntel posture stays **opt-in**. **TS/Go-only use is safe today** (warm
+  reuse + ~30 min self-reap, trivial footprint). **Java-heavy first-class use is
+  NOT automatically bounded** — the concurrent in-process jdtls footprint is
+  self-cleaning but uncapped; operators bound it manually (limit simultaneous
+  Java-root codeIntel spawns so `K × ~2 GB` fits headroom) until a
+  spawn-concurrency cap ships in a follow-up RDR.
