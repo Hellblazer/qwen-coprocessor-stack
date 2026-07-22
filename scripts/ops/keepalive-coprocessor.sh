@@ -14,10 +14,19 @@
 set -u
 HOST=qwentescence
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
-LL='D:\llama-b9596\llama-server.exe'
-# bead 081: b9611 did NOT fix the qwen3_next Vulkan crash; it was co-residency VRAM
-# exhaustion, now eliminated by moving vision/35B off the box. Stay on b9596.
-CODER="$LL -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log"
+LL='D:\llama-b10078\llama-server.exe'
+# b10078 (2026-07-21, negotiation V8): fixes ggml-vulkan memory-type selection — the
+# whole model lands in the dedicated carve (48.4 GB) instead of spilling ~16 GB to
+# host-visible/GTT. RAM free 7.2 -> 22.3 GB (WoW co-residency), tps 41.9 -> 43.8.
+# Historical (bead 081): b9611 did NOT fix the qwen3_next Vulkan crash; that was
+# co-residency VRAM exhaustion, eliminated by moving vision/35B off the box.
+# VARIANT: tuning flags agreed in D:\claude-coordination\QWEN_SERVER_NEGOTIATION.md
+# (GTT-spill reduction for WoW co-residency). Empty = baseline. e.g. "--no-mmap"
+VARIANT="--no-mmap"
+# ENVSET: server-process env var (Variant 5, negotiation 2026-07-21): steer ggml-vulkan
+# away from host-visible vidmem (the 16.1 GB GTT spill). "NAME=VALUE" or empty.
+ENVSET="GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1"
+CODER="$LL -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 CODER_PID=0
 up()    { curl -s --max-time 5 "http://$HOST:$1/v1/models" 2>/dev/null | grep -q '"name"'; }
@@ -25,11 +34,28 @@ log()   { echo "$(date '+%H:%M:%S') $*"; }
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
 killremote() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $KILLALL_B64" >/dev/null 2>&1; }
 waitup(){ for i in $(seq 1 30); do up "$1" && return 0; sleep 8; done; return 1; }
+# Launch metadata for the box-side Claude (negotiation commitment 2, 2026-07-21):
+# every (re)launch writes D:\claude-coordination\qwen-server-state.json.
+write_state() {
+  local pid ts json ps b64
+  pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
+  ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
+  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"PEER-keepalive\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  ps="Set-Content -Path D:\claude-coordination\qwen-server-state.json -Value '$json'"
+  b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
+  $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
+  log "state json written (pid ${pid:-unknown})"
+}
 start_coder() {
   log "starting coder-box (alone)"
   kpid "$CODER_PID"; killremote; sleep 8
-  $SSH "$HOST" "$CODER" >/dev/null 2>&1 & CODER_PID=$!
-  waitup 1235 && log "coder-box UP" || log "coder-box FAILED to come up"
+  if [ -n "$ENVSET" ]; then
+    # cmd 'set NAME=VALUE&&' (no space before &&: a space would join the value)
+    $SSH "$HOST" "cmd /c \"set $ENVSET&& $CODER\"" >/dev/null 2>&1 & CODER_PID=$!
+  else
+    $SSH "$HOST" "$CODER" >/dev/null 2>&1 & CODER_PID=$!
+  fi
+  waitup 1235 && { log "coder-box UP"; write_state; } || log "coder-box FAILED to come up"
 }
 trap 'log "shutdown; killing held ssh"; kpid "$CODER_PID"; exit 0' TERM INT
 log "keepalive started (pid $$) — coder-box only"
