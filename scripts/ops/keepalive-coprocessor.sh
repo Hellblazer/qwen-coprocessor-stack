@@ -61,9 +61,80 @@ CODER="$LL -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --h
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 # Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
 OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
+# Emits the CommandLine of the process OWNING :1235 (adoption gate, bead bm2).
+OWNERCMD_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { (Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)").CommandLine }' | iconv -t UTF-16LE | base64)
 CODER_PID=0
 LAUNCH_T0=0
+# Serving-identity guards (bead bm2): liveness alone accepted a foreign b9596
+# server for two days (2026-07-25) while the keepalive believed it owned b10078.
+# EXPECTED_BUILD: the build tag baked into $LL ("b9596"). EXPECTED_PID: the
+# :1235 owner resolved by write_state() right after our own launch; 0 = unknown
+# (adopt the serving pid at the next check instead of reclaiming — a keepalive
+# restart over a healthy server must not churn it).
+EXPECTED_BUILD=${LL#*llama-}; EXPECTED_BUILD=${EXPECTED_BUILD%%\\*}
+EXPECTED_PID=0
+PIDCHECK_EVERY=15   # pid identity check cadence, in 20s cycles (~5 min): ssh isn't free
+# Reclaim damping (bead 68a): identity-triggered reclaims are capped. An
+# unbounded kill/retry loop against a contested :1235 is the documented cause
+# of the 2026-07-24 hard resets (see the waitup comment). After MAX_RECLAIMS
+# consecutive identity reclaims with no verified-stable pass in between, the
+# guards STAND DOWN (liveness keepalive continues) until a human restarts the
+# keepalive. Crash restarts (up() failing) never count toward the cap.
+RECLAIMS=0
+MAX_RECLAIMS=3
+GUARDS_DOWN=0
+BUILDCHK_DARK=0
 up()    { curl -s --max-time 5 "http://$HOST:$1/v1/models" 2>/dev/null | grep -q '"name"'; }
+# Reclaim only on a POSITIVE build mismatch. No/garbled /props response is NOT
+# a mismatch — up() already gates liveness, and reclaiming on transient curl
+# failure would relaunch a healthy server on every network blip (the 2026-08-04
+# flapping class). Going dark is logged once (not per-cycle) so silent
+# degradation of the guard is operator-visible without spamming the log.
+# build_info is "b9596-18ef86ece" today; the (-|") alternation also accepts a
+# bare "b9596" so a future build without a commit-hash suffix cannot turn this
+# guard into a permanent reclaim trigger against a correctly-built server.
+buildok() {
+  local bi
+  bi=$(curl -s --max-time 5 "http://$HOST:1235/props" 2>/dev/null | grep -o '"build_info":"[^"]*"')
+  if [ -z "$bi" ]; then
+    [ "$BUILDCHK_DARK" -eq 0 ] && { log "build check dark — /props returned no build_info (liveness still guarded)"; BUILDCHK_DARK=1; }
+    return 0
+  fi
+  [ "$BUILDCHK_DARK" -eq 1 ] && { log "build check recovered"; BUILDCHK_DARK=0; }
+  [ -z "$EXPECTED_BUILD" ] && return 0
+  printf '%s' "$bi" | grep -qE "\"build_info\":\"$EXPECTED_BUILD(-|\")"
+}
+ownerpid() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERPID_B64" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+ -?[0-9]+$' | head -1 | cut -d' ' -f1; }
+ownercmd() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERCMD_B64" 2>/dev/null | tr -d '\r' | grep 'llama-server' | head -1 | sed 's/"//g; s/[[:space:]]*$//'; }
+reclaim() {  # $1 = reason. Counts toward the stand-down cap; crash restarts don't.
+  RECLAIMS=$((RECLAIMS+1))
+  if [ "$RECLAIMS" -gt "$MAX_RECLAIMS" ]; then
+    GUARDS_DOWN=1
+    log "identity guards STANDING DOWN after $MAX_RECLAIMS reclaims ($1 persists) — liveness-only until keepalive restart"
+    return
+  fi
+  log "reclaiming :1235 ($1, attempt $RECLAIMS/$MAX_RECLAIMS)"
+  start_coder
+}
+# Adoption gate (bm2): a fresh keepalive over a live server must not churn it —
+# but only a server running OUR EXACT cmdline is adopted as ours. Same-build-
+# different-flags (36p's documented un-remediation vector, e.g. a restored
+# Startup .cmd with --cache-reuse) is a foreign server and gets reclaimed.
+# Quote-stripped equality: Win32_Process quotes the exe path, $CODER doesn't.
+adopt() {
+  local pid cmd want
+  pid=$1
+  cmd=$(ownercmd)
+  [ -z "$cmd" ] && return   # transient — retry next cycle, adopt nothing on no data
+  want=$(printf '%s' "$CODER" | sed 's/"//g')
+  if [ "$cmd" = "$want" ]; then
+    EXPECTED_PID=$pid
+    log "adopted serving pid $pid (build + cmdline verified)"
+    write_state   # keep state json honest for the adopted server too
+  else
+    reclaim "foreign cmdline on :1235 (pid $pid)"
+  fi
+}
 log()   { echo "$(date '+%H:%M:%S') $*"; }
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
 killremote() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $KILLALL_B64" >/dev/null 2>&1; }
@@ -96,6 +167,9 @@ write_state() {
     pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
     src=tasklist-fallback   # can still credit a husk — visible in the log line
   fi
+  # Arm the bm2 pid-identity guard only from an authoritative resolution; a
+  # fallback pid may be a husk, and guarding on it would reclaim the real server.
+  if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
   json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path D:\claude-coordination\qwen-server-state.json -Value '$json'"
@@ -106,6 +180,7 @@ write_state() {
 start_coder() {
   log "starting coder-box (alone)"
   LAUNCH_T0=$SECONDS
+  CYC=0
   kpid "$CODER_PID"; killremote; sleep 8
   if [ -n "$ENVSET" ]; then
     # cmd 'set NAME=VALUE&&' (no space before &&: a space would join the value)
@@ -113,14 +188,42 @@ start_coder() {
   else
     $SSH "$HOST" "$CODER" >/dev/null 2>&1 & CODER_PID=$!
   fi
-  waitup 1235 && { log "coder-box UP"; write_state; } || log "coder-box FAILED to come up"
+  waitup 1235 && { log "coder-box UP"; write_state; } || { log "coder-box FAILED to come up"; EXPECTED_PID=0; }
 }
 trap 'log "shutdown; killing held ssh"; kpid "$CODER_PID"; exit 0' TERM INT
-log "keepalive started (pid $$) — coder-box only"
+# Fail loud, not broken: an unparsable build tag (a future $LL path-format
+# change) must not leave a guard that can never match — that would be a
+# permanent reclaim trigger against a correctly-built server.
+case "$EXPECTED_BUILD" in
+  b[0-9]*) ;;
+  *) log "WARN: unparsable build tag from LL ('$EXPECTED_BUILD') — build guard disabled"; EXPECTED_BUILD="" ;;
+esac
+log "keepalive started (pid $$) — coder-box only (build guard: ${EXPECTED_BUILD:-off})"
+CYC=0
 while true; do
   if ! up 1235; then
     log "coder-box DOWN"
     start_coder
+  elif [ "$GUARDS_DOWN" -eq 1 ]; then
+    :  # stood down (reclaim cap) — liveness duty only
+  elif ! buildok; then
+    # Liveness passed but a DIFFERENT build is serving :1235 — a foreign
+    # launcher's instance (bm2: the 2026-07-25 two-day blind spot).
+    reclaim "wrong build on :1235 (want $EXPECTED_BUILD)"
+  else
+    CYC=$((CYC+1))
+    if [ "$EXPECTED_PID" -eq 0 ] || [ $((CYC % PIDCHECK_EVERY)) -eq 0 ]; then
+      pid=$(ownerpid)
+      if [ -z "$pid" ]; then
+        :  # transient ssh failure — no data is not a mismatch; don't reclaim
+      elif [ "$EXPECTED_PID" -eq 0 ]; then
+        adopt "$pid"
+      elif [ "$pid" != "$EXPECTED_PID" ]; then
+        reclaim "pid changed ($EXPECTED_PID -> $pid), not the server we launched"
+      else
+        RECLAIMS=0  # identity verified stable — reset the stand-down counter
+      fi
+    fi
   fi
   sleep 20
 done
