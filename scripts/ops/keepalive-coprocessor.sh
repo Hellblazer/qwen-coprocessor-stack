@@ -59,7 +59,10 @@ VARIANT=""
 ENVSET=""
 CODER="$LL -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
+# Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
+OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
 CODER_PID=0
+LAUNCH_T0=0
 up()    { curl -s --max-time 5 "http://$HOST:$1/v1/models" 2>/dev/null | grep -q '"name"'; }
 log()   { echo "$(date '+%H:%M:%S') $*"; }
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
@@ -75,17 +78,34 @@ waitup(){ for i in $(seq 1 150); do up "$1" && return 0; sleep 8; done; return 1
 # Launch metadata for the box-side Claude (negotiation commitment 2, 2026-07-21):
 # every (re)launch writes D:\claude-coordination\qwen-server-state.json.
 write_state() {
-  local pid ts json ps b64
-  pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
+  local pid age ts json ps b64 src owner elapsed
+  # PID of the process that OWNS :1235 — not tasklist's first llama-server row,
+  # which credits a lingering husk when one is resident (bead c7c: state json
+  # advertised a dead/non-serving pid twice, 2026-07-26 and 2026-08-04).
+  read -r pid age <<<"$($SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERPID_B64" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+ -?[0-9]+$' | head -1)"
+  src=owner-query
+  # Honest owner attribution (bead 4ru): a process older than this start_coder
+  # cycle predates our launch — e.g. the box Startup launcher's instance surviving
+  # a failed killremote. Age vs elapsed are both durations, so clock skew cancels.
+  owner=PEER-keepalive
+  elapsed=$((SECONDS - LAUNCH_T0))
+  if [ -n "${age:-}" ] && [ "$age" -gt $((elapsed + 60)) ] 2>/dev/null; then
+    owner="preexisting-not-this-launch"
+  fi
+  if [ -z "${pid:-}" ] || [ "$pid" = "0" ]; then
+    pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
+    src=tasklist-fallback   # can still credit a husk — visible in the log line
+  fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"PEER-keepalive\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path D:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
-  log "state json written (pid ${pid:-unknown})"
+  log "state json written (pid ${pid:-unknown} via $src, owner $owner)"
 }
 start_coder() {
   log "starting coder-box (alone)"
+  LAUNCH_T0=$SECONDS
   kpid "$CODER_PID"; killremote; sleep 8
   if [ -n "$ENVSET" ]; then
     # cmd 'set NAME=VALUE&&' (no space before &&: a space would join the value)
