@@ -1,0 +1,62 @@
+# RDR-016 provenance gate. Runs ONLY when the manifest or the provenance tool
+# changes (path filter) — the manifest is the source of truth for what the
+# stack is allowed to serve, so a PR that edits it must prove (a) the JSON is
+# schema-valid, (b) the tool's own tests pass, (c) nothing recorded has drifted
+# upstream: for `model` entries the HF file metadata at the PINNED revision is
+# re-fetched and compared (metadata only — no weight downloads); for `runtime`
+# entries the GitHub release asset (~40 MB) is re-downloaded and compared.
+#
+# Cost discipline (CLAUDE.md): ubuntu only, path-filtered, concurrency-grouped,
+# no schedule — drift is checked when the manifest changes and on demand.
+
+name: provenance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "models/**"
+      - "scripts/ops/provenance/**"
+      - ".github/workflows/provenance.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: provenance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifest:
+    name: manifest schema + tool tests + upstream drift (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 = macOS system python (what launchd resolves for the keepalive gate);
+        # 3.12 = current. Suite is ~10 s, so two interpreters cost nothing meaningful.
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: validate manifest against schema
+        run: python3 scripts/ops/provenance/provenance.py validate
+
+      - name: provenance tool unit tests (no network)
+        run: python3 -m unittest discover -s scripts/ops/provenance/tests -v
+
+      # Fails the PR if any manifested artifact no longer matches its pinned
+      # upstream (HF sha256 metadata at the pinned commit; GitHub asset bytes).
+      # A drift here means either upstream rewrote history at a pinned sha
+      # (should be impossible on HF — worth a human look) or the manifest was
+      # hand-edited.
+      - name: upstream drift check
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python3 scripts/ops/provenance/provenance.py drift --all
+
+      - name: hook guard tests
+        run: bash plugins/qwen-stack/hooks/tests/test-provenance-guard.sh

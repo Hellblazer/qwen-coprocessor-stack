@@ -1,0 +1,22 @@
+{
+  "origin": [
+    "Qwen",
+    "openai",
+    "zai-org",
+    "moonshotai",
+    "deepseek-ai",
+    "google",
+    "meta-llama",
+    "mistralai",
+    "nvidia"
+  ],
+  "packager": [
+    "unsloth",
+    "ggml-org",
+    "bartowski",
+    "mlx-community"
+  ],
+  "runtime_repos": [
+    "ggml-org/llama.cpp"
+  ]
+}
