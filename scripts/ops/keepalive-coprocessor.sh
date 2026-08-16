@@ -57,7 +57,12 @@ VARIANT=""
 # swap + write-cache enable. Re-validate against Available MBytes and GPU dedicated
 # usage (NOT tps — tps stayed 47-50 throughout the bad states) before restoring it.
 ENVSET=""
-CODER="$LL -m D:\\models\\qwen3-coder-next\\Qwen3-Coder-Next-UD-Q4_K_XL.gguf --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
+CODER_MODEL='D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf'
+# Manifest id of CODER_MODEL (models/MANIFEST.json). Pinning the id makes the gate
+# unambiguous when two entries share a basename+size (a re-quantized packager file);
+# empty = match by path (check-path fails closed on ambiguity).
+CODER_MANIFEST_ID="qwen3-coder-next-unsloth-gguf@ce09c67b"
+CODER="$LL -m $CODER_MODEL --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 # Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
 OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
@@ -136,6 +141,58 @@ adopt() {
   fi
 }
 log()   { echo "$(date '+%H:%M:%S') $*"; }
+# RDR-016 provenance gate. Before every launch: is the model file (and the runtime
+# build) in models/MANIFEST.json, status verified, verified_on box, and is the box
+# file's byte length what the manifest says? Cheap (one ssh for the length, no
+# hashing — a 50 GB re-hash per respawn is not acceptable, and bulk reads have
+# surprise-removed D: — see T2 box-nvme-d-drive-surprise-removal). Refuse to launch
+# otherwise. QWEN_PROVENANCE_ENFORCE=0 is the documented escape hatch: it launches
+# anyway and logs the bypass on EVERY launch so it is a visible, reviewable event.
+REPO_DIR="$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)"
+PROV="$REPO_DIR/scripts/ops/provenance/provenance.py"
+# launchd's PATH puts /usr/bin first, so bare `python3` is macOS's 3.9.6. The tool
+# runs on 3.9 (its suite passes there), but prefer Homebrew's current python when
+# present so the gate does not silently depend on the oldest interpreter on the box.
+PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 2>/dev/null || echo python3)
+PROVENANCE_ENFORCE=${QWEN_PROVENANCE_ENFORCE:-1}
+PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_REFUSED=0
+boxlen() {  # $1 = windows path -> byte length (empty on failure)
+  local b64
+  b64=$(printf "(Get-Item -LiteralPath '%s' -ErrorAction SilentlyContinue).Length" "$1" | iconv -t UTF-16LE | base64)
+  $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$' | head -1
+}
+prov_gate() {  # sets PROV_MODEL_ID / PROV_RUNTIME_ID; returns 1 with PROV_REASON on refusal
+  local len rt
+  PROV_REASON=""
+  if [ ! -f "$PROV" ]; then PROV_REASON="provenance tool missing at $PROV"; return 1; fi
+  # Bootstrap: an EMPTY manifest is the not-yet-populated state (RDR-016 Approach
+  # step 4 lands the retro entries), not a bypass — arm the gate only once the
+  # manifest has entries. Logged every launch so the unarmed state is visible.
+  # Only a well-formed manifest with zero artifacts is "empty"; a missing python3,
+  # a missing/unreadable file, or malformed JSON is a gate FAILURE (fail closed).
+  local n
+  n=$("$PYTHON" -c 'import json,sys
+try:
+    print(len(json.load(open(sys.argv[1])).get("artifacts",[])))
+except Exception as e:
+    print("ERR " + type(e).__name__); sys.exit(3)' "$REPO_DIR/models/MANIFEST.json" 2>/dev/null)
+  case "$n" in
+    0) log "provenance gate UNARMED — models/MANIFEST.json has no artifacts yet (bootstrap); launching unverified"
+       PROV_MODEL_ID="unarmed:empty-manifest"; PROV_RUNTIME_ID="unarmed:empty-manifest"; return 0 ;;
+    [1-9]*) ;;
+    *) PROV_REASON="manifest unreadable or $PYTHON unavailable (${n:-no output}) — refusing, not bootstrapping"; return 1 ;;
+  esac
+  len=$(boxlen "$CODER_MODEL")
+  if [ -z "$len" ]; then PROV_REASON="could not stat $CODER_MODEL on box"; return 1; fi
+  PROV_MODEL_ID=$("$PYTHON" "$PROV" check-path "$CODER_MODEL" --host box --size "$len" --print-id ${CODER_MANIFEST_ID:+--id "$CODER_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
+    || { PROV_REASON="model not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  rt="llama.cpp@${EXPECTED_BUILD:-unknown}"
+  len=$(boxlen "$LL")
+  if [ -z "$len" ]; then PROV_REASON="could not stat $LL on box"; return 1; fi
+  PROV_RUNTIME_ID=$("$PYTHON" "$PROV" check-path llama-server.exe --host box --id "$rt" --size "$len" --print-id 2>/tmp/prov-gate.err) \
+    || { PROV_REASON="runtime not verified ($rt): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  return 0
+}
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
 killremote() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $KILLALL_B64" >/dev/null 2>&1; }
 # 2026-07-26: bound raised 30 -> 150 (240 s -> 20 min). A COLD load of the 49.6 GB
@@ -171,14 +228,28 @@ write_state() {
   # fallback pid may be a husk, and guarding on it would reclaim the real server.
   if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}}"
   ps="Set-Content -Path D:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
   log "state json written (pid ${pid:-unknown} via $src, owner $owner)"
 }
 start_coder() {
-  log "starting coder-box (alone)"
+  if ! prov_gate; then
+    if [ "$PROVENANCE_ENFORCE" = "0" ]; then
+      log "PROVENANCE BYPASS (QWEN_PROVENANCE_ENFORCE=0): $PROV_REASON — launching anyway"
+    else
+      # Log once per refusal streak, then back off: a refused launch is not a crash to
+      # retry every 20 s. Re-checked each cycle so a manifest fix is picked up.
+      [ "$PROV_REFUSED" -eq 0 ] && log "REFUSING to launch coder-box — $PROV_REASON (fix the manifest: /qwen-stack:provenance; or QWEN_PROVENANCE_ENFORCE=0 to bypass, logged)"
+      PROV_REFUSED=1
+      sleep 280
+      return 1
+    fi
+  fi
+  [ "$PROV_REFUSED" -eq 1 ] && log "provenance gate now passes (model $PROV_MODEL_ID, runtime $PROV_RUNTIME_ID)"
+  PROV_REFUSED=0
+  log "starting coder-box (alone) [provenance: model=${PROV_MODEL_ID:-bypass} runtime=${PROV_RUNTIME_ID:-bypass}]"
   LAUNCH_T0=$SECONDS
   CYC=0
   kpid "$CODER_PID"; killremote; sleep 8

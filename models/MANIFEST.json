@@ -1,0 +1,1978 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "id": "llama.cpp@b9596",
+      "kind": "runtime",
+      "status": "verified",
+      "source": {
+        "host": "github",
+        "repo": "ggml-org/llama.cpp",
+        "revision": "b9596",
+        "asset": "llama-b9596-bin-win-vulkan-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9596/llama-b9596-bin-win-vulkan-x64.zip"
+      },
+      "format": "zip",
+      "trust_tier": "origin",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "zip:llama-b9596-bin-win-vulkan-x64.zip",
+          "sha256": "46bf6ee71b3d9c842aaadee2f6e51da6e8d9139dc3d8b931e5615150521f8f71",
+          "size": 38406519
+        },
+        {
+          "path": "ggml-vulkan.dll",
+          "sha256": "f749205fa7f95830a05361d92c243bb844c5cd40de525e357007186fadc94c36",
+          "size": 73838080
+        },
+        {
+          "path": "llama-perplexity-impl.dll",
+          "sha256": "a2e1c436df11948061261ccf2f137b747557fc1e9f1df9edab45772c9c5a9237",
+          "size": 193024
+        },
+        {
+          "path": "llama-completion-impl.dll",
+          "sha256": "89761186249101892c528dc0125e69c29682fa10fd9725ecc6fefa570e63326c",
+          "size": 132096
+        },
+        {
+          "path": "ggml-cpu-skylakex.dll",
+          "sha256": "bc39d19badc2c5f49d3b4ac233c7c6dc49e97776c5693d2902b4fc5ce2a29a34",
+          "size": 1364480
+        },
+        {
+          "path": "ggml-rpc.dll",
+          "sha256": "96e0290d5598ee4f9b641bf438a2ff6d383eeec25234b91dc83f3fe93706f019",
+          "size": 136192
+        },
+        {
+          "path": "llama-gemma3-cli.exe",
+          "sha256": "29f84e8d563a2d1e91ed401407b01eae67642ec89a0c1d78123c9c2f28df47dd",
+          "size": 27136
+        },
+        {
+          "path": "llama-mtmd-debug.exe",
+          "sha256": "ae69810c92db83483050c5511a375e2cd64230fad923dc389af57a2e815980a5",
+          "size": 54272
+        },
+        {
+          "path": "llama.exe",
+          "sha256": "e3068354c518e8d735ecc0538113f09a257b2594d6544ca9ceb092b4e7eef072",
+          "size": 43008
+        },
+        {
+          "path": "llama-tts.exe",
+          "sha256": "2e658f2c73a22436e2ff2f784b513a01d4ffec6e845b5fc1e734cd4f81e2474a",
+          "size": 321536
+        },
+        {
+          "path": "llama-quantize.exe",
+          "sha256": "6a32bedaf67e2b2c9174cf2e4dc4ab689a978804f1958ca46aa519e68633f4d2",
+          "size": 9216
+        },
+        {
+          "path": "ggml-cpu-x64.dll",
+          "sha256": "00b2d27777c7826cb026a7c5c70072e3d52faf7b6c876ae62c6d3de1c7efe2ee",
+          "size": 848896
+        },
+        {
+          "path": "llama-server.exe",
+          "sha256": "629e480742072f306794be586b1f2202ffa12e7a1848d6123ef63e8de875dfae",
+          "size": 9216
+        },
+        {
+          "path": "ggml-cpu-sandybridge.dll",
+          "sha256": "9bf9d0df0adebb914a3d87e8919f1bf7e640f6813dc882352774503fc733c08b",
+          "size": 1030144
+        },
+        {
+          "path": "ggml-cpu-ivybridge.dll",
+          "sha256": "010758c144122dbf88fe0765b4ffcb64c29d19af505d34134f70457c74fecf77",
+          "size": 1049600
+        },
+        {
+          "path": "llama-cli.exe",
+          "sha256": "9cecdf150b0d8f6f289455e854e4208ce2d2ea15f25aeda25f18f0570a29ffb4",
+          "size": 9216
+        },
+        {
+          "path": "ggml-cpu-sapphirerapids.dll",
+          "sha256": "f965bfffbc73c87015e4052ce206bd1222f475a4495aeb6689a4c5f8b1178b25",
+          "size": 1635328
+        },
+        {
+          "path": "llama-fit-params-impl.dll",
+          "sha256": "aae2a6f29cd06b703a059a60e8f642fd396e54072f53b0241e4f965e2737bda9",
+          "size": 39936
+        },
+        {
+          "path": "ggml-cpu-cooperlake.dll",
+          "sha256": "232e62d2c964b2953b319a99ea13c671329ad3da6f299e4e203eb4aff426a8e3",
+          "size": 1357824
+        },
+        {
+          "path": "ggml-cpu-icelake.dll",
+          "sha256": "14679ab525c7a8902c071ff0d52fff281de1a88172d0df7ccdb23aabffba700f",
+          "size": 1363456
+        },
+        {
+          "path": "llama-tokenize.exe",
+          "sha256": "8b96fe3dcd7048de85a4b47b4ac759718252782dd7df094b9d16a28faa93cf3f",
+          "size": 44032
+        },
+        {
+          "path": "llama-quantize-impl.dll",
+          "sha256": "54a995d6412fd4f0225ae7a4e30c8a88ffba85c499af88b345b95e63d4dae29d",
+          "size": 136704
+        },
+        {
+          "path": "llama-qwen2vl-cli.exe",
+          "sha256": "2242533cbbdc9093f5be7806dd9a42c9c370ceee810cce0da9f3cddf8d3f804a",
+          "size": 27136
+        },
+        {
+          "path": "ggml-cpu-piledriver.dll",
+          "sha256": "a31bb012bcc9588441cc7ff14d864c1d47fad621f949f937c019751de81a1386",
+          "size": 1052672
+        },
+        {
+          "path": "llama-bench.exe",
+          "sha256": "2c9bfc71dae1fcccca5806879c5dcb4e51af31a3d3475430e6816c724907572c",
+          "size": 9216
+        },
+        {
+          "path": "ggml-cpu-sse42.dll",
+          "sha256": "484499deca8a2f44bc96a191c55b5ea574693d205e3bda7953fba0da8f1e81c1",
+          "size": 855552
+        },
+        {
+          "path": "ggml-cpu-alderlake.dll",
+          "sha256": "4b203dd73e9c181406fd7f6ab2f6c102212ad3e56e970e445eea7a11c9ab9430",
+          "size": 1157120
+        },
+        {
+          "path": "llama-completion.exe",
+          "sha256": "edaff11c631788f90b1597b5f4aacfb6b5cbe2f60600a2fe472640a1fca347f7",
+          "size": 9216
+        },
+        {
+          "path": "llama.dll",
+          "sha256": "9f4b3ed6149d2659dd6a83d3f505adf0605d66a01ddc1eb686a8af6421da7508",
+          "size": 2478080
+        },
+        {
+          "path": "mtmd.dll",
+          "sha256": "2b147d5dd71645e7c5aa164091941f18843dbe65a24963bc0f4159110e1cd987",
+          "size": 1234432
+        },
+        {
+          "path": "llama-server-impl.dll",
+          "sha256": "e54c6074e2d30d63882e824b6c7c901d8693776aa958432daf7cb8878e0bc478",
+          "size": 15047680
+        },
+        {
+          "path": "llama-template-analysis.exe",
+          "sha256": "2e397152a69c1d1635fe059fe6a9336a5ce166619c653628b2b51cac35e2058e",
+          "size": 269824
+        },
+        {
+          "path": "llama-cli-impl.dll",
+          "sha256": "4eabc661463a5ccba9d42758f373bacf4d89da540d65329692cab06aec1884a0",
+          "size": 2505728
+        },
+        {
+          "path": "llama-mtmd-cli.exe",
+          "sha256": "39c535eae48155de6e2386cf910c5ace6313f7d0d3aa62e0e84493284af03f85",
+          "size": 80896
+        },
+        {
+          "path": "llama-llava-cli.exe",
+          "sha256": "29f84e8d563a2d1e91ed401407b01eae67642ec89a0c1d78123c9c2f28df47dd",
+          "size": 27136
+        },
+        {
+          "path": "llama-fit-params.exe",
+          "sha256": "090bfdb737fe016fda325e128f67215786db0003f8b49f7585944a35f9fe169e",
+          "size": 9216
+        },
+        {
+          "path": "llama-minicpmv-cli.exe",
+          "sha256": "2242533cbbdc9093f5be7806dd9a42c9c370ceee810cce0da9f3cddf8d3f804a",
+          "size": 27136
+        },
+        {
+          "path": "llama-batched-bench.exe",
+          "sha256": "0673bde39fb4cad2a174e06649a35383bcba6dad38e45633bf998be6e75675ba",
+          "size": 9216
+        },
+        {
+          "path": "llama-gguf-split.exe",
+          "sha256": "32069fbbd72425d3648e8630d6525494a83a19fbd32f75dbb6bda1b4cf242d48",
+          "size": 59904
+        },
+        {
+          "path": "llama-results.exe",
+          "sha256": "65c4fa65d2ac5f1d23af50e52098783bd6ca41980033edf3ccbc4fd11a2efec7",
+          "size": 44032
+        },
+        {
+          "path": "ggml-cpu-cannonlake.dll",
+          "sha256": "b46e48a0b9616534fb6a8de7c177f5d9465b8d02178709c888a86246b79fece6",
+          "size": 1370624
+        },
+        {
+          "path": "ggml-base.dll",
+          "sha256": "1f9c646c19ae00270cb0b2d508915cc2221ce00a714b26adcc576fe942caa36c",
+          "size": 763904
+        },
+        {
+          "path": "ggml-cpu-cascadelake.dll",
+          "sha256": "38727c6b305a2f2f409a9f17fa1cf4676eb1305a383d01888c9eff82f0b4e60b",
+          "size": 1356800
+        },
+        {
+          "path": "ggml-cpu-haswell.dll",
+          "sha256": "87042184d838060b7b0a392a92ebf4598173f185fc14d3c6d13dcfd27c151598",
+          "size": 1161728
+        },
+        {
+          "path": "libomp140.x86_64.dll",
+          "sha256": "0fd4dccc657658b3a743e3931e80973fea04bb259f900c032328efa1e6d47e61",
+          "size": 661528
+        },
+        {
+          "path": "ggml-cpu-zen4.dll",
+          "sha256": "477c87366df038d593d1402f27ae4935f3a75cecf79ff45adbe831eee4da7597",
+          "size": 1364480
+        },
+        {
+          "path": "llama-bench-impl.dll",
+          "sha256": "66af02fca4f4271dcc81731f21049de6a52c9f77c06c6f6a0a22d988b298c2f8",
+          "size": 373248
+        },
+        {
+          "path": "llama-perplexity.exe",
+          "sha256": "20eda187f4208f5b44def770b2cece7da5360fe09fa84ae622632f71ae596a36",
+          "size": 9216
+        },
+        {
+          "path": "llama-common.dll",
+          "sha256": "5d4aaac6475bdbf313c45ed6c8c750276290df91a0e61bef66a24ce00b66ee33",
+          "size": 7596544
+        },
+        {
+          "path": "ggml.dll",
+          "sha256": "020d32cf45243e7f5fd6d5645c828ef40dfa1fb6a649c6c7a7dd62fcdbb27a5b",
+          "size": 86016
+        },
+        {
+          "path": "llama-batched-bench-impl.dll",
+          "sha256": "6c671d52a96122b1e1089d239ac0a5be12a519c12521bf8226c8d823003bc2d6",
+          "size": 60416
+        },
+        {
+          "path": "llama-imatrix.exe",
+          "sha256": "d0e31b861415989b6afa9d4744bf6526076dffce71fe933b306b8593edf4ab7b",
+          "size": 246272
+        },
+        {
+          "path": "rpc-server.exe",
+          "sha256": "9d5110696695b7b66b1aeecc5158916c410c94c705fed6bb7b3a2206770053b6",
+          "size": 101376
+        }
+      ],
+      "verified_on": [
+        "mac",
+        "box"
+      ],
+      "verified_at": "2026-08-15T20:17:09Z",
+      "notes": "Retro 2026-08-15: D:\\llama-b9596.zip on the box matched this asset byte-for-byte. Box tree lacks ggml-cpu-ivybridge.dll (Defender Trojan:Script/Phonzy.B!ml heuristic FP quarantined it 2026-06-11; unused CPU variant on Zen 5).",
+      "missing_on_host": {
+        "box": [
+          "ggml-cpu-ivybridge.dll"
+        ]
+      }
+    },
+    {
+      "id": "llama.cpp@b10078",
+      "kind": "runtime",
+      "status": "verified",
+      "source": {
+        "host": "github",
+        "repo": "ggml-org/llama.cpp",
+        "revision": "b10078",
+        "asset": "llama-b10078-bin-win-vulkan-x64.zip",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10078/llama-b10078-bin-win-vulkan-x64.zip"
+      },
+      "format": "zip",
+      "trust_tier": "origin",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "zip:llama-b10078-bin-win-vulkan-x64.zip",
+          "sha256": "d16e515fa9e255f29f4c16e2bc5a2c18f85a438e32be61ae8ef176854b5d60b1",
+          "size": 33281225
+        },
+        {
+          "path": "ggml-vulkan.dll",
+          "sha256": "1bc3fac80836694ea5ab977ce6422531635fe276b823dbea1e3793fa23e59d78",
+          "size": 50641920
+        },
+        {
+          "path": "llama-batched-bench.exe",
+          "sha256": "3691a6d72f7092dc093fa97fd88b14b53500ab141edc746e7689e0f189ab4270",
+          "size": 9216
+        },
+        {
+          "path": "llama-llava-cli.exe",
+          "sha256": "36e050c50af7f08e5446b8cc7fba63eefc1320623698c8eea9c0e64388d1c319",
+          "size": 27136
+        },
+        {
+          "path": "llama-perplexity.exe",
+          "sha256": "0a002cbcd2a08aab66fe5c9086be21b1f69bea0931849f69fbd2fb5d46aa9087",
+          "size": 9216
+        },
+        {
+          "path": "llama-minicpmv-cli.exe",
+          "sha256": "36e050c50af7f08e5446b8cc7fba63eefc1320623698c8eea9c0e64388d1c319",
+          "size": 27136
+        },
+        {
+          "path": "llama-common.dll",
+          "sha256": "0aab97220c85a4c0803e5a3552325599b379487c29f49ad3d3f78cd05381c0c0",
+          "size": 7816192
+        },
+        {
+          "path": "mtmd.dll",
+          "sha256": "c68f025d9681d21a28bd14361cd743f3291cd104e07275e20e5b1f0eb3a547e4",
+          "size": 1250304
+        },
+        {
+          "path": "llama-completion.exe",
+          "sha256": "29923904a4baf9936a7e39fc4c9fc3c2d6f5071e0fa585fcfbaa7407274a98cf",
+          "size": 9216
+        },
+        {
+          "path": "ggml-cpu-sandybridge.dll",
+          "sha256": "a00d5e4a741159b108f3b778c3871e1bae65aad5cb51c29fc2150c3162a36c4a",
+          "size": 1053696
+        },
+        {
+          "path": "llama-imatrix.exe",
+          "sha256": "3ca45d2fbc47c7efbbedff9fe694ce0254d215a8e67315380b6d2a0b17005440",
+          "size": 249344
+        },
+        {
+          "path": "llama-quantize.exe",
+          "sha256": "f6def9f64ac190c45dd8e79d605b32b5afb7bdfca428d453cdfe280f4cc3f26d",
+          "size": 9216
+        },
+        {
+          "path": "llama-mtmd-cli.exe",
+          "sha256": "30189c8c41c9104540a7288e6dfbb6832703079aa5fb61d8383ac3fb005f547a",
+          "size": 83968
+        },
+        {
+          "path": "llama-cli-impl.dll",
+          "sha256": "9151179b38ee1006d314350d87b8fca07b654ed110ab927227dc52e17871e9df",
+          "size": 3542528
+        },
+        {
+          "path": "ggml-cpu-cannonlake.dll",
+          "sha256": "7aa08442d68dba6f281afc23d74b9c7da844baa5d5742314252470512ecfd978",
+          "size": 1395200
+        },
+        {
+          "path": "libomp140.x86_64.dll",
+          "sha256": "4a20c1e5c115c29771a12324513eb109badac72180f79481527ad79d996ffb33",
+          "size": 661856
+        },
+        {
+          "path": "llama-tokenize.exe",
+          "sha256": "cbd49a94c90d41d2ac3762eebde48d99e8f360a5c95fde7e0ce4cadd0d8ed1bb",
+          "size": 56832
+        },
+        {
+          "path": "llama-qwen2vl-cli.exe",
+          "sha256": "36e050c50af7f08e5446b8cc7fba63eefc1320623698c8eea9c0e64388d1c319",
+          "size": 27136
+        },
+        {
+          "path": "llama-completion-impl.dll",
+          "sha256": "ac14c09a9c56f3787714821804a82dd1c464fbf69cccf518b6d61cc16e588b43",
+          "size": 132608
+        },
+        {
+          "path": "llama-perplexity-impl.dll",
+          "sha256": "a438bddc15ff96eb3545586aa361e820033b762b2d8bf3896605c60cdc0be51d",
+          "size": 193536
+        },
+        {
+          "path": "llama-template-analysis.exe",
+          "sha256": "a468cfa2e00e73431efb0ed85f8ad8cbaab11a14736d475a80e27f052fcd0247",
+          "size": 270336
+        },
+        {
+          "path": "llama-bench.exe",
+          "sha256": "27682170dee6c3856804bbab983897077e533d21cd3bad5dcd5ed45418755d08",
+          "size": 9216
+        },
+        {
+          "path": "llama-batched-bench-impl.dll",
+          "sha256": "f085edebb30963a44a14fe19cd47e42257cbbae8ac88c6aafcb3693e59d52358",
+          "size": 60928
+        },
+        {
+          "path": "llama-tts.exe",
+          "sha256": "03fd0e08f84574d1357df631df5503c8dae2dec3b487a33393b370df7a7b6acd",
+          "size": 322048
+        },
+        {
+          "path": "ggml-cpu-ivybridge.dll",
+          "sha256": "e36c69194e8aeffb6908ed8f3bb7b04bf5d824fd19f529325de1112a2be58b4e",
+          "size": 1073664
+        },
+        {
+          "path": "llama-cli.exe",
+          "sha256": "73fc00c97e7765ae67ba67ef737ecd19ed32958e77876b882f3857e019915781",
+          "size": 9216
+        },
+        {
+          "path": "llama-gemma3-cli.exe",
+          "sha256": "36e050c50af7f08e5446b8cc7fba63eefc1320623698c8eea9c0e64388d1c319",
+          "size": 27136
+        },
+        {
+          "path": "ggml-cpu-zen4.dll",
+          "sha256": "8ac9efa064f26704a9fd6211398afb9af0a4f53a6085f31c4c74391af34a4312",
+          "size": 1389056
+        },
+        {
+          "path": "ggml-cpu-x64.dll",
+          "sha256": "b7dcbfb5579daa44426966ff20f98ef646722431ee4851f4fa414ce7e4839eec",
+          "size": 869376
+        },
+        {
+          "path": "ggml-cpu-sapphirerapids.dll",
+          "sha256": "30befd96c74dd4bb848c7561876ef0fcef441e7cab8b2edbf878b37627c92872",
+          "size": 1659392
+        },
+        {
+          "path": "ggml-cpu-alderlake.dll",
+          "sha256": "7c585fba5e424e28c3f89778d1a4d56d69ac99bdde4ca7b7ec0db3fcdb700477",
+          "size": 1180160
+        },
+        {
+          "path": "ggml-cpu-cooperlake.dll",
+          "sha256": "48df8638f8d7a5f24beac78fa9fd3cf8d5df4c23aae1090006cb97c27d2f077b",
+          "size": 1382400
+        },
+        {
+          "path": "llama-results.exe",
+          "sha256": "6aa79c8e35cf3cff0d1b346dc042cd81b49ea08b387baeea2e7a40f6ed8cfa3f",
+          "size": 45056
+        },
+        {
+          "path": "ggml-cpu-piledriver.dll",
+          "sha256": "7858712c4e39e674c83f31aeff97cf206db31dc7d22c93887c8fd1251e3e6d78",
+          "size": 1077760
+        },
+        {
+          "path": "llama-fit-params-impl.dll",
+          "sha256": "e5619333cb6a093b25b06277475c8c518ea40cbb597b8d074f5c835f13a8b2b5",
+          "size": 40448
+        },
+        {
+          "path": "ggml-cpu-sse42.dll",
+          "sha256": "7b7ab7a220b664555f5bb310247dc2b0ef9c8b6aefdadfaad31fb967cd6c937a",
+          "size": 876544
+        },
+        {
+          "path": "llama-bench-impl.dll",
+          "sha256": "71c87056e9e84220b6b4143f627648bfd2a81d24110f9afc66aeee297ca354b1",
+          "size": 392704
+        },
+        {
+          "path": "llama.exe",
+          "sha256": "d35a14abbafcfc8bfd52bd445712c2130dcb0b4f348640d153e114d291842cc7",
+          "size": 83456
+        },
+        {
+          "path": "ggml-cpu-skylakex.dll",
+          "sha256": "bd375d39423370a5596d6681c36f714a1c4616c4e1205a14ef5b64d01876baac",
+          "size": 1389056
+        },
+        {
+          "path": "llama.dll",
+          "sha256": "eaa95f13a2ef59f3e2a8bfe9749f9634b48a94a38a4aef9edbcb3630fd7b29b8",
+          "size": 2684928
+        },
+        {
+          "path": "llama-quantize-impl.dll",
+          "sha256": "4fc0abc374fb8e8fbe2e1f2a8f91e3a068404f774df6a10e20a9d8979ffec5e7",
+          "size": 136704
+        },
+        {
+          "path": "llama-server.exe",
+          "sha256": "d8391a939bf369d3b25a40a8d0c454112069c9d5ba40214d29139e12c0fc50c6",
+          "size": 9216
+        },
+        {
+          "path": "ggml.dll",
+          "sha256": "8b7ed5e7e660b653ddb01289985c01f4f57a05bda0b0a347625f59afb4d1b8da",
+          "size": 86016
+        },
+        {
+          "path": "ggml-base.dll",
+          "sha256": "097aca0558110154b820551948c357151450e904b838b5effae1aa7f43b5c96e",
+          "size": 772096
+        },
+        {
+          "path": "ggml-rpc-server.exe",
+          "sha256": "e293cd610ec48b3758eb08704e8e6146c913029208625f14c0fe1fa790d9a50a",
+          "size": 101376
+        },
+        {
+          "path": "llama-gguf-split.exe",
+          "sha256": "36ac4c5c669991ac2a9a0d6b40eb222cc9f2c093bcc319bf1098dacd4d9ccfa2",
+          "size": 59904
+        },
+        {
+          "path": "llama-server-impl.dll",
+          "sha256": "0fd0b5bd0b1d5d6cc985c66860995e2f4b72d7f8cb6c97bf7ed48db8d9eedf99",
+          "size": 9545216
+        },
+        {
+          "path": "llama-mtmd-debug.exe",
+          "sha256": "9b4204f95d5d7b49f998c6a761d69847b8dd727085c7ef956cf6fd689e7bb958",
+          "size": 54784
+        },
+        {
+          "path": "ggml-cpu-cascadelake.dll",
+          "sha256": "6da511e6e3e0caf95957f60753412babe99fc757e6b8b6c0464977118932e97b",
+          "size": 1381376
+        },
+        {
+          "path": "ggml-rpc.dll",
+          "sha256": "273901e79d1e31c64304bef6aad44e9bd65d848b43cbb60f3d5c2f77f26045ef",
+          "size": 136192
+        },
+        {
+          "path": "ggml-cpu-icelake.dll",
+          "sha256": "183e928ea12af7d7fa80e58cd729f3b731d2420e88799334455f2ed90ea9657a",
+          "size": 1388032
+        },
+        {
+          "path": "llama-fit-params.exe",
+          "sha256": "1402a5fb2d1624cfb639a9e8bb0b970f406c932ae8f051277b4a350e88265bf1",
+          "size": 9216
+        },
+        {
+          "path": "ggml-cpu-haswell.dll",
+          "sha256": "c2b57c32ead7df8b2254ced91b968057ba247d6887a017da357686fde8ce105c",
+          "size": 1184768
+        }
+      ],
+      "verified_on": [
+        "mac",
+        "box"
+      ],
+      "verified_at": "2026-08-15T20:18:51Z",
+      "notes": "Retro 2026-08-15: all 52 members of D:\\llama-b10078 matched this asset."
+    },
+    {
+      "id": "qwen3-coder-next-unsloth-gguf@ce09c67b",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "unsloth/Qwen3-Coder-Next-GGUF",
+        "revision": "ce09c67b53bc8739eef83fe67b2f5d293c270632",
+        "url": "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/ce09c67b53bc8739eef83fe67b2f5d293c270632/"
+      },
+      "format": "gguf",
+      "trust_tier": "packager",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "Q6_K/Qwen3-Coder-Next-Q6_K-00001-of-00003.gguf",
+          "sha256": "b29fc953bb49f2f7857a7112dbe32dc17b7842c9afeaa4895a431437c692df50",
+          "size": 5936320,
+          "hf_security": null,
+          "local_path": "qwen3-coder-next-q6_k-00001-of-00003.gguf"
+        },
+        {
+          "path": "Q6_K/Qwen3-Coder-Next-Q6_K-00002-of-00003.gguf",
+          "sha256": "f28f4a3579b187ff5b2b67ae12cd7e060733775a6ccc9f2f8b59c3c17645b84b",
+          "size": 49795838592,
+          "hf_security": null,
+          "local_path": "qwen3-coder-next-q6_k-00002-of-00003.gguf"
+        },
+        {
+          "path": "Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
+          "sha256": "4bb93f0a0221ef4ff963ca9094df629c8dfdfabc3b4fdd85c1a2e4c0624fce36",
+          "size": 49608478720,
+          "hf_security": {
+            "status": "queued",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "unscanned",
+            "jFrogScan": "queued"
+          },
+          "local_path": "qwen3-coder-next-ud-q4_k_xl.gguf"
+        }
+      ],
+      "verified_on": [
+        "box"
+      ],
+      "verified_at": "2026-08-15T20:17:10Z",
+      "notes": "adopted from existing files on box at revision ce09c67b53bc8739eef83fe67b2f5d293c270632 (pinned; may not be current main); Retro 2026-08-15: files pre-existing in D:\\models\\qwen3-coder-next; UD-Q4_K_XL is the served coder-box model. Q6_K shard 3 of 3 was never on the box.",
+      "derived_from": "Qwen/Qwen3-Coder-Next@a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00040.safetensors",
+          "sha256": "8e9a517133bfbdc6806cf8b61793055a260efeb68e6e019fd90e4bbb1b665d0a",
+          "size": 3999619288
+        },
+        {
+          "path": "model-00002-of-00040.safetensors",
+          "sha256": "0ab43285dec19a2eba2705538dfc914dd37b3c85477d3769054e44f300e659a3",
+          "size": 3999841816
+        },
+        {
+          "path": "model-00003-of-00040.safetensors",
+          "sha256": "68a5796b8bd75672e471daf4488bdb6c792ad895772efeacfdc41c09eeb3eb6b",
+          "size": 3999515608
+        },
+        {
+          "path": "model-00004-of-00040.safetensors",
+          "sha256": "93f07b2ae634bdaee995c35d16d1186e7481f202e05095d17b1fc162e62c45f6",
+          "size": 3999842032
+        },
+        {
+          "path": "model-00005-of-00040.safetensors",
+          "sha256": "9832c0217fc2ff64f1a051769aa51c004b39fcc12d785e336217087c968651f5",
+          "size": 3999842240
+        },
+        {
+          "path": "model-00006-of-00040.safetensors",
+          "sha256": "983dce04bba12c65e457feeeb37cfb13756690b63d75d93cea3b56c361cd6859",
+          "size": 3999853248
+        },
+        {
+          "path": "model-00007-of-00040.safetensors",
+          "sha256": "41f27ff915d0797f6016d32d30beb3ab092b53e56ad99461d130854b2db64bc1",
+          "size": 3999841944
+        },
+        {
+          "path": "model-00008-of-00040.safetensors",
+          "sha256": "7382d1f4621bcef01ebf2df6ce855692f48bc94184bbfe2afab30b8d976c87de",
+          "size": 3999842032
+        },
+        {
+          "path": "model-00009-of-00040.safetensors",
+          "sha256": "8ba622e8d78aac210b56f250e3faa6c759ab858b3d683fc0520015a60d8674b2",
+          "size": 3999843224
+        },
+        {
+          "path": "model-00010-of-00040.safetensors",
+          "sha256": "0b5ca0b7ddaa8d5f481753d8357db9ec5c66485d93732168a7e216e8bfda6f1f",
+          "size": 3999517840
+        },
+        {
+          "path": "model-00011-of-00040.safetensors",
+          "sha256": "e85c1ce556170c785b9479b2e0c8302e2a5bc69ccf44bdc2d8b5477d15cfb356",
+          "size": 4000181328
+        },
+        {
+          "path": "model-00012-of-00040.safetensors",
+          "sha256": "91f8c5b1a133c191348ac8631474e3114b8f084a68dc4eb93664130efd758b79",
+          "size": 3999843912
+        },
+        {
+          "path": "model-00013-of-00040.safetensors",
+          "sha256": "a571b802c7946fc33c90f4c5728c53505b5b94cb002a4567541a9a1899c07495",
+          "size": 3999517504
+        },
+        {
+          "path": "model-00014-of-00040.safetensors",
+          "sha256": "32e918bdba2d2b9b7ff866e361f99626f7df92299df1e5e195f85f1ea22c8911",
+          "size": 3999844016
+        },
+        {
+          "path": "model-00015-of-00040.safetensors",
+          "sha256": "496865f049712fb4176154f9a2c7d48063fe855a17b2ad025466a3a316692fb4",
+          "size": 4000181768
+        },
+        {
+          "path": "model-00016-of-00040.safetensors",
+          "sha256": "9f1ff8098b81710184f274232b04ca4fbdd820afd28213bde60e4630ed57048f",
+          "size": 3999517280
+        },
+        {
+          "path": "model-00017-of-00040.safetensors",
+          "sha256": "04d03dd323e34ea5eb409a41685b515ef36d1c943c4546d31e9c73d96f8c0c7d",
+          "size": 3999843912
+        },
+        {
+          "path": "model-00018-of-00040.safetensors",
+          "sha256": "cc03f69e8d061957d9b5d08b7da0b40d79b27a34e8c4c3fb8d503b123b268df1",
+          "size": 3999843912
+        },
+        {
+          "path": "model-00019-of-00040.safetensors",
+          "sha256": "040ea97dd90ebb9a183fdbcc1bdfba1228f1fc56eeb35dbd09fe3dc807dbae41",
+          "size": 3999844120
+        },
+        {
+          "path": "model-00020-of-00040.safetensors",
+          "sha256": "036b86c2808d34d0d6972424937753ca434713defe433b04c1cf1ddde4c77685",
+          "size": 3999855064
+        },
+        {
+          "path": "model-00021-of-00040.safetensors",
+          "sha256": "f93091cfc1df5f0d290b43517382f06cc96709b71cc494431d36c217d4e05035",
+          "size": 3999843824
+        },
+        {
+          "path": "model-00022-of-00040.safetensors",
+          "sha256": "1173933660614dbcd56463c30573e4bc52f8b3e674217294149abd0368332366",
+          "size": 3999843912
+        },
+        {
+          "path": "model-00023-of-00040.safetensors",
+          "sha256": "d6c7d46d0b74aba6b7125c4797393900cf54c8545fd0da99485f24df7309e470",
+          "size": 3999517496
+        },
+        {
+          "path": "model-00024-of-00040.safetensors",
+          "sha256": "e98c2798567def2ef801648b8e1ef5e0451a04dcb4586f19c7d6843c7e71160f",
+          "size": 3999844296
+        },
+        {
+          "path": "model-00025-of-00040.safetensors",
+          "sha256": "14b34f3e8899eb81a427320b7a17d94387f2e762af8dadcf667c28957c46b992",
+          "size": 4000181328
+        },
+        {
+          "path": "model-00026-of-00040.safetensors",
+          "sha256": "8f0c2a1bae6835037643e18e3d964f3cd59679fe31ed2c57d3d3e0e2902ec3e0",
+          "size": 3999517504
+        },
+        {
+          "path": "model-00027-of-00040.safetensors",
+          "sha256": "2c2aefa4ae3e70a2275f151669076c857df1549c5d13458947a8f5459d5531f3",
+          "size": 3999843912
+        },
+        {
+          "path": "model-00028-of-00040.safetensors",
+          "sha256": "8f3f40bafcd7bd2d902813ee3110746c8f46f2f646d11cf4c4611cf59d39001f",
+          "size": 3999844016
+        },
+        {
+          "path": "model-00029-of-00040.safetensors",
+          "sha256": "69f5a1c4f50c3d24fff41a7a0b4ef806c6ab1e2469f6523acbe0b6a7b6a840d2",
+          "size": 3999855352
+        },
+        {
+          "path": "model-00030-of-00040.safetensors",
+          "sha256": "518965232d096a23f01c9d955ad925828ed22e77e2a067013ba549820ad8231f",
+          "size": 3999843704
+        },
+        {
+          "path": "model-00031-of-00040.safetensors",
+          "sha256": "a24847e00ccfb3b510135d245083622f6f3337c016aa80c5bafceabf584e63c4",
+          "size": 3999843912
+        },
+        {
+          "path": "model-00032-of-00040.safetensors",
+          "sha256": "605e2609278cd172ab8e0fab95e89fed2e7884b2bad378a516d35275812c9031",
+          "size": 3999843912
+        },
+        {
+          "path": "model-00033-of-00040.safetensors",
+          "sha256": "3d2aa165f7b0d2a8acb66d869f823d7aa6344db75c6e1be833480acc2b252fdf",
+          "size": 3999517720
+        },
+        {
+          "path": "model-00034-of-00040.safetensors",
+          "sha256": "04bd78b03a131401169af0e67d96db5c6071631010ac19e9c0c9b7fb8c3f1871",
+          "size": 4000181528
+        },
+        {
+          "path": "model-00035-of-00040.safetensors",
+          "sha256": "eb6da0385f8ba56b98a6677bdc59f1c9cfff291024d61f26554b1881bba8edab",
+          "size": 3999843824
+        },
+        {
+          "path": "model-00036-of-00040.safetensors",
+          "sha256": "4925757ada6c754070fd6381c5e01225ca51c19213c83011ba6c39e541dda984",
+          "size": 3999517504
+        },
+        {
+          "path": "model-00037-of-00040.safetensors",
+          "sha256": "12528012534bba5c61b237f3441864f55707ec050e1372d8eaaf9fdce259cffd",
+          "size": 3999843904
+        },
+        {
+          "path": "model-00038-of-00040.safetensors",
+          "sha256": "58d4fd2e057fe619a690ee969bd79f85e45b0862df6a5a433abeff31abf03f7f",
+          "size": 3999844296
+        },
+        {
+          "path": "model-00039-of-00040.safetensors",
+          "sha256": "407d45b48d0682469ac555c84c6aa3ce6ee8c56759074a532670a4ab035fade3",
+          "size": 3999854920
+        },
+        {
+          "path": "model-00040-of-00040.safetensors",
+          "sha256": "9606cbc3a087efaba8e17cb97b9d91cd8d25e6cba6958079d58c19871d272053",
+          "size": 3365572528
+        }
+      ]
+    },
+    {
+      "id": "qwen3.6-35b-a3b-unsloth-gguf@a483e9e6",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+        "revision": "a483e9e6cbd595906af30beda3187c2663a1118c",
+        "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/"
+      },
+      "format": "gguf",
+      "trust_tier": "packager",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+          "sha256": "707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450",
+          "size": 22360456160,
+          "hf_security": {
+            "status": "queued",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "queued"
+          },
+          "local_path": "qwen3.6-35b-a3b-ud-q4_k_xl.gguf"
+        },
+        {
+          "path": "Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
+          "sha256": "b762215c5f507f4865df4ac3d1afa803828afa41e05ecac3fac431a67bbd88e8",
+          "size": 38451182560,
+          "hf_security": {
+            "status": "queued",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "queued"
+          },
+          "local_path": "qwen3.6-35b-a3b-ud-q8_k_xl.gguf"
+        }
+      ],
+      "verified_on": [
+        "box"
+      ],
+      "verified_at": "2026-08-15T20:17:11Z",
+      "notes": "adopted from existing files on box at revision a483e9e6cbd595906af30beda3187c2663a1118c (pinned; may not be current main); Retro 2026-08-15: UD-Q4_K_XL + UD-Q8_K_XL pre-existing in D:\\models. The box mmproj-Qwen3.6-35B-A3B-BF16.gguf is NOT this repo's (matches lmstudio-community by name+size+hash; not on the allowlist; left unmanifested).",
+      "derived_from": "Qwen/Qwen3.6-35B-A3B@995ad96eacd98c81ed38be0c5b274b04031597b0",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00026.safetensors",
+          "sha256": "adee7bcb930aed22e0677e58d4873b48dadb1ed8001cb5c6a0487286eadb3478",
+          "size": 3996199712
+        },
+        {
+          "path": "model-00002-of-00026.safetensors",
+          "sha256": "88f2dfd2b9e73e4b70be533dbf61bcfa3c9a0003758900fcbc9d9b96f5751d4b",
+          "size": 1284907696
+        },
+        {
+          "path": "model-00003-of-00026.safetensors",
+          "sha256": "8f7d72178d3f4431864978e5bcfa4c6cb1c204bc00590644d90bb19d6d522eeb",
+          "size": 3357898360
+        },
+        {
+          "path": "model-00004-of-00026.safetensors",
+          "sha256": "12d7db38689ba3c8af74b23ef8523eca41e0cd95db870583d0663a3ee8a6bd60",
+          "size": 3370808712
+        },
+        {
+          "path": "model-00005-of-00026.safetensors",
+          "sha256": "a836047305d0f7a7b50f0815d09d5c03ec03d59ec2c763fcdc4bf7e9936bf902",
+          "size": 3357898360
+        },
+        {
+          "path": "model-00006-of-00026.safetensors",
+          "sha256": "c9080d718e9c5f9e337443225aa417d4c24d00ae7995d76ee3f1cc296b557d15",
+          "size": 3959424904
+        },
+        {
+          "path": "model-00007-of-00026.safetensors",
+          "sha256": "e8c05e23131b1dd45a455ec38cfac7db14667358268623c3938d00cf3e959a68",
+          "size": 1096788232
+        },
+        {
+          "path": "model-00008-of-00026.safetensors",
+          "sha256": "4b6a6d495053089f4a80e7cbc82e848fba44e2c0c60122233d8fdff79fa7b296",
+          "size": 3946842008
+        },
+        {
+          "path": "model-00009-of-00026.safetensors",
+          "sha256": "a31a954bb72d1c714e751bf0aabf2ff533f5a509693ebf7dd22ad6e90be46f67",
+          "size": 1096460848
+        },
+        {
+          "path": "model-00010-of-00026.safetensors",
+          "sha256": "246560e66570fe746653b8443e245dc334c9b8b831ea43d2d9f1b7d98623994e",
+          "size": 3946841992
+        },
+        {
+          "path": "model-00011-of-00026.safetensors",
+          "sha256": "7180392817fe3ecb3a27a1da43b7ff22c1a94806bac49975f9f122c3126df675",
+          "size": 1096460752
+        },
+        {
+          "path": "model-00012-of-00026.safetensors",
+          "sha256": "043fb525f6625c2f2acb75e65a9959ee3fa7b6e3fdd2034b5cfe1859b01d3cfb",
+          "size": 3409971080
+        },
+        {
+          "path": "model-00013-of-00026.safetensors",
+          "sha256": "33a20fb20a21379bf43c84a43105f9c0cc35bd50d740b1c302dcbe4b700f5425",
+          "size": 1633331664
+        },
+        {
+          "path": "model-00014-of-00026.safetensors",
+          "sha256": "be823e33c5cb6120ad3769d081f34a2449dc2358041fca7c29d636c1ba19130d",
+          "size": 3422553872
+        },
+        {
+          "path": "model-00015-of-00026.safetensors",
+          "sha256": "a89d547c6f9d0b535ee5ea2f2478f163089539f3f0dd330cb23d278a19d76123",
+          "size": 1633659224
+        },
+        {
+          "path": "model-00016-of-00026.safetensors",
+          "sha256": "69fc3ae0316482288afdcdd0b9eb7d626703ae26f7567e89aa3fc8d1ffd4ff5b",
+          "size": 3946842136
+        },
+        {
+          "path": "model-00017-of-00026.safetensors",
+          "sha256": "e356e3943cf3852b76bb8992e674f3256013e27d54b78e8250514151cdc29637",
+          "size": 1096460608
+        },
+        {
+          "path": "model-00018-of-00026.safetensors",
+          "sha256": "9e5e63fd1cc7d6848330c1fa363dfcb661bbc2ac87e672d0e28b71c9cb7f3c7f",
+          "size": 3946841992
+        },
+        {
+          "path": "model-00019-of-00026.safetensors",
+          "sha256": "708644ad34f1de727bf484f396944d8ec628645d52c183e9a992e65671685e21",
+          "size": 1096460808
+        },
+        {
+          "path": "model-00020-of-00026.safetensors",
+          "sha256": "ca083a1d1aa64f8e8a785998f543a43374f13436dc85d396eee4e72c7a84e1ae",
+          "size": 3409971072
+        },
+        {
+          "path": "model-00021-of-00026.safetensors",
+          "sha256": "ada4ae48f3d48fe01b4c53f2f82bce25e798a9631fd33959c881156fef2ccbce",
+          "size": 1633331744
+        },
+        {
+          "path": "model-00022-of-00026.safetensors",
+          "sha256": "def207fb42d7db31efb512755557763c23233c6e4d4c433027cb5102a7bce2f7",
+          "size": 3370808752
+        },
+        {
+          "path": "model-00023-of-00026.safetensors",
+          "sha256": "864d52ca7768a36f514069222e8de8626264ae124097ba8fcce5b5da2c6e2ed7",
+          "size": 3357898392
+        },
+        {
+          "path": "model-00024-of-00026.safetensors",
+          "sha256": "391acd27420cdce5935ff18152423c70620d19dac3c39a5ef1a81d369f82d737",
+          "size": 3370808752
+        },
+        {
+          "path": "model-00025-of-00026.safetensors",
+          "sha256": "778e7f76602f05042b69ba7f3ec91f1fdffef390540b16074041c258fb81d154",
+          "size": 3832888256
+        },
+        {
+          "path": "model-00026-of-00026.safetensors",
+          "sha256": "1a97404220077ed3d4182e10385b152004cab608377f50cec9f54a6b8d28b613",
+          "size": 2231416848
+        }
+      ]
+    },
+    {
+      "id": "gpt-oss-120b-ggml-org-gguf@3d735037",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "ggml-org/gpt-oss-120b-GGUF",
+        "revision": "3d7350377faa21d0dabec097ac8bf7b8801e2279",
+        "url": "https://huggingface.co/ggml-org/gpt-oss-120b-GGUF/resolve/3d7350377faa21d0dabec097ac8bf7b8801e2279/"
+      },
+      "format": "gguf",
+      "trust_tier": "packager",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "gpt-oss-120b-mxfp4-00001-of-00003.gguf",
+          "sha256": "e2865eb6c1df7b2ffbebf305cd5d9074d5ccc0fe3b862f98d343a46dad1606f9",
+          "size": 12980384,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "safe",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "safe"
+          },
+          "local_path": "gpt-oss-120b-mxfp4-00001-of-00003.gguf"
+        },
+        {
+          "path": "gpt-oss-120b-mxfp4-00002-of-00003.gguf",
+          "sha256": "346492f65891fb27cac5c74a8c07626cbfeb4211cd391ec4de37dbbe3109a93b",
+          "size": 31738487200,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "safe"
+          },
+          "local_path": "gpt-oss-120b-mxfp4-00002-of-00003.gguf"
+        },
+        {
+          "path": "gpt-oss-120b-mxfp4-00003-of-00003.gguf",
+          "sha256": "66dca81040933f5a49177e82c479c51319cefb83bd22dad9f06dad45e25f1463",
+          "size": 31635878880,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "safe"
+          },
+          "local_path": "gpt-oss-120b-mxfp4-00003-of-00003.gguf"
+        }
+      ],
+      "verified_on": [
+        "box"
+      ],
+      "verified_at": "2026-08-15T20:18:37Z",
+      "notes": "adopted from existing files on box at revision 3d7350377faa21d0dabec097ac8bf7b8801e2279 (pinned; may not be current main); Retro 2026-08-15: 3-shard mxfp4 set pre-existing in D:\\models. Upstream deleted the shards on 2026-07-16 in favour of a single gpt-oss-120b-MXFP4.gguf (238abdd, 2026-07-28); pinned to the last revision containing all three.",
+      "derived_from": "openai/gpt-oss-120b@b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+      "derived_from_files": [
+        {
+          "path": "model-00000-of-00014.safetensors",
+          "sha256": "695218884684c611fe08a74751ee443f971e9bd9bc062edba822da3fe45969b7",
+          "size": 4625017896
+        },
+        {
+          "path": "model-00001-of-00014.safetensors",
+          "sha256": "a881aa5f561b26a22b14a8262aa61849ace349ffd73d74769e030ac90a1fcf8a",
+          "size": 4115586736
+        },
+        {
+          "path": "model-00002-of-00014.safetensors",
+          "sha256": "022478dd04398c5bdb545a5be0a6437ecc2eb53d1dbd29edafcfff4b3ddf0a41",
+          "size": 4625017888
+        },
+        {
+          "path": "model-00003-of-00014.safetensors",
+          "sha256": "47aee9e7b9d5bedb215042c01ccededd9bd9c30b0dddea862dc2506b9d6c74de",
+          "size": 4115586752
+        },
+        {
+          "path": "model-00004-of-00014.safetensors",
+          "sha256": "f6c2752acda607b1d5ca52df9e75c1b9b2761e6875ff10c9bd6ddac473c0262e",
+          "size": 4625017896
+        },
+        {
+          "path": "model-00005-of-00014.safetensors",
+          "sha256": "0c8dd401544c31cb93b8459eee7da20ea2a07626a59455d7d92b85257df9b46c",
+          "size": 4115586696
+        },
+        {
+          "path": "model-00006-of-00014.safetensors",
+          "sha256": "28d839f2e027985a8b14e45f2323798862eddb7770ee9800ea6b7c803abee489",
+          "size": 4625017856
+        },
+        {
+          "path": "model-00007-of-00014.safetensors",
+          "sha256": "c8958c5f183c04f6ea959cfd90562b5128124154b2bbf979b8a22b9405b30ed8",
+          "size": 4060267176
+        },
+        {
+          "path": "model-00008-of-00014.safetensors",
+          "sha256": "bf1f2a88868ffc37d520dcf77d26f0e823710b5e682d473ff10f6974fa3b7517",
+          "size": 4625017896
+        },
+        {
+          "path": "model-00009-of-00014.safetensors",
+          "sha256": "f72d34a4004241b45c332b61f8ffa124e9a913bc1ab442b66e717d3e94e741ce",
+          "size": 4170906304
+        },
+        {
+          "path": "model-00010-of-00014.safetensors",
+          "sha256": "f48c867c2cb0a44bfc2f8768cb98e4aec9a350946fceacfebdcad5d32ad4a471",
+          "size": 4625017896
+        },
+        {
+          "path": "model-00011-of-00014.safetensors",
+          "sha256": "a06851b2cfd35f48722f823bc1ab8f7bcb4a878a5b8e975f4d3544f230454eeb",
+          "size": 4115586752
+        },
+        {
+          "path": "model-00012-of-00014.safetensors",
+          "sha256": "3af33667c307e20ae2a7648ea52653de46dd0171601ec5c696e47a2f5d5bf1e4",
+          "size": 4064660808
+        },
+        {
+          "path": "model-00013-of-00014.safetensors",
+          "sha256": "bcbcb74b043e071d1e05471d500d74dcf661175e00878ed302ccdf1801a75aef",
+          "size": 4625017896
+        },
+        {
+          "path": "model-00014-of-00014.safetensors",
+          "sha256": "54b1be1609696c307cc5ca117b1fa54feaddebffa04e9c2db117652a01964230",
+          "size": 4115586736
+        },
+        {
+          "path": "original/model--00001-of-00007.safetensors",
+          "sha256": "68a8dc1f8e2e5996cb702f14332a25ddf3463daeab2df68e21ca09ef181203c3",
+          "size": 10544040680
+        },
+        {
+          "path": "original/model--00002-of-00007.safetensors",
+          "sha256": "19b8f0d5c7dc3195c61a711d08384a1f85624f018186da541585c0f97ac61020",
+          "size": 10488721680
+        },
+        {
+          "path": "original/model--00003-of-00007.safetensors",
+          "sha256": "0dbccd746d50e9543e8016d0a43ab4487c7f86d72349b1ef17abdfec509d0701",
+          "size": 10488721688
+        },
+        {
+          "path": "original/model--00004-of-00007.safetensors",
+          "sha256": "bcc73cf6d18f96a2e62428758463157cc12768f410873152a50d3929a64cd049",
+          "size": 10488721672
+        },
+        {
+          "path": "original/model--00005-of-00007.safetensors",
+          "sha256": "15fd69843e9cc6fdf2db0efe0cf0979b49a6ba84b3a38169b2fabc5479d04a7d",
+          "size": 10488721680
+        },
+        {
+          "path": "original/model--00006-of-00007.safetensors",
+          "sha256": "3aedef2ee0a5a78a003b3f74fd6883033946b80097bf41e4f4715d95066f0588",
+          "size": 10433402600
+        },
+        {
+          "path": "original/model--00007-of-00007.safetensors",
+          "sha256": "20d5dfcad1ed6c50aa3c0da7d3f08828dba72b5f58686a987bf3a8f01659cda6",
+          "size": 2316539800
+        }
+      ]
+    },
+    {
+      "id": "qwen3.8-27b-safetensors@1d4bf0f2",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "Qwen/Qwen3.8-27B",
+        "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        "url": "https://huggingface.co/Qwen/Qwen3.8-27B/resolve/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/"
+      },
+      "format": "safetensors",
+      "trust_tier": "origin",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": ".gitattributes",
+          "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+          "size": 1570,
+          "hf_security": null
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a",
+          "size": 11544,
+          "hf_security": null
+        },
+        {
+          "path": "README.md",
+          "sha256": "57e4bdb258ee1a7d2635c5174ebd4e56abe392505cdb5f8bbb356b0dc4293641",
+          "size": 65012,
+          "hf_security": null
+        },
+        {
+          "path": "chat_template.jinja",
+          "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+          "size": 8952,
+          "hf_security": null
+        },
+        {
+          "path": "config.json",
+          "sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+          "size": 4312,
+          "hf_security": null
+        },
+        {
+          "path": "crc32.txt",
+          "sha256": "b42dd291f5f98b05807e458f5b47849969a9b3326acbf0c97d28b05826740b83",
+          "size": 238,
+          "hf_security": null
+        },
+        {
+          "path": "generation_config.json",
+          "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+          "size": 202,
+          "hf_security": null
+        },
+        {
+          "path": "merges.txt",
+          "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d",
+          "size": 3353259,
+          "hf_security": null
+        },
+        {
+          "path": "model-00001-of-00018.safetensors",
+          "sha256": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+          "size": 3966730552,
+          "hf_security": null
+        },
+        {
+          "path": "model-00002-of-00018.safetensors",
+          "sha256": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+          "size": 3043080328,
+          "hf_security": null
+        },
+        {
+          "path": "model-00003-of-00018.safetensors",
+          "sha256": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+          "size": 2542796952,
+          "hf_security": null
+        },
+        {
+          "path": "model-00004-of-00018.safetensors",
+          "sha256": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+          "size": 3988973152,
+          "hf_security": null
+        },
+        {
+          "path": "model-00005-of-00018.safetensors",
+          "sha256": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+          "size": 2099339864,
+          "hf_security": null
+        },
+        {
+          "path": "model-00006-of-00018.safetensors",
+          "sha256": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+          "size": 3979553696,
+          "hf_security": null
+        },
+        {
+          "path": "model-00007-of-00018.safetensors",
+          "sha256": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+          "size": 2108759344,
+          "hf_security": null
+        },
+        {
+          "path": "model-00008-of-00018.safetensors",
+          "sha256": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+          "size": 3979553696,
+          "hf_security": null
+        },
+        {
+          "path": "model-00009-of-00018.safetensors",
+          "sha256": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+          "size": 2108759344,
+          "hf_security": null
+        },
+        {
+          "path": "model-00010-of-00018.safetensors",
+          "sha256": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+          "size": 3979553696,
+          "hf_security": null
+        },
+        {
+          "path": "model-00011-of-00018.safetensors",
+          "sha256": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+          "size": 2108759344,
+          "hf_security": null
+        },
+        {
+          "path": "model-00012-of-00018.safetensors",
+          "sha256": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+          "size": 3979553696,
+          "hf_security": null
+        },
+        {
+          "path": "model-00013-of-00018.safetensors",
+          "sha256": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+          "size": 2108759344,
+          "hf_security": null
+        },
+        {
+          "path": "model-00014-of-00018.safetensors",
+          "sha256": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+          "size": 3979553696,
+          "hf_security": null
+        },
+        {
+          "path": "model-00015-of-00018.safetensors",
+          "sha256": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+          "size": 2108759344,
+          "hf_security": null
+        },
+        {
+          "path": "model-00016-of-00018.safetensors",
+          "sha256": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+          "size": 3979564040,
+          "hf_security": null
+        },
+        {
+          "path": "model-00017-of-00018.safetensors",
+          "sha256": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+          "size": 2108759344,
+          "hf_security": null
+        },
+        {
+          "path": "model-00018-of-00018.safetensors",
+          "sha256": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+          "size": 3392197344,
+          "hf_security": null
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "sha256": "77042094076611b69791a610065f28b7013b8c621795fa86ddccc8bac7d1b9df",
+          "size": 112216,
+          "hf_security": null
+        },
+        {
+          "path": "preprocessor_config.json",
+          "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+          "size": 390,
+          "hf_security": null
+        },
+        {
+          "path": "tokenizer.json",
+          "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+          "size": 12809320,
+          "hf_security": null
+        },
+        {
+          "path": "tokenizer_config.json",
+          "sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+          "size": 17928,
+          "hf_security": null
+        },
+        {
+          "path": "video_preprocessor_config.json",
+          "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+          "size": 385,
+          "hf_security": null
+        },
+        {
+          "path": "vocab.json",
+          "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+          "size": 6722759,
+          "hf_security": null
+        }
+      ],
+      "verified_on": [
+        "mac"
+      ],
+      "verified_at": "2026-08-15T21:58:54Z",
+      "notes": "as-of: fetched at revision '1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0' (resolved to 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0); RDR-016 A10 first acquisition under protocol; origin safetensors for self-quantization (bead r28)"
+    },
+    {
+      "id": "qwen3.8-27b-q8_0",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "local",
+        "repo": "Qwen/Qwen3.8-27B",
+        "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+      },
+      "format": "gguf",
+      "trust_tier": "self-quantized",
+      "derived_from": "qwen3.8-27b-safetensors@1d4bf0f2",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00018.safetensors",
+          "sha256": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+          "size": 3966730552
+        },
+        {
+          "path": "model-00002-of-00018.safetensors",
+          "sha256": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+          "size": 3043080328
+        },
+        {
+          "path": "model-00003-of-00018.safetensors",
+          "sha256": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+          "size": 2542796952
+        },
+        {
+          "path": "model-00004-of-00018.safetensors",
+          "sha256": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+          "size": 3988973152
+        },
+        {
+          "path": "model-00005-of-00018.safetensors",
+          "sha256": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+          "size": 2099339864
+        },
+        {
+          "path": "model-00006-of-00018.safetensors",
+          "sha256": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00007-of-00018.safetensors",
+          "sha256": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00008-of-00018.safetensors",
+          "sha256": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00009-of-00018.safetensors",
+          "sha256": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00010-of-00018.safetensors",
+          "sha256": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00011-of-00018.safetensors",
+          "sha256": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00012-of-00018.safetensors",
+          "sha256": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00013-of-00018.safetensors",
+          "sha256": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00014-of-00018.safetensors",
+          "sha256": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00015-of-00018.safetensors",
+          "sha256": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00016-of-00018.safetensors",
+          "sha256": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+          "size": 3979564040
+        },
+        {
+          "path": "model-00017-of-00018.safetensors",
+          "sha256": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00018-of-00018.safetensors",
+          "sha256": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+          "size": 3392197344
+        }
+      ],
+      "quantized_by": {
+        "tool": "llama-quantize",
+        "version": "b10078",
+        "command": "convert_hf_to_gguf.py <safetensors> --outtype bf16 --outfile Qwen3.8-27B-BF16.gguf; llama-quantize Qwen3.8-27B-BF16.gguf Qwen3.8-27B-Q8_0.gguf Q8_0"
+      },
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "Qwen3.8-27B-Q8_0.gguf",
+          "sha256": "f883f8ecf992a958253d2d7030771a870fe7a95ec7a9f6b8c836415284741392",
+          "size": 29047084416,
+          "hf_security": null
+        }
+      ],
+      "verified_on": [
+        "mac",
+        "box"
+      ],
+      "verified_at": "2026-08-16T00:36:52Z",
+      "notes": "RDR-016 A10 (bead r28): self-quantized on the Mac from origin safetensors with llama.cpp b10078 (f048010) Metal build; text model, pair with mmproj entry for vision"
+    },
+    {
+      "id": "qwen3.8-27b-mmproj-f16",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "local",
+        "repo": "Qwen/Qwen3.8-27B",
+        "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+      },
+      "format": "gguf",
+      "trust_tier": "self-quantized",
+      "derived_from": "qwen3.8-27b-safetensors@1d4bf0f2",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00018.safetensors",
+          "sha256": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+          "size": 3966730552
+        },
+        {
+          "path": "model-00002-of-00018.safetensors",
+          "sha256": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+          "size": 3043080328
+        },
+        {
+          "path": "model-00003-of-00018.safetensors",
+          "sha256": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+          "size": 2542796952
+        },
+        {
+          "path": "model-00004-of-00018.safetensors",
+          "sha256": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+          "size": 3988973152
+        },
+        {
+          "path": "model-00005-of-00018.safetensors",
+          "sha256": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+          "size": 2099339864
+        },
+        {
+          "path": "model-00006-of-00018.safetensors",
+          "sha256": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00007-of-00018.safetensors",
+          "sha256": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00008-of-00018.safetensors",
+          "sha256": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00009-of-00018.safetensors",
+          "sha256": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00010-of-00018.safetensors",
+          "sha256": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00011-of-00018.safetensors",
+          "sha256": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00012-of-00018.safetensors",
+          "sha256": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00013-of-00018.safetensors",
+          "sha256": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00014-of-00018.safetensors",
+          "sha256": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00015-of-00018.safetensors",
+          "sha256": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00016-of-00018.safetensors",
+          "sha256": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+          "size": 3979564040
+        },
+        {
+          "path": "model-00017-of-00018.safetensors",
+          "sha256": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00018-of-00018.safetensors",
+          "sha256": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+          "size": 3392197344
+        }
+      ],
+      "quantized_by": {
+        "tool": "convert_hf_to_gguf.py",
+        "version": "b10078",
+        "command": "convert_hf_to_gguf.py <safetensors> --mmproj --outtype f16 --outfile mmproj-Qwen3.8-27B-F16.gguf"
+      },
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "mmproj-Qwen3.8-27B-F16.gguf",
+          "sha256": "1d5398ec531eb7652d661af5548cd3b699794bf0d3fdc72c49ac696e8eda9bd7",
+          "size": 927607040,
+          "hf_security": null
+        }
+      ],
+      "verified_on": [
+        "mac",
+        "box"
+      ],
+      "verified_at": "2026-08-16T00:36:52Z",
+      "notes": "RDR-016 A10 (bead r28): Qwen3.8-27B vision projector (F16) converted on the Mac from origin safetensors with llama.cpp b10078"
+    },
+    {
+      "id": "qwen3.8-27b-q6_k",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "local",
+        "repo": "Qwen/Qwen3.8-27B",
+        "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+      },
+      "format": "gguf",
+      "trust_tier": "self-quantized",
+      "derived_from": "qwen3.8-27b-safetensors@1d4bf0f2",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00018.safetensors",
+          "sha256": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+          "size": 3966730552
+        },
+        {
+          "path": "model-00002-of-00018.safetensors",
+          "sha256": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+          "size": 3043080328
+        },
+        {
+          "path": "model-00003-of-00018.safetensors",
+          "sha256": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+          "size": 2542796952
+        },
+        {
+          "path": "model-00004-of-00018.safetensors",
+          "sha256": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+          "size": 3988973152
+        },
+        {
+          "path": "model-00005-of-00018.safetensors",
+          "sha256": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+          "size": 2099339864
+        },
+        {
+          "path": "model-00006-of-00018.safetensors",
+          "sha256": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00007-of-00018.safetensors",
+          "sha256": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00008-of-00018.safetensors",
+          "sha256": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00009-of-00018.safetensors",
+          "sha256": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00010-of-00018.safetensors",
+          "sha256": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00011-of-00018.safetensors",
+          "sha256": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00012-of-00018.safetensors",
+          "sha256": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00013-of-00018.safetensors",
+          "sha256": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00014-of-00018.safetensors",
+          "sha256": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00015-of-00018.safetensors",
+          "sha256": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00016-of-00018.safetensors",
+          "sha256": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+          "size": 3979564040
+        },
+        {
+          "path": "model-00017-of-00018.safetensors",
+          "sha256": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00018-of-00018.safetensors",
+          "sha256": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+          "size": 3392197344
+        }
+      ],
+      "quantized_by": {
+        "tool": "llama-quantize",
+        "version": "b10078",
+        "command": "convert_hf_to_gguf.py <safetensors> --outtype bf16 --outfile Qwen3.8-27B-BF16.gguf; llama-quantize Qwen3.8-27B-BF16.gguf Qwen3.8-27B-Q6_K.gguf Q6_K"
+      },
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "Qwen3.8-27B-Q6_K.gguf",
+          "sha256": "52fd80eb10f696cf66c33c51fccc65956d3d30d17a741e2b96281d6b80e53f0a",
+          "size": 22430999936,
+          "hf_security": null
+        }
+      ],
+      "verified_on": [
+        "mac",
+        "box"
+      ],
+      "verified_at": "2026-08-16T00:36:52Z",
+      "notes": "RDR-016 A10 (bead r28): self-quantized on the Mac from origin safetensors with llama.cpp b10078 (f048010) Metal build; text model, pair with qwen3.8-27b-mmproj-f16 for vision"
+    },
+    {
+      "id": "qwen3.8-27b-mlx-4bit",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "local",
+        "repo": "Qwen/Qwen3.8-27B",
+        "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+      },
+      "format": "mlx",
+      "trust_tier": "self-quantized",
+      "derived_from": "qwen3.8-27b-safetensors@1d4bf0f2",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00018.safetensors",
+          "sha256": "ba0ce20aae489ad196733da5064bcdf159a1fe84f53336648196e1ebb7751b1c",
+          "size": 3966730552
+        },
+        {
+          "path": "model-00002-of-00018.safetensors",
+          "sha256": "06a148c01bfbe3faa14a5f184a7ff29a706f7ae1c8b2705d2058e26d17a001fb",
+          "size": 3043080328
+        },
+        {
+          "path": "model-00003-of-00018.safetensors",
+          "sha256": "2e1bf62cbcd406eaa64b60d10353e1f0ef4039d0976e56f05cabe953454f9968",
+          "size": 2542796952
+        },
+        {
+          "path": "model-00004-of-00018.safetensors",
+          "sha256": "511e34063187882659753c4d93f3859f93c019fd438d8813071921c81d9a3f1a",
+          "size": 3988973152
+        },
+        {
+          "path": "model-00005-of-00018.safetensors",
+          "sha256": "635cb53446dc74f219740fc59e18b774f877b803b9722e289ca62575a6efa701",
+          "size": 2099339864
+        },
+        {
+          "path": "model-00006-of-00018.safetensors",
+          "sha256": "0bc5214fac607f0e6cc92eec3789d4b8559410ef9fce66621ba8158e8410dae0",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00007-of-00018.safetensors",
+          "sha256": "80b0c49033e9a0d5762562aa12f4acdb7f54da586f3d0110f28c48d91cf07892",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00008-of-00018.safetensors",
+          "sha256": "7192c5b66185d3592927daabee1cc19e6f6e0ce75988ee20e824b624765fda79",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00009-of-00018.safetensors",
+          "sha256": "af3c48cc37af44f3db6ae0579baf019180d48d9c527caa0a1f03ff85813a56d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00010-of-00018.safetensors",
+          "sha256": "163490a76f3bea3a40855b7efc04ce6d27afaf1a34f0bbde495b9491f76457c9",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00011-of-00018.safetensors",
+          "sha256": "5f3ae1b948aeee39da77aec558e8236cd65fe4d7cb7686a76bb007acc563c6d8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00012-of-00018.safetensors",
+          "sha256": "a3de1c7114677a8f5ac5c4892c90e8238ea5c1e2038c80e757dfc87c3902ca55",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00013-of-00018.safetensors",
+          "sha256": "06ab79a41f74c9c5cb734816feb0c7fc364104b227165ee7391231e1155aa02a",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00014-of-00018.safetensors",
+          "sha256": "4138ed94603065ba884bbcadedb04d7718bb40117e85e6f5c6fc5b9c05b7a85b",
+          "size": 3979553696
+        },
+        {
+          "path": "model-00015-of-00018.safetensors",
+          "sha256": "69224e27b9de4e7dbf6fc936c6eaae08447bda3b80a6c31a871ab451173afd22",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00016-of-00018.safetensors",
+          "sha256": "73cb9a1089fb6155cb648609478d6633be8a5c7d9ca5a05bc8925ce8a553cefe",
+          "size": 3979564040
+        },
+        {
+          "path": "model-00017-of-00018.safetensors",
+          "sha256": "beb51f01056142ac4984bd800507b0dd0fd18de57f8e9ef6ea41d1a3598983a8",
+          "size": 2108759344
+        },
+        {
+          "path": "model-00018-of-00018.safetensors",
+          "sha256": "1d3479509e21494658f9b64d317f5ea8e55c4025d28c702d6c4d0b356ce8ea06",
+          "size": 3392197344
+        }
+      ],
+      "quantized_by": {
+        "tool": "mlx_lm.convert",
+        "version": "0.31.3",
+        "command": "mlx_lm.convert --hf-path <safetensors> --mlx-path qwen3.8-27b-mlx-4bit -q --q-bits 4 --q-group-size 64 (mx.set_default_device(cpu); Metal path fails at save with kIOGPUCommandBufferCallbackErrorSubmissionsIgnored)"
+      },
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "748c964f9b7e5f2c3770ce013bbc0153be7c54311d9692c343b6188eefe77ac6",
+          "size": 81,
+          "hf_security": null
+        },
+        {
+          "path": "chat_template.jinja",
+          "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+          "size": 8952,
+          "hf_security": null
+        },
+        {
+          "path": "config.json",
+          "sha256": "5255de91766beaec591d69b361b7292cb5a8a138ea505353e2a283cc7effa256",
+          "size": 4089,
+          "hf_security": null
+        },
+        {
+          "path": "generation_config.json",
+          "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+          "size": 202,
+          "hf_security": null
+        },
+        {
+          "path": "model-00001-of-00003.safetensors",
+          "sha256": "11b7a92966a8ddcdd7403114cff07082499e9c4035de3b946cc2755661d582a2",
+          "size": 5328325648,
+          "hf_security": null
+        },
+        {
+          "path": "model-00002-of-00003.safetensors",
+          "sha256": "50ddc64791becbaffcf59cb2200bae87a6dd2c4b82a12a7dc658a15d4928441c",
+          "size": 5354185130,
+          "hf_security": null
+        },
+        {
+          "path": "model-00003-of-00003.safetensors",
+          "sha256": "05c25cfb32931e60073787634f7e5af7febda5243aac0d63d8b011e4e0c3853f",
+          "size": 4450532735,
+          "hf_security": null
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "sha256": "a2161f6a6c9f7c434145f97a4a4262a74eb3e16a95088e713754eb108b198511",
+          "size": 189789,
+          "hf_security": null
+        },
+        {
+          "path": "tokenizer.json",
+          "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "size": 19989325,
+          "hf_security": null
+        },
+        {
+          "path": "tokenizer_config.json",
+          "sha256": "95c557768e6b88a7128befc7bfd3c7de50e5d51af9b8b33a9f4dee0e04f99679",
+          "size": 1161,
+          "hf_security": null
+        }
+      ],
+      "verified_on": [
+        "mac"
+      ],
+      "verified_at": "2026-08-16T01:10:56Z",
+      "notes": "RDR-016 A10 (bead r28): Qwen3.8-27B MLX 4-bit (4.501 bpw, group 64) for the Mac (mlx-lm 0.31.3, text-only); converted on the CPU device"
+    }
+  ]
+}

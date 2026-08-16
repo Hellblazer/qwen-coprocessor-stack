@@ -1,0 +1,3 @@
+5f61f3652a8a7f5a854c9e4441c73637a65b17e80c41a7344f24251a733c75f5  Qwen3-Coder-Next-UD-Q4_K_XL.gguf
+0572207a7fc288979c8a43460e325add86930d2f52dacd7461ca5a84accaf7b6  qwen3-coder-next/Qwen3-Coder-Next-Q6_K-00001-of-00003.gguf
+8c3f902ef9204e19ec8ca5e61640d8ce978e9e7b6dedd6f074a5af00f545303f  qwen3-coder-next/Qwen3-Coder-Next-Q6_K-00002-of-00003.gguf

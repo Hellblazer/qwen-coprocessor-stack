@@ -1,0 +1,210 @@
+[
+  {
+    "type": "file",
+    "oid": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+    "size": 1570,
+    "path": ".gitattributes",
+    "lastCommit": {
+      "id": "72a217afab8029b39e4af1c7273a829995a3dbaf",
+      "title": "Upload folder using huggingface_hub",
+      "date": "2026-08-13T08:23:30.000Z"
+    },
+    "securityFileStatus": {
+      "status": "safe",
+      "protectAiScan": {
+        "status": "unscanned",
+        "reportLink": "https://insights-db.paloaltonetworks.com/models/Qwen/Qwen3.8-27B/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/files?blob-id=52373fe24473b1aa44333d318f578ae6bf04b49b&utm_source=huggingface"
+      },
+      "avScan": {
+        "status": "safe",
+        "message": "No security issues detected",
+        "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+      },
+      "pickleImportScan": {
+        "status": "unscanned",
+        "pickleImports": [],
+        "version": "0.0.0"
+      },
+      "virusTotalScan": {
+        "status": "unscanned"
+      },
+      "jFrogScan": {
+        "status": "unscanned",
+        "message": "Not a machine-learning model"
+      }
+    }
+  },
+  {
+    "type": "file",
+    "oid": "f938136e3adacfd92be087f6e113b5d6d97f678f",
+    "size": 11544,
+    "path": "LICENSE",
+    "lastCommit": {
+      "id": "e13a4f0e35203116364e3b3f3f0c82f6ef1afd3c",
+      "title": "Add LICENSE",
+      "date": "2026-08-14T04:15:11.000Z"
+    },
+    "securityFileStatus": {
+      "status": "safe",
+      "protectAiScan": {
+        "status": "unscanned",
+        "reportLink": "https://insights-db.paloaltonetworks.com/models/Qwen/Qwen3.8-27B/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/files?blob-id=f938136e3adacfd92be087f6e113b5d6d97f678f&utm_source=huggingface"
+      },
+      "avScan": {
+        "status": "safe",
+        "message": "No security issues detected",
+        "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+      },
+      "pickleImportScan": {
+        "status": "unscanned",
+        "pickleImports": [],
+        "version": "0.0.0"
+      },
+      "virusTotalScan": {
+        "status": "unscanned"
+      },
+      "jFrogScan": {
+        "status": "unscanned",
+        "message": "Not a machine-learning model"
+      }
+    }
+  },
+  {
+    "type": "file",
+    "oid": "bc8aa0e396cd029c21cd773cca21830d0ded28ec",
+    "size": 65012,
+    "path": "README.md",
+    "lastCommit": {
+      "id": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "title": "Update README.md",
+      "date": "2026-08-14T15:00:01.000Z"
+    },
+    "securityFileStatus": {
+      "status": "queued",
+      "protectAiScan": {
+        "status": "queued"
+      },
+      "avScan": {
+        "status": "safe",
+        "message": "No security issues detected",
+        "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+      },
+      "pickleImportScan": {
+        "status": "unscanned",
+        "pickleImports": [],
+        "version": "0.0.0"
+      },
+      "virusTotalScan": {
+        "status": "unscanned"
+      },
+      "jFrogScan": {
+        "status": "queued",
+        "message": ""
+      }
+    }
+  },
+  {
+    "type": "file",
+    "oid": "c0c686f9c38d70d179fb7b5f5aa7530bc913dda3",
+    "size": 8952,
+    "path": "chat_template.jinja",
+    "lastCommit": {
+      "id": "412f8b6bd7f5e922bea27645dcc3c80246b7f6a8",
+      "title": "Upload chat_template.jinja with huggingface_hub",
+      "date": "2026-08-13T10:16:05.000Z"
+    },
+    "securityFileStatus": {
+      "status": "safe",
+      "protectAiScan": {
+        "status": "safe",
+        "message": "This file has no security findings.",
+        "reportLink": "https://insights-db.paloaltonetworks.com/models/Qwen/Qwen3.8-27B/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/files?blob-id=c0c686f9c38d70d179fb7b5f5aa7530bc913dda3&utm_source=huggingface"
+      },
+      "avScan": {
+        "status": "safe",
+        "message": "No security issues detected",
+        "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+      },
+      "pickleImportScan": {
+        "status": "unscanned",
+        "pickleImports": [],
+        "version": "0.0.0"
+      },
+      "virusTotalScan": {
+        "status": "unscanned"
+      },
+      "jFrogScan": {
+        "status": "unscanned",
+        "message": "Not a machine-learning model"
+      }
+    }
+  },
+  {
+    "type": "file",
+    "oid": "706cebd746c4b6f2b1d1f892630867acfdfd3df8",
+    "size": 4312,
+    "path": "config.json",
+    "lastCommit": {
+      "id": "72a217afab8029b39e4af1c7273a829995a3dbaf",
+      "title": "Upload folder using huggingface_hub",
+      "date": "2026-08-13T08:23:30.000Z"
+    },
+    "securityFileStatus": {
+      "status": "queued",
+      "protectAiScan": {
+        "status": "queued"
+      },
+      "avScan": {
+        "status": "safe",
+        "message": "No security issues detected",
+        "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+      },
+      "pickleImportScan": {
+        "status": "unscanned",
+        "pickleImports": [],
+        "version": "0.0.0"
+      },
+      "virusTotalScan": {
+        "status": "unscanned"
+      },
+      "jFrogScan": {
+        "status": "queued",
+        "message": ""
+      }
+    }
+  },
+  {
+    "type": "file",
+    "oid": "6de5ee6a0c6596744baee911af0a5cdcb8d99a1e",
+    "size": 238,
+    "path": "crc32.txt",
+    "lastCommit": {
+      "id": "72a217afab8029b39e4af1c7273a829995a3dbaf",
+      "title": "Upload folder using huggingface_hub",
+      "date": "2026-08-13T08:23:30.000Z"
+    },
+    "securityFileStatus": {
+      "status": "queued",
+      "protectAiScan": {
+        "status": "queued"
+      },
+      "avScan": {
+        "status": "safe",
+        "message": "No security issues detected",
+        "reportLink": "https://fdtn.ai/ai-supply-chain/hugging-face?utm_source=huggingface"
+      },
+      "pickleImportScan": {
+        "status": "unscanned",
+        "pickleImports": [],
+        "version": "0.0.0"
+      },
+      "virusTotalScan": {
+        "status": "unscanned"
+      },
+      "jFrogScan": {
+        "status": "queued",
+        "message": ""
+      }
+    }
+  }
+]

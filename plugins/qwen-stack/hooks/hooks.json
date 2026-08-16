@@ -1,0 +1,16 @@
+{
+  "description": "RDR-016 provenance guard: PreToolUse on Bash blocks raw model/runtime acquisition, unsafe transfer, and pickle-format loading; routes callers to scripts/ops/provenance/provenance.py or /qwen-stack:provenance.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/provenance-guard.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

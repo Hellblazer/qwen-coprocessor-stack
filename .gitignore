@@ -5,7 +5,9 @@ logs/
 tmp/
 build/
 dist/
-models/
+models/*
+!models/MANIFEST.json
+!models/manifest.schema.json
 *.gguf
 *.bin
 *.so

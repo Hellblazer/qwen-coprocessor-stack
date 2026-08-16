@@ -1,0 +1,157 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Hellblazer/qwen-coprocessor-stack/models/manifest.schema.json",
+  "title": "Model and runtime provenance manifest (RDR-016)",
+  "type": "object",
+  "required": ["schema_version", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/artifact" }
+    }
+  },
+  "definitions": {
+    "artifact": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "source",
+        "format",
+        "trust_tier",
+        "files",
+        "verified_on"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._@+-]*$"
+        },
+        "kind": { "type": "string", "enum": ["model", "runtime"] },
+        "status": { "type": "string", "enum": ["verified", "unverified"] },
+        "source": { "$ref": "#/definitions/source" },
+        "format": {
+          "type": "string",
+          "enum": ["safetensors", "gguf", "mlx", "zip"]
+        },
+        "trust_tier": {
+          "type": "string",
+          "enum": ["origin", "packager", "self-quantized"]
+        },
+        "derived_from": { "type": ["string", "null"] },
+        "derived_from_files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/derived_from_file" }
+        },
+        "quantized_by": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "tool": { "type": "string" },
+            "version": { "type": "string" },
+            "command": { "type": "string" }
+          }
+        },
+        "remote_code_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "remote_code_present": { "type": "boolean" },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/file" }
+        },
+        "verified_on": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["mac", "box"] }
+        },
+        "verified_at": { "type": "string" },
+        "missing_on_host": {
+          "type": "object",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } }
+        },
+        "notes": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["source"],
+            "properties": { "source": { "required": ["host"], "properties": { "host": { "enum": ["huggingface"] } } } }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "required": ["revision"],
+                "properties": { "revision": { "pattern": "^[0-9a-f]{40}$" } }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["source"],
+            "properties": { "source": { "required": ["host"], "properties": { "host": { "enum": ["github"] } } } }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "required": ["revision", "asset"],
+                "properties": {
+                  "revision": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+                  "asset": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "dependentRequired": { "derived_from": ["derived_from_files"] }
+        }
+      ]
+    },
+    "source": {
+      "type": "object",
+      "required": ["host", "repo"],
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string", "enum": ["huggingface", "github", "local"] },
+        "repo": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "asset": { "type": "string" },
+        "url": { "type": "string" }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": ["path", "sha256", "size"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "size": { "type": "integer" },
+        "hf_security": { "type": ["object", "null"] },
+        "local_path": { "type": "string" }
+      }
+    },
+    "derived_from_file": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": ["string", "null"] },
+        "size": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}
