@@ -2,14 +2,14 @@
 title: "Model and runtime provenance — pinned-source fetch, hash-verified lineage, a committed manifest, and hooks/skills that make the unverified path the hard path"
 id: RDR-016
 type: Design
-status: accepted
+status: closed
 priority: high
 author: hal
 reviewed-by: self (substantive-critic x3, code-review-expert x2)
 created: 2026-08-15
 accepted_date: 2026-08-15
-closed_date:
-close_reason:
+closed_date: 2026-08-15
+close_reason: implemented
 related_issues: [qwen-coprocessor-stack-tij, qwen-coprocessor-stack-c9w, qwen-coprocessor-stack-gom, qwen-coprocessor-stack-mkw, qwen-coprocessor-stack-4ed, qwen-coprocessor-stack-qdz, qwen-coprocessor-stack-f19, qwen-coprocessor-stack-rkn, qwen-coprocessor-stack-651, qwen-coprocessor-stack-ugz, qwen-coprocessor-stack-r28]
 ---
 
