@@ -178,7 +178,7 @@ except Exception as e:
     print("ERR " + type(e).__name__); sys.exit(3)' "$REPO_DIR/models/MANIFEST.json" 2>/dev/null)
   case "$n" in
     0) log "provenance gate UNARMED — models/MANIFEST.json has no artifacts yet (bootstrap); launching unverified"
-       PROV_MODEL_ID="unmanifested"; PROV_RUNTIME_ID="unmanifested"; return 0 ;;
+       PROV_MODEL_ID="unarmed:empty-manifest"; PROV_RUNTIME_ID="unarmed:empty-manifest"; return 0 ;;
     [1-9]*) ;;
     *) PROV_REASON="manifest unreadable or $PYTHON unavailable (${n:-no output}) — refusing, not bootstrapping"; return 1 ;;
   esac

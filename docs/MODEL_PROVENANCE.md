@@ -61,6 +61,44 @@ $P verify --id qwen3.8-27b-q8_0 --listing qwen3.8.listing --host box
 # 5. wire: keepalive CODER/VISION line → arch probe (load + real generation) → shakeout → backend config
 ```
 
+### First run under the protocol (Qwen3.8-27B, 2026-08-15)
+
+The recipe above was executed end-to-end for `Qwen/Qwen3.8-27B@1d4bf0f2` (bead
+`qwen-coprocessor-stack-r28`, T2 `qwen3.8-27b-first-acquisition-r28-2026-08-15`).
+Manifest ids: `qwen3.8-27b-safetensors@1d4bf0f2` (origin, mac),
+`qwen3.8-27b-q8_0`, `qwen3.8-27b-q6_k`, `qwen3.8-27b-mmproj-f16` (self-quantized,
+llama.cpp b10078, mac+box), `qwen3.8-27b-mlx-4bit` (mlx-lm 0.31.3, mac). Arch
+`qwen3_5` is known to both b9596 and b10078; the b9596 probe on the box loaded with
+`--mmproj`, generated (7.7 tps decode / 112 tps prompt, Q8_0 at 32K ctx, 30.5 GB GPU
+dedicated) and passed `scripts/shakeout.py` 9/9. The RDR's second acceptance leg
+("served through the enforced keepalive") was met by pointing `CODER_MODEL` /
+`CODER_MANIFEST_ID` at `qwen3.8-27b-q8_0` in a second window: the ARMED gate itself
+approved and launched it (`model=qwen3.8-27b-q8_0 runtime=llama.cpp@b9596`, UP in
+59 s, state json carried the ids), then the line was reverted to Coder-Next. It is
+not pooled — a manifested candidate.
+
+Practicalities worth knowing before the next one:
+
+- Budget ~4 h wall-clock for a 27B dense model on the external disk: fetch ~35 min,
+  BF16 convert ~36 min (write-bound), each `llama-quantize` ~25 min, scp to the box
+  ~14–20 MB/s (51 GB ≈ 1 h). Run the disk-heavy steps sequentially.
+- The llama.cpp source checkout for `convert_hf_to_gguf.py` / `llama-quantize` is a
+  plain git clone of the GitHub repo at the pinned tag
+  (`/Volumes/Transcend Hell/git/llama.cpp` @ b10078); the hook only denies HF clones
+  and raw release-asset downloads.
+- `mlx_lm.convert` on the Metal device fails at save time for this model
+  (`kIOGPUCommandBufferCallbackErrorSubmissionsIgnored`, with or without the resident
+  MLX servers). Run it on the CPU device (`mx.set_default_device(mx.cpu)` before
+  `convert(...)`); ~20 min for 27B, output identical in shape.
+- Windows reports a stale `Length` (0) for a file `sftp-server` still holds open —
+  it is not a truncated transfer; wait for the scp exit code.
+- Announce the ship (sustained write) and the probe (service window) separately in
+  `QWEN_SERVER_NEGOTIATION.md`; hash only the new directory on the box.
+- The keepalive's first ARMED-gate launch after the window recorded
+  `model=qwen3-coder-next-unsloth-gguf@ce09c67b runtime=llama.cpp@b9596`; the
+  bootstrap (empty-manifest) sentinel is `unarmed:empty-manifest`, so a state file
+  showing that plus `enforce=1` means "nothing to enforce yet", not a bypass.
+
 ### New llama.cpp build on the box
 
 ```bash
