@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
-# Keepalive for the Coder-Next coprocessor (qwen-coprocessor-stack 1xu / P1, opt 3).
+# Keepalive for the box coprocessor (qwen-coprocessor-stack 1xu / P1, opt 3).
 # Holds the box llama-server via SSH (it can't detach on this box) + restarts on crash.
+#
+# 2026-08-16: PROMOTED Qwen3.8-27B (Q6_K + mmproj) as the box model, replacing
+# Coder-Next. Optimized config measured in the 2026-08-16 window (bd memory
+# qwen3.8-27b-box-optimized-config-2026-08-16): decode 7.62 -> ~14 tps prose /
+# ~17 tps code via Q6_K + MTP; 64K ctx for agentic headroom; 28.1 GB GPU
+# dedicated, in-carve. To revert to Coder-Next: CODER_MODEL back to
+# D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf, CODER_MANIFEST_ID
+# to qwen3-coder-next-unsloth-gguf@ce09c67b, drop --mmproj/--reasoning off/
+# --spec-type from the CODER line, ctx back to 32768.
 #
 # TOPOLOGY (2026-06-12, vision-on-mac migration): the box now runs coder-box ALONE.
 # Vision (Qwen2.5-VL-7B) and the 35B (Qwen3.6-35B-A3B, general/reasoning) moved to the
@@ -57,12 +66,27 @@ VARIANT=""
 # swap + write-cache enable. Re-validate against Available MBytes and GPU dedicated
 # usage (NOT tps — tps stayed 47-50 throughout the bad states) before restoring it.
 ENVSET=""
-CODER_MODEL='D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf'
+CODER_MODEL='D:\models\qwen3.8-27b\Qwen3.8-27B-Q6_K.gguf'
+# Q6_K over Q8_0: +26% decode, no capability loss observed (shakeout 9/9 both).
+# CODER line flags (all load-bearing, 2026-08-16 window):
+#   --mmproj             vision/OCR head (Qwen3.8 is multimodal; supervisor
+#                        routes vision to the box too now).
+#   --reasoning off      REQUIRED for agentic use. Qwen3.8 thinks by default
+#                        (xhigh effort) and IGNORES /no_think, which is the
+#                        supervisor's suppression mechanism (bead yjr) — without
+#                        this flag qwen-code sessions overflow the ctx window in
+#                        3-5 tool calls (~10K thinking tokens/turn).
+#   --spec-type draft-mtp  MTP speculative decode via the model's own MTP head
+#                        (present in our self-quantized GGUFs): 9.55 -> 14.4 tps
+#                        prose, 17.2 tps code. Exonerated in the OCR-misread
+#                        A/B (MTP-on 4/6 vs MTP-off 2/6 — model perception edge).
+#   --ctx-size 65536     qwen-code's session budget (~27.8K) crowds 32K; 64K
+#                        costs ~0.5 tps and ~2.2 GB KV (28.1 GB dedicated total).
 # Manifest id of CODER_MODEL (models/MANIFEST.json). Pinning the id makes the gate
 # unambiguous when two entries share a basename+size (a re-quantized packager file);
 # empty = match by path (check-path fails closed on ambiguity).
-CODER_MANIFEST_ID="qwen3-coder-next-unsloth-gguf@ce09c67b"
-CODER="$LL -m $CODER_MODEL --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 32768 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
+CODER_MANIFEST_ID="qwen3.8-27b-q6_k"
+CODER="$LL -m $CODER_MODEL --mmproj D:\\models\\qwen3.8-27b\\mmproj-Qwen3.8-27B-F16.gguf --reasoning off --spec-type draft-mtp --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 65536 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 # Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
 OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
