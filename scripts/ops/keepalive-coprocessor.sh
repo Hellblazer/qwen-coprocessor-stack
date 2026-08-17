@@ -11,12 +11,15 @@
 # to qwen3-coder-next-unsloth-gguf@ce09c67b, drop --mmproj/--reasoning off/
 # --spec-type from the CODER line, ctx back to 32768.
 #
-# TOPOLOGY (2026-06-12, vision-on-mac migration): the box now runs coder-box ALONE.
-# Vision (Qwen2.5-VL-7B) and the 35B (Qwen3.6-35B-A3B, general/reasoning) moved to the
-# Mac (MLX) — see scripts/ops/keepalive-mac.sh. This removed the coder-box+vision-35B
+# TOPOLOGY (2026-06-12, vision-on-mac migration): the box runs ONE llama-server.
+# The dedicated vision model (Qwen2.5-VL-7B) and the 35B (Qwen3.6-35B-A3B) moved to
+# the Mac (MLX) — see scripts/ops/keepalive-mac.sh. This removed the coder-box+vision
 # CO-RESIDENCY that exhausted the box's ~106GB Vulkan and crashed coder-box with an
-# uncaught vk alloc -> abort 0xc0000409 (beads 081/akf, root-caused 2026-06-12). With
-# coder-box alone there is no co-residency, so it is stable for agentic coding.
+# uncaught vk alloc -> abort 0xc0000409 (beads 081/akf, root-caused 2026-06-12).
+# 2026-08-16 update: the single box server is now itself multimodal (Qwen3.8 +
+# --mmproj on the SAME process). That is NOT the 081/akf co-residency pattern —
+# still one server, one model + its ~1.2 GB projector, no second large model. The
+# no-co-residency rule (never a second llama-server / second large model) stands.
 #
 # Run under launchd (KeepAlive) -> independent of any login shell. ssh -n: never read
 # stdin (SIGTTIN under launchd). All kills guarded (kill 0 == signal the whole group).
@@ -86,7 +89,12 @@ CODER_MODEL='D:\models\qwen3.8-27b\Qwen3.8-27B-Q6_K.gguf'
 # unambiguous when two entries share a basename+size (a re-quantized packager file);
 # empty = match by path (check-path fails closed on ambiguity).
 CODER_MANIFEST_ID="qwen3.8-27b-q6_k"
-CODER="$LL -m $CODER_MODEL --mmproj D:\\models\\qwen3.8-27b\\mmproj-Qwen3.8-27B-F16.gguf --reasoning off --spec-type draft-mtp --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 65536 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
+# mmproj is a served artifact too — prov_gate() check-paths it exactly like the
+# model (RDR-016: everything llama-server loads is gated). Empty MMPROJ_MODEL
+# drops the flag and the check together (text-only serving).
+MMPROJ_MODEL='D:\models\qwen3.8-27b\mmproj-Qwen3.8-27B-F16.gguf'
+MMPROJ_MANIFEST_ID="qwen3.8-27b-mmproj-f16"
+CODER="$LL -m $CODER_MODEL${MMPROJ_MODEL:+ --mmproj $MMPROJ_MODEL} --reasoning off --spec-type draft-mtp --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 65536 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 # Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
 OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
@@ -179,7 +187,7 @@ PROV="$REPO_DIR/scripts/ops/provenance/provenance.py"
 # present so the gate does not silently depend on the oldest interpreter on the box.
 PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 2>/dev/null || echo python3)
 PROVENANCE_ENFORCE=${QWEN_PROVENANCE_ENFORCE:-1}
-PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_REFUSED=0
+PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_REFUSED=0
 boxlen() {  # $1 = windows path -> byte length (empty on failure)
   local b64
   b64=$(printf "(Get-Item -LiteralPath '%s' -ErrorAction SilentlyContinue).Length" "$1" | iconv -t UTF-16LE | base64)
@@ -202,7 +210,7 @@ except Exception as e:
     print("ERR " + type(e).__name__); sys.exit(3)' "$REPO_DIR/models/MANIFEST.json" 2>/dev/null)
   case "$n" in
     0) log "provenance gate UNARMED — models/MANIFEST.json has no artifacts yet (bootstrap); launching unverified"
-       PROV_MODEL_ID="unarmed:empty-manifest"; PROV_RUNTIME_ID="unarmed:empty-manifest"; return 0 ;;
+       PROV_MODEL_ID="unarmed:empty-manifest"; PROV_RUNTIME_ID="unarmed:empty-manifest"; PROV_MMPROJ_ID="unarmed:empty-manifest"; return 0 ;;
     [1-9]*) ;;
     *) PROV_REASON="manifest unreadable or $PYTHON unavailable (${n:-no output}) — refusing, not bootstrapping"; return 1 ;;
   esac
@@ -210,6 +218,14 @@ except Exception as e:
   if [ -z "$len" ]; then PROV_REASON="could not stat $CODER_MODEL on box"; return 1; fi
   PROV_MODEL_ID=$("$PYTHON" "$PROV" check-path "$CODER_MODEL" --host box --size "$len" --print-id ${CODER_MANIFEST_ID:+--id "$CODER_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
     || { PROV_REASON="model not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  # The mmproj on the CODER line is loaded by llama-server the same as the model;
+  # RDR-016's invariant covers it identically (substantive-critic finding, PR #86).
+  if [ -n "${MMPROJ_MODEL:-}" ]; then
+    len=$(boxlen "$MMPROJ_MODEL")
+    if [ -z "$len" ]; then PROV_REASON="could not stat $MMPROJ_MODEL on box"; return 1; fi
+    PROV_MMPROJ_ID=$("$PYTHON" "$PROV" check-path "$MMPROJ_MODEL" --host box --size "$len" --print-id ${MMPROJ_MANIFEST_ID:+--id "$MMPROJ_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
+      || { PROV_REASON="mmproj not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  fi
   rt="llama.cpp@${EXPECTED_BUILD:-unknown}"
   len=$(boxlen "$LL")
   if [ -z "$len" ]; then PROV_REASON="could not stat $LL on box"; return 1; fi
@@ -252,7 +268,7 @@ write_state() {
   # fallback pid may be a husk, and guarding on it would reclaim the real server.
   if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}}"
+  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}}"
   ps="Set-Content -Path D:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
@@ -273,7 +289,7 @@ start_coder() {
   fi
   [ "$PROV_REFUSED" -eq 1 ] && log "provenance gate now passes (model $PROV_MODEL_ID, runtime $PROV_RUNTIME_ID)"
   PROV_REFUSED=0
-  log "starting coder-box (alone) [provenance: model=${PROV_MODEL_ID:-bypass} runtime=${PROV_RUNTIME_ID:-bypass}]"
+  log "starting coder-box (alone) [provenance: model=${PROV_MODEL_ID:-bypass}${PROV_MMPROJ_ID:+ mmproj=$PROV_MMPROJ_ID} runtime=${PROV_RUNTIME_ID:-bypass}]"
   LAUNCH_T0=$SECONDS
   CYC=0
   kpid "$CODER_PID"; killremote; sleep 8
