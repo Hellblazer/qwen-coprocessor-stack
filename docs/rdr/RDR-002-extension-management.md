@@ -1,24 +1,36 @@
 ---
 name: Extension management — exposing the inner Qwen's tool surface to the operator
 type: architecture
-status: deferred
+status: accepted
 priority: medium
 created: 2026-05-04
 accepted_date: 2026-05-04
 gate_passed_date: 2026-05-04
 deferred_date: 2026-06-13
+revived_date: 2026-08-22
 reviewed-by: self
 authors:
   - hal.hildebrand
 related:
   - RDR-001 §D6 (in-repo authoring decision — superseded by this RDR's pass-through framing)
   - RDR-001 §S4 (write-authority gating, applied uniformly across whatever extension set is loaded)
-  - RDR-004 (qwenctl extensions subcommand surface lives there)
+  - RDR-004 (originally hosted the qwenctl front-end; Layer 1 relocated to the MCP surface, amendment 2026-08-22)
 ---
 
 # RDR-002 — Extension management: exposing the inner Qwen's tool surface to the operator
 
 ## Status
+
+> **REVIVED (2026-08-22).** The deferral's own revival trigger — "Revive when
+> operator-driven extension install/upgrade is actually needed" — is met verbatim
+> by the Qwen3.8 toolkit epic (`qwen-coprocessor-stack-3su`): the repo ships a
+> first-party `extensions/qwen-toolkit/` extension whose revise loop needs
+> Layer 1 lifecycle. Status returns to **accepted**, amended 2026-08-22: Layer 1's
+> front-end relocates from the never-built `qwenctl` to the supervisor MCP tool
+> surface + the `/qwen-stack:extensions` skill; two table rows are corrected
+> against qwen-code 0.15.6; a narrow in-repo-extension exception is added; and an
+> autonomous-caller gate for remote-source installs is decided. See the
+> 2026-08-22 entry under "Amendments".
 
 > **DEFERRED INDEFINITELY (2026-06-13).** Layer 2 (the novel piece — per-spawn
 > extension override + the `pathToQwenExecutable` wrapper bridge) is **shipped
@@ -134,7 +146,15 @@ explicitly in a follow-up RDR — never implicitly bundled into a
 
 **This RDR is not:**
 
-- A catalogue of extensions to ship with this repo.
+- A catalogue of extensions to ship with this repo. *(One narrow
+  exception, added 2026-08-22: the repo ships exactly one first-party
+  extension, `extensions/qwen-toolkit/`, which encodes the
+  supervisor's own coding contract for the served box model. It is
+  NOT force-enabled — `FRAMEWORK_REQUIRED_EXTENSIONS` stays empty —
+  and is opt-in per spawn via `opts.extensions.only`. This amendment
+  is the tracked justification `extensions/README.md` requires. The
+  exception does not generalize: further in-repo extensions need
+  their own RDR-tracked justification.)*
 - A mandate that any specific extension be installed.
 - A reimplementation of Qwen Code's extension loader. The
   supervisor passes through to whatever upstream provides.
@@ -271,26 +291,36 @@ complete non-interactive `qwen extensions` subcommand surface:
 no need (or benefit) to manipulate `extension-enablement.json`
 directly.
 
-`qwenctl extensions` is therefore a thin wrapper. It validates
+> **AMENDED 2026-08-22.** The Layer-1 front-end below originally read `qwenctl
+> extensions …`. `qwenctl` was never built (its home, RDR-004, is deferred), so
+> the front-end relocates to the **supervisor MCP tool surface** (implemented in
+> beads `3su.13`/`3su.14`; single-tool-vs-per-verb shape decided there) plus the
+> **`/qwen-stack:extensions` skill** as the human entry point. The verb-level
+> mapping, the `remove` → `uninstall` translation, and the source-type set are
+> unchanged. Two rows are also corrected against the live qwen-code **0.15.6**
+> (marked ⚠ below), and remote-source installs are gated — see the 2026-08-22
+> amendment entry.
+
+Layer 1 is therefore a thin wrapper. It validates
 arguments, fixes one name translation (`remove` → `uninstall`),
 and shells out to the bundled Qwen CLI:
 
-| `qwenctl …`                                | Shells out to                              | Notes |
+| Operation (MCP tool / skill verb)          | Shells out to                              | Notes |
 |--------------------------------------------|--------------------------------------------|-------|
-| `qwenctl extensions list`                  | `qwen extensions list`                     | Pass-through; optional client-side reformat to a tighter table. Native output already includes `Enabled (User)`, `Enabled (Workspace)`, `Path`, `Source`, declared `Commands`/`Skills`/`Agents`/`MCP servers`. |
-| `qwenctl extensions inspect <name>`        | `qwen extensions list` filtered by `<name>` | The native `list` block per extension is exactly the "inspect" payload. No separate Qwen subcommand needed. Exit 1 with `extension '<name>' not found` if no extension matches. |
-| `qwenctl extensions install <source>`      | `qwen extensions install <source>`         | Source types upstream supports: git URL, local path, npm `@scope/name`, marketplace `url:name`. `qwenctl` initially restricts to git URL + local path; pass-through additional flags (`--ref`, `--auto-update`, `--pre-release`, `--registry`, `--consent`). |
-| `qwenctl extensions remove <name>`         | `qwen extensions uninstall <name>`         | Name translation only. `qwenctl` accepts both `remove` and `uninstall` as an alias for muscle-memory consistency. |
-| `qwenctl extensions enable <name> [--scope user\|workspace]`  | `qwen extensions enable <name> --scope <s>`  | `--scope` defaults: upstream defaults to all scopes; `qwenctl` passes through verbatim. |
-| `qwenctl extensions disable <name> [--scope user\|workspace]` | `qwen extensions disable <name> --scope <s>` | Upstream default scope is `User`; `qwenctl` passes through. |
-| `qwenctl extensions update [<name>] [--all]` | `qwen extensions update …`               | Bonus surface from upstream; useful and free. |
-| `qwenctl extensions link <path>`           | `qwen extensions link <path>`              | Live-symlink an extension from a local source path; useful for extension-development workflows. |
-| `qwenctl extensions settings list <name>`  | `qwen extensions settings list <name>`     | Per-extension settings table (sensitive values masked). |
-| `qwenctl extensions settings set <name> <setting> [--scope user\|workspace]` | `qwen extensions settings set …` | Per-extension setting mutation. |
+| `list`                                     | `qwen extensions list`                     | Pass-through; optional client-side reformat to a tighter table. Native output already includes `Enabled (User)`, `Enabled (Workspace)`, `Path`, `Source`, declared `Commands`/`Skills`/`Agents`/`MCP servers`. |
+| `inspect <name>`                           | `qwen extensions list` filtered by `<name>` | The native `list` block per extension is exactly the "inspect" payload. No separate Qwen subcommand needed. Exit 1 with `extension '<name>' not found` if no extension matches. |
+| `install <source>`                         | `qwen extensions install <source>`         | ⚠ Corrected 2026-08-22: upstream takes ONE positional `<source>` and auto-detects the type (`stat()` succeeds → local path; git URL → git; `@scope/name` → npm; `owner/repo` → git; else error). There is no `--source`/`--path` flag. Pass-through flags: `--ref`, `--auto-update`, `--pre-release`, `--registry`, `--consent`. **Remote sources (git/npm/marketplace) are refused unless `QWEN_ALLOW_REMOTE_INSTALL=1`** — see the 2026-08-22 amendment (autonomous-caller gate). Local paths are ungated. |
+| `remove <name>`                            | `qwen extensions uninstall <name>`         | Name translation only. Both `remove` and `uninstall` accepted as aliases for muscle-memory consistency. |
+| `enable <name> [--scope user\|workspace]`  | `qwen extensions enable <name> --scope <s>`  | ⚠ Corrected 2026-08-22: upstream *validates* `user\|workspace\|system\|systemdefaults` but its handlers only branch on `workspace` — `system`/`systemdefaults` SILENTLY act as `user`. Verbatim pass-through would export that lie; the wrapper accepts **`user`/`workspace` only** and rejects the other two. Upstream default with no scope: enable → ALL scopes. |
+| `disable <name> [--scope user\|workspace]` | `qwen extensions disable <name> --scope <s>` | Same scope restriction as `enable`. Upstream default with no scope: disable → `User` (asymmetric with enable; the wrapper surfaces its effective scope in the result rather than relying on the caller knowing the asymmetry). |
+| `update [<name>] [--all]`                  | `qwen extensions update …`                 | Bonus surface from upstream. Updating a remote-sourced extension fetches remote code → gated like remote `install`. **Detection mechanism**: `update` takes no source argument, so the wrapper classifies each target by reading its `.qwen-extension-install.json` (`installMetadata.type`/`source`) BEFORE shelling out — `git`/`npm`/marketplace types are refused without the gate; `local`/`link` proceed; missing or unrecognized metadata is refused under the gate (fail closed). `--all` is NEVER passed through raw: the wrapper enumerates installed extensions, applies the same per-extension classification, updates the permitted ones individually, and reports per-item results including the refused set. |
+| `link <path>`                              | `qwen extensions link <path>`              | Live-link an extension from a local source path (loader reads through to the source; edits are live). The extension-development workflow, and how `extensions/qwen-toolkit/` is installed. Local → ungated. |
+| `settings list <name>`                     | `qwen extensions settings list <name>`     | Per-extension settings table (sensitive values masked). |
+| `settings set <name> <setting> [--scope user\|workspace]` | `qwen extensions settings set …` | Per-extension setting mutation. |
 
 The interactive-REPL `/extensions` slash commands inside Qwen Code
 (`cli.js:477680`, tagged `supportedModes: ["interactive"]`) are a
-separate code path and are not consumed by `qwenctl` — those run
+separate code path and are not consumed by the Layer-1 wrapper — those run
 only inside the Qwen REPL session.
 
 Global enable/disable state lives in
@@ -404,7 +434,7 @@ The cache is invalidated by:
 - The admin-only MCP tool `qwen_reload_extensions` (gated on
   `QWEN_ADMIN_TOOLS=1`). Calling it triggers a fresh
   `qwen extensions list`.
-- `qwenctl extensions install` and `qwenctl extensions remove`
+- Layer-1 `install` and `remove` (originally `qwenctl extensions …`)
   optionally call `qwen_reload_extensions` before returning, so
   the operator's next spawn sees the change without an explicit
   reload step.
@@ -443,7 +473,7 @@ functions correctly.
 
 If a future feature requires a forced-on extension, it gets its
 own RDR (RDR-002.x or follow-up). The operator-facing surface
-gains a small "forced" badge in `qwenctl extensions list` for
+gains a small "forced" badge in the Layer-1 `list` output for
 any such extension, with a hint pointing back to the introducing
 RDR.
 
@@ -514,10 +544,10 @@ RDR.
   variant; deferred until a Windows operator exists. (The
   supervisor itself runs on macOS/Linux today.)
 - Extension identity is `config.name`, which can differ from the
-  directory name. `qwenctl extensions list` displays both to keep
+  directory name. Layer-1 `list` displays both to keep
   the gap visible.
 - Operators who manage `extension-enablement.json` by hand and
-  also use `qwenctl extensions enable/disable` see two paths.
+  also use Layer-1 `enable`/`disable` see two paths.
   Documented; both paths converge on the same file.
 
 ### Neutral
@@ -533,13 +563,13 @@ RDR.
   plugin authoring as a primary location) is superseded by this
   RDR's pass-through framing; RDR-001 §D6's *driver* (versioned
   authoring co-located with the supervisor) survives, but is now
-  the *operator's* concern, exercised through `qwenctl extensions
+  the *operator's* concern, exercised through Layer-1 (`extensions
   install <local-path>` for any extension the operator chooses to
   author in-repo.
 
 ## Open work
 
-- ~~**Decide `qwenctl extensions enable/disable` mechanism**~~ —
+- ~~**Decide Layer-1 `enable`/`disable` mechanism**~~ —
   **resolved 2026-05-04** by spike. Shell out to `qwen extensions
   enable/disable` (record `002-research-005`); same upstream call
   path that any hand-rolled JSON editor would invoke.
@@ -551,12 +581,12 @@ RDR.
   (Linux) run bash; one wrapper variant covers the fleet. If a
   Windows host ever joins the fleet, this item reopens with full
   context preserved in the git history.
-- **`qwenctl extensions install <source>` initial scope**: spike
-  confirmed upstream handles git URL, local path, npm `@scope/name`,
-  and marketplace `url:name`. Initial `qwenctl` release restricts
-  to git URL + local path only; lifts restrictions in a later
-  release once the operator UX for npm/marketplace sources is
-  designed.
+- ~~**Layer-1 `install <source>` initial scope**~~ — resolved by the
+  2026-08-22 amendment: all four upstream source types are accepted, with
+  remote sources (git URL, npm `@scope/name`, `owner/repo`, marketplace
+  `url:name`) behind the `QWEN_ALLOW_REMOTE_INSTALL=1` gate and local paths
+  ungated. The earlier "restrict to git URL + local path" plan is superseded
+  by that gate.
 
 ## Related decisions and prior art
 
@@ -565,9 +595,12 @@ RDR.
 - RDR-001 §Q1 — `ask_user_question` exclusion. Applies uniformly.
   An extension cannot re-add `ask_user_question` to the inner
   Qwen's surface; the SDK's `excludeTools` wins.
-- RDR-004 — `qwenctl extensions` subcommand. The TypeScript CLI
-  in RDR-004 is the operator's surface; the supervisor's MCP
-  tools are Claude's surface. Same data, two views.
+- RDR-004 — originally the `qwenctl extensions` subcommand home (CLI never
+  built; RDR-004 remains deferred). Since the 2026-08-22 amendment the
+  supervisor's MCP tools + the `/qwen-stack:extensions` skill are the ONLY
+  Layer-1 surface, for operator and Claude alike. If RDR-004 is ever revived,
+  its CLI would be a third view over the same upstream state, not a
+  prerequisite for anything here.
 - Qwen Code's extension loader: `cli.js` paths cited in the
   Research findings section.
 
@@ -911,3 +944,106 @@ What the harness does **not** measure: output quality (cross-model agreement, ma
 - `qwen_dispatch` operator-side path inside nexus (upstream PR, gated on bench results).
 - Per-operator routing (Claude-vs-Qwen pinning by verb) — same gate.
 - Full Ajv-style schema validation in the supervisor — defer until callers need a strict-validation mode beyond the parse-and-retry semantic.
+
+### 2026-08-22 — Revival: Layer 1 relocates to the MCP surface; 0.15.6 corrections; in-repo extension exception; autonomous-caller install gate
+
+**Trigger.** The 2026-06-13 deferral's revival condition — "revive when
+operator-driven extension install/upgrade is actually needed" — is met by the
+Qwen3.8 toolkit epic (`qwen-coprocessor-stack-3su`): the repo ships
+`extensions/qwen-toolkit/` (W1) and its revise loop needs Layer 1 lifecycle
+(W2). Status returns to `accepted`.
+
+**1. Layer-1 front-end relocation.** The original Layer 1 specified
+`qwenctl extensions …`. `qwenctl` was never built and its home RDR-004 remains
+deferred. The front-end relocates to the supervisor **MCP tool surface**
+(implementation beads `3su.13`/`3su.14`; the single-multiplexed-tool vs
+one-tool-per-verb shape is decided there, weighing per-tool `annotations`
+granularity) plus the **`/qwen-stack:extensions` skill** as the human entry
+point. The verb mapping table, `remove` → `uninstall` translation, and
+source-type set carry over unchanged.
+
+**2. Corrections against qwen-code 0.15.6 (probed live, not doc-read).**
+(a) `install` takes ONE positional `<source>` with auto-detection
+(`stat()` succeeds → local; git URL → git; `@scope/name` → npm; `owner/repo` →
+git); there is no `--source`/`--path` flag. (b) The original "`--scope` passes
+through verbatim" is wrong: upstream validates
+`user|workspace|system|systemdefaults` but its handlers branch only on
+`workspace`, so `system`/`systemdefaults` silently act as `user` (exit 0,
+success message, user-scope write). The wrapper accepts `user`/`workspace`
+only and REJECTS the other two rather than exporting the silent downgrade.
+Upstream defaults are asymmetric (enable with no scope → all scopes; disable →
+`User`); the wrapper reports its effective scope in every result.
+Additionally: `extensions new` is broken in 0.15.6 (tarball ships no
+`examples/`), so in-repo scaffolding is by hand; `link` is the
+extension-development install path (loader reads through to the source dir).
+
+**3. In-repo extension exception.** §Scope's "not a catalogue of extensions to
+ship with this repo" gains one narrow exception (recorded inline in §Scope):
+`extensions/qwen-toolkit/` — first-party, encodes the supervisor's own coding
+contract for the served box model, never force-enabled
+(`FRAMEWORK_REQUIRED_EXTENSIONS` stays empty per
+`mcp-bridges/qwen-agent-server/src/extensions.ts:511`), opt-in per spawn via
+`opts.extensions.only`. This amendment is the tracked justification
+`extensions/README.md` demands; that README is rewritten to match. The
+exception does not generalize.
+
+**4. Autonomous-caller gate for extension mutation (decided).** The 2026-05-09
+amendment removed `QWEN_ADMIN_TOOLS` reasoning "single-operator stdio
+supervisor; no multi-tenant untrusted client". That reasoning holds for
+`qwen_reload_extensions` (idempotent cache refresh) but does NOT transfer to
+installing from a remote source. An installed extension's manifest can declare
+stdio `mcpServers` whose `command` executes on the supervisor host with the
+operator's authority whenever a session activates the extension — so a remote
+install lands arbitrary code on the host regardless of timing details. On the
+*supervisor-forwarded* `opts.mcpServers` path, RDR-013's Pin-verified finding
+established that such servers launch at SDK session init BEFORE any permission
+check; the *extension-loader* path (manifest-declared servers, loaded by
+qwen-code itself) is analogous but has NOT been independently spike-verified —
+this amendment conservatively assumes it behaves the same (bead
+`qwen-coprocessor-stack-0wu` tracks the verification; the gate does not depend
+on the timing nuance either way). The threat is not an untrusted client — it
+is a trusted client running an autonomous model over attacker-influenced task
+text.
+
+**Decision (user, 2026-08-22): local ungated, remote env-gated.**
+- Local-path `install`, `link`, `uninstall`, `enable`, `disable`,
+  `settings` are model-callable and ungated: local sources are content
+  already present on the host, and the toolkit revise loop must stay
+  autonomous.
+- `install` (and `update`) of a REMOTE source — git URL, npm
+  `@scope/name`, `owner/repo`, marketplace `url:name` — is REFUSED unless
+  `QWEN_ALLOW_REMOTE_INSTALL=1` is set in the supervisor's environment.
+  Enforced supervisor-side (not client-side), default off, refusal returns the
+  standard `{error:{code:"remote_install_gated", …}}` envelope naming the
+  variable. For `update`, which carries no source argument, classification is
+  metadata-driven and fail-closed, and `--all` is decomposed per extension —
+  mechanism specified in the Layer-1 table's `update` row (resolves bead
+  `qwen-coprocessor-stack-m4s`).
+- Acknowledged residual risks of the ungated local bucket:
+  (a) *clone-then-link*: a caller can fetch remote code with ordinary
+  (permission-mediated) tools and then `link` the local checkout. Accepted —
+  the gate targets the UNMEDIATED fetch inside the supervisor's exec; a clone
+  performed through the client's own tool surface already passed that client's
+  permission regime, and blocking it here would require the supervisor to
+  provenance-check arbitrary local paths, which this RDR does not attempt.
+  (b) *`settings set`*: a local state mutation, not code execution, so it
+  stays ungated — but settings values may be secrets (they back extension
+  `.env`/keychain entries), so the wrapper never echoes values in results and
+  `settings list` keeps upstream's masking.
+- Rejected: (a) fully ungated — leaves the RCE path open to task-text
+  injection; (c) one flag over ALL mutation — gates the routine local loop
+  too, so the flag would live permanently on and decay to decoration;
+  (d) skill-only, no MCP tool — skills are still model-executed, so the
+  "human-typed" property is weaker than it appears, and it forfeits W2's
+  automation value.
+- Spec hygiene (from the W3 audit, T2
+  `w3-mcp-modernization-audit-2026-08-22`): W2's mutating tools SHOULD carry
+  `destructiveHint` annotations when the registration surface supports them,
+  but hints are spec-untrusted and Claude Code does not consume
+  `destructiveHint` today — annotations document the gate, they cannot BE the
+  gate. Elicitation (`server.elicitInput`, SDK 1.29.0) MAY later be adopted as
+  an interactive confirmation leg for remote installs, but must fail closed
+  for headless callers that declare no elicitation capability; the env gate
+  remains the enforcement.
+
+This decision is a hard acceptance criterion on beads `3su.13`/`3su.14`.
