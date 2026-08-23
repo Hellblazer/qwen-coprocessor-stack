@@ -30,7 +30,10 @@ unrecognized metadata; it never shells a raw `--all` — omitting `names`
 enumerates and updates every installed extension individually, reporting
 per-item `updated`/`refused`/`failed` results. Every successful mutation
 reloads the supervisor's installed-extensions cache itself; no manual
-`qwen_reload_extensions` step is needed afterward.
+`qwen_reload_extensions` step is needed afterward. (Naming note: RDR-002
+calls the listing-detail verb `inspect`; the skill has always spelled it
+`info` — same behavior, no functional gap, just a name that never matched
+across the two documents.)
 
 ### Added
 
@@ -40,6 +43,31 @@ reloads the supervisor's installed-extensions cache itself; no manual
   `disable`/`update`, gated on the Phase 0 remote-install decision and the
   `--scope` validation described above. Registered whenever the supervisor's
   installed-extensions cache is wired in, same as `qwen_reload_extensions`.
+
+### Fixed
+
+- **`qwen_extension_install` no longer hangs the supervisor.** The real
+  `qwen extensions install <source>` CLI prompts interactively ("Do you want
+  to continue? [Y/n]:") unless `--consent` is passed; the exec layer never
+  wrote to the child's stdin, so a real call hung forever. Found via a live
+  exercise against the real qwen 0.15.6 CLI, not caught by any fixture-script
+  unit test — `qwen extensions link <path>` has the same prompt but, unlike
+  install, accepts no non-interactive flag at all upstream; `link` isn't
+  wired to any MCP tool yet, so this is dormant, not fixed. `update`'s own
+  non-interactivity was separately verified live (not assumed) — no flag
+  needed there.
+- **`qwen_extension_remove`/`enable`/`disable` now validate `name` before
+  exec**, matching the defense `update` already had: refused with
+  `unknown_extension` if the name isn't in the installed-extensions cache,
+  and with `invalid_name` if it's flag-shaped (a leading `-`, which could
+  otherwise be misread by the real CLI's argv parser as an option) —
+  independent of cache membership, so a hypothetical dash-prefixed installed
+  name still gets refused. The installed-set lookup is case-insensitive,
+  matching RDR-002 §Q3's documented upstream matching rule, so the tool
+  descriptions' "(case-insensitive)" claim is now implemented, not just
+  asserted. `MARKETPLACE_RE` (`classifySource`) hardened the same way,
+  closing the one source-shape regex that hadn't already excluded a leading
+  `-`.
 
 ### Changed
 

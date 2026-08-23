@@ -656,12 +656,21 @@ export const QWEN_ALLOW_REMOTE_INSTALL_ENV = "QWEN_ALLOW_REMOTE_INSTALL";
 export const EXTENSION_LIFECYCLE_ERROR_CODES = [
   /** Source classification failed, or a caller-claimed local path doesn't exist. */
   "invalid_source",
-  /** A required name argument (extension name) was empty/whitespace. */
+  /** A required name argument was empty/whitespace, or flag-shaped (leading '-') —
+   *  the latter checked independently of cache membership (bead 3su.16
+   *  code-review remediation: a malformed argv element must never reach
+   *  the real CLI's yargs parser, even for a hypothetical installed name
+   *  that happens to start with '-'). */
   "invalid_name",
   /** --scope was anything other than "user" | "workspace". */
   "invalid_scope",
   /** Remote source refused because QWEN_ALLOW_REMOTE_INSTALL!=1. */
   "remote_install_gated",
+  /** name is well-formed but not present in the caller-supplied installed
+   *  set (bead 3su.16 code-review remediation IMPORTANT #1) — mirrors
+   *  updateExtensions' own "not installed" per-item refusal so
+   *  uninstall/enable/disable get the same defense update already had. */
+  "unknown_extension",
   /** The underlying `qwen extensions <subcommand>` exec failed (nonzero exit / spawn error). */
   "exec_failed",
 ] as const;
@@ -687,7 +696,15 @@ export class ExtensionLifecycleError extends Error {
   }
 }
 
-function requireNonEmptyName(name: string, context: string): string {
+/**
+ * Validate a caller-supplied extension name before it can reach argv:
+ * non-empty, and not flag-shaped (a leading '-' would let the real
+ * `qwen` CLI's yargs parser misread the positional as an option — bead
+ * 3su.16 code-review remediation IMPORTANT #1). This check is
+ * independent of and runs BEFORE any installed-set lookup, so it fires
+ * even for a hypothetical installed name that starts with '-'.
+ */
+function requireValidName(name: string, context: string): string {
   const trimmed = name.trim();
   if (trimmed === "") {
     throw new ExtensionLifecycleError(
@@ -695,7 +712,45 @@ function requireNonEmptyName(name: string, context: string): string {
       `extension name must not be empty (${context})`,
     );
   }
+  if (trimmed.startsWith("-")) {
+    throw new ExtensionLifecycleError(
+      "invalid_name",
+      `extension name '${trimmed}' looks like a CLI flag (leading '-') and is refused (${context})`,
+    );
+  }
   return trimmed;
+}
+
+/**
+ * Refuse a name that isn't in the caller-supplied installed set (bead
+ * 3su.16 code-review remediation IMPORTANT #1) — matches
+ * `updateExtensions`' own "not installed" per-item refusal, applied
+ * here to the single-target uninstall/enable/disable operations that
+ * previously had no such check despite the cache being available at
+ * every real call site (server.ts only registers these handlers when a
+ * cache is wired in).
+ *
+ * Matches case-insensitively and returns the canonical (lowercased)
+ * name to build argv from: `installedNames` (from
+ * `InstalledExtensionsCache.get()`) always holds lowercased names
+ * (`parseInstalledExtensionsRich` lowercases on parse), and RDR-002 §Q3
+ * documents upstream's own extension-identity matching as
+ * `config.name.toLowerCase() === requestedName.toLowerCase()`. Without
+ * this normalization, a caller passing the extension's declared-case
+ * name (e.g. "Serena") would be wrongly refused as unknown even though
+ * it's installed — this is why the tool descriptions can truthfully
+ * say "(case-insensitive)" (bead 3su.16 code-review SUGGESTION):
+ * normalization is implemented, not just claimed.
+ */
+function requireInstalled(name: string, installedNames: ReadonlySet<string>): string {
+  const lower = name.toLowerCase();
+  if (!installedNames.has(lower)) {
+    throw new ExtensionLifecycleError(
+      "unknown_extension",
+      `extension '${name}' is not installed`,
+    );
+  }
+  return lower;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -725,7 +780,12 @@ export interface ClassifiedSource {
 const GIT_URL_RE = /^(git@|git:\/\/|https?:\/\/|ssh:\/\/)/i;
 const NPM_SCOPE_RE = /^@[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/;
 const OWNER_REPO_RE = /^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/;
-const MARKETPLACE_RE = /^[^\s:]+:[^\s:/]+$/;
+// First char excludes '-' (bead 3su.16 code-review remediation, lower-
+// severity flag-injection gap): unlike OWNER_REPO_RE/NPM_SCOPE_RE, this
+// was the one source regex that let a flag-shaped string like "-x:evil"
+// through as a classified value. Gated behind QWEN_ALLOW_REMOTE_INSTALL=1
+// either way, but there is no reason to accept it.
+const MARKETPLACE_RE = /^[^\s:-][^\s:]*:[^\s:/]+$/;
 
 function looksLikeExplicitLocalPath(s: string): boolean {
   return (
@@ -960,8 +1020,27 @@ export function buildDisableArgv(name: string, scope: ExtensionScope): string[] 
   return ["extensions", "disable", name, "--scope", scope];
 }
 
-/** Always a single-name update — see `updateExtensions` for why --all is
- *  never passed through raw. */
+/**
+ * Always a single-name update — see `updateExtensions` for why --all is
+ * never passed through raw.
+ *
+ * Non-interactivity VERIFIED LIVE against the real qwen 0.15.6 CLI
+ * (bead 3su.16 code-review remediation IMPORTANT #2 — install's and
+ * link's own interactive prompts were discovered the same way, so this
+ * was checked rather than assumed): `qwen extensions update --help`
+ * carries no consent/confirm/interactive-prompt flag of any kind.
+ * `qwen extensions update qwen-toolkit` (a real link-installed
+ * extension on this host) returned instantly — "Extension
+ * \"qwen-toolkit\" is already up to date." — exit 0, no prompt.
+ * `qwen extensions update nx` (a real installed extension with no
+ * `.qwen-extension-install.json`) also returned instantly with "Unable
+ * to install extension \"nx\" due to missing install metadata" — a
+ * clean non-interactive failure message, not a hang (and one our own
+ * `classifyInstallMetadataType` fail-closed check already intercepts
+ * before exec in practice, so this exec is never actually reached for
+ * a metadata-less extension). No --consent-equivalent flag exists or
+ * is needed for `update`.
+ */
 export function buildUpdateArgv(name: string): string[] {
   return ["extensions", "update", name];
 }
@@ -1021,13 +1100,26 @@ export interface UninstallExtensionResult {
   stdout: string;
 }
 
+/**
+ * `installedNames` is REQUIRED (not optional) — mirrors
+ * `updateExtensions`' own required `installed` positional exactly (bead
+ * 3su.16 code-review remediation IMPORTANT #1). `name` must both be
+ * well-formed (`requireValidName`) and already present in the set
+ * (`requireInstalled`); both checks run before any exec is attempted.
+ * Every real call site (server.ts) already has the cache in scope —
+ * these handlers only exist when a cache was wired into
+ * createToolHandlers — so this is never a burden in practice, only in
+ * tests, which is exactly where a missing check would otherwise hide.
+ */
 export async function uninstallExtension(
   qwenRealBin: string,
   name: string,
+  installedNames: ReadonlySet<string>,
   opts: { execFn?: ExecExtensionsMutateFn } = {},
 ): Promise<UninstallExtensionResult> {
-  const trimmedName = requireNonEmptyName(name, "uninstall");
-  const argv = buildUninstallArgv(trimmedName);
+  const trimmedName = requireValidName(name, "uninstall");
+  const canonicalName = requireInstalled(trimmedName, installedNames);
+  const argv = buildUninstallArgv(canonicalName);
   const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
   return { argv, stdout };
 }
@@ -1043,26 +1135,34 @@ export interface EnableDisableResult {
   scope: ExtensionScope;
 }
 
+/** See `uninstallExtension`'s doc comment — `installedNames` is required
+ *  for the same reason. */
 export async function enableExtension(
   qwenRealBin: string,
   name: string,
+  installedNames: ReadonlySet<string>,
   opts: EnableDisableOpts = {},
 ): Promise<EnableDisableResult> {
-  const trimmedName = requireNonEmptyName(name, "enable");
+  const trimmedName = requireValidName(name, "enable");
+  const canonicalName = requireInstalled(trimmedName, installedNames);
   const scope = validateScope(opts.scope) ?? DEFAULT_ENABLE_SCOPE;
-  const argv = buildEnableArgv(trimmedName, scope);
+  const argv = buildEnableArgv(canonicalName, scope);
   const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
   return { argv, stdout, scope };
 }
 
+/** See `uninstallExtension`'s doc comment — `installedNames` is required
+ *  for the same reason. */
 export async function disableExtension(
   qwenRealBin: string,
   name: string,
+  installedNames: ReadonlySet<string>,
   opts: EnableDisableOpts = {},
 ): Promise<EnableDisableResult> {
-  const trimmedName = requireNonEmptyName(name, "disable");
+  const trimmedName = requireValidName(name, "disable");
+  const canonicalName = requireInstalled(trimmedName, installedNames);
   const scope = validateScope(opts.scope) ?? DEFAULT_DISABLE_SCOPE;
-  const argv = buildDisableArgv(trimmedName, scope);
+  const argv = buildDisableArgv(canonicalName, scope);
   const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
   return { argv, stdout, scope };
 }

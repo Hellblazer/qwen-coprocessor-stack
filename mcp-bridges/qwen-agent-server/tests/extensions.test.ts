@@ -750,6 +750,15 @@ describe("classifySource", () => {
     });
   });
 
+  it("does NOT classify a leading-dash pre-colon segment as marketplace (bead 3su.16 review: flag-injection hardening)", () => {
+    // "-x:evil" superficially matches the marketplace url:name shape (one
+    // colon, no space, no slash) but a leading '-' makes the whole string
+    // flag-shaped from the real CLI's argv-parser point of view. Reject
+    // it the same way OWNER_REPO_RE/NPM_SCOPE_RE already require an
+    // alnum/@ first character — MARKETPLACE_RE was the one gap.
+    expect(() => classifySource("-x:evil", dir)).toThrowError(/Install source not found/);
+  });
+
   // ── otherwise: "Install source not found" ──────────────────────
 
   it("rejects an unrecognized nonexistent bare source before exec", () => {
@@ -983,11 +992,36 @@ describe("installExtension", () => {
 
 // ─────────────────────────────────────────────────────────────────
 // uninstallExtension — the remove→uninstall translation, no gate
+//
+// installedNames (bead 3su.16 code-review remediation, IMPORTANT #1):
+// required positional, mirroring updateExtensions' own required
+// `installed` argument — a name that isn't in the installed set is
+// refused BEFORE exec, same defense update already had. A flag-shaped
+// name (leading '-') is refused independently, before the cache check,
+// so a caller can't dodge yargs flag-misparsing by first getting a
+// dash-prefixed name added to the installed set.
+
+const KNOWN_INSTALLED = new Set(["serena"]);
 
 describe("uninstallExtension", () => {
   it("execs 'extensions uninstall <name>' regardless of caller-facing 'remove' verb", async () => {
     let capturedArgv: string[] | null = null;
-    const result = await uninstallExtension("/usr/bin/qwen", "serena", {
+    const result = await uninstallExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, {
+      execFn: async (_bin, argv) => {
+        capturedArgv = argv;
+        return "removed\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "uninstall", "serena"]);
+    expect(result.stdout).toBe("removed\n");
+  });
+
+  it("matches the installed set case-insensitively and canonicalizes argv to the lowercased name (bead 3su.16 review SUGGESTION)", async () => {
+    // installedNames always holds lowercased names (InstalledExtensionsCache
+    // / parseInstalledExtensionsRich convention); a caller passing the
+    // extension's declared-case name must still resolve.
+    let capturedArgv: string[] | null = null;
+    const result = await uninstallExtension("/usr/bin/qwen", "Serena", KNOWN_INSTALLED, {
       execFn: async (_bin, argv) => {
         capturedArgv = argv;
         return "removed\n";
@@ -999,7 +1033,7 @@ describe("uninstallExtension", () => {
 
   it("mutation failure throws typed error with stderr", async () => {
     await expect(
-      uninstallExtension("/usr/bin/qwen", "serena", {
+      uninstallExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, {
         execFn: async () => {
           const err = new Error("boom") as Error & { stderr?: string };
           err.stderr = "not installed";
@@ -1007,6 +1041,36 @@ describe("uninstallExtension", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "exec_failed", stderr: "not installed" });
+  });
+
+  it("unknown name: refused with code unknown_extension BEFORE exec, no exec call made", async () => {
+    let execCalled = false;
+    await expect(
+      uninstallExtension("/usr/bin/qwen", "nonexistent", KNOWN_INSTALLED, {
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "unknown_extension" });
+    expect(execCalled).toBe(false);
+  });
+
+  it("flag-shaped name (leading '-'): refused with code invalid_name BEFORE exec, even if it's in the installed set", async () => {
+    // Independent defense layer: the dash check must not be subsumed by
+    // the cache-membership check, so it fires even for a hypothetical
+    // installed name that starts with '-'.
+    const installedWithDashName = new Set(["-x"]);
+    let execCalled = false;
+    await expect(
+      uninstallExtension("/usr/bin/qwen", "-x", installedWithDashName, {
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_name" });
+    expect(execCalled).toBe(false);
   });
 });
 
@@ -1024,7 +1088,7 @@ describe("enableExtension / disableExtension", () => {
 
   it("enable with no scope opt uses the explicit default, not upstream's all-scopes default", async () => {
     let capturedArgv: string[] | null = null;
-    const result = await enableExtension("/usr/bin/qwen", "serena", {
+    const result = await enableExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, {
       execFn: async (_bin, argv) => {
         capturedArgv = argv;
         return "enabled\n";
@@ -1036,7 +1100,7 @@ describe("enableExtension / disableExtension", () => {
 
   it("enable with explicit scope='workspace' passes it through", async () => {
     let capturedArgv: string[] | null = null;
-    await enableExtension("/usr/bin/qwen", "serena", {
+    await enableExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, {
       scope: "workspace",
       execFn: async (_bin, argv) => {
         capturedArgv = argv;
@@ -1049,7 +1113,7 @@ describe("enableExtension / disableExtension", () => {
   it("enable with scope='system' rejects BEFORE exec, no exec call made", async () => {
     let execCalled = false;
     await expect(
-      enableExtension("/usr/bin/qwen", "serena", {
+      enableExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, {
         scope: "system",
         execFn: async () => {
           execCalled = true;
@@ -1060,9 +1124,35 @@ describe("enableExtension / disableExtension", () => {
     expect(execCalled).toBe(false);
   });
 
+  it("enable with unknown name: refused with code unknown_extension BEFORE exec", async () => {
+    let execCalled = false;
+    await expect(
+      enableExtension("/usr/bin/qwen", "nonexistent", KNOWN_INSTALLED, {
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "unknown_extension" });
+    expect(execCalled).toBe(false);
+  });
+
+  it("enable with flag-shaped name: refused with code invalid_name BEFORE exec", async () => {
+    let execCalled = false;
+    await expect(
+      enableExtension("/usr/bin/qwen", "--force", new Set(["--force"]), {
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_name" });
+    expect(execCalled).toBe(false);
+  });
+
   it("disable with no scope opt uses the explicit default", async () => {
     let capturedArgv: string[] | null = null;
-    const result = await disableExtension("/usr/bin/qwen", "serena", {
+    const result = await disableExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, {
       execFn: async (_bin, argv) => {
         capturedArgv = argv;
         return "disabled\n";
@@ -1074,13 +1164,39 @@ describe("enableExtension / disableExtension", () => {
 
   it("disable with scope='systemdefaults' rejects BEFORE exec", async () => {
     await expect(
-      disableExtension("/usr/bin/qwen", "serena", { scope: "systemdefaults" }),
+      disableExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, { scope: "systemdefaults" }),
     ).rejects.toMatchObject({ code: "invalid_scope" });
+  });
+
+  it("disable with unknown name: refused with code unknown_extension BEFORE exec", async () => {
+    let execCalled = false;
+    await expect(
+      disableExtension("/usr/bin/qwen", "nonexistent", KNOWN_INSTALLED, {
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "unknown_extension" });
+    expect(execCalled).toBe(false);
+  });
+
+  it("disable with flag-shaped name: refused with code invalid_name BEFORE exec, independent of cache membership", async () => {
+    let execCalled = false;
+    await expect(
+      disableExtension("/usr/bin/qwen", "-y", new Set(["-y"]), {
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_name" });
+    expect(execCalled).toBe(false);
   });
 
   it("mutation failure on enable throws typed error with stderr", async () => {
     await expect(
-      enableExtension("/usr/bin/qwen", "serena", {
+      enableExtension("/usr/bin/qwen", "serena", KNOWN_INSTALLED, {
         execFn: async () => {
           const err = new Error("boom") as Error & { stderr?: string };
           err.stderr = "extension not found";

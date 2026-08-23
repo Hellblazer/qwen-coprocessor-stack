@@ -37,6 +37,8 @@ Parse the first positional arg as the subcommand. If absent or `list`, run **lis
 
 ### info <name>
 
+(RDR-002 calls this verb `inspect`; this skill has always spelled it `info` — same behavior, different name.)
+
 1. Call `qwen_extensions`. Filter for the given name (case-insensitive). If not found, list available names and stop.
 2. Render the full record as a compact key-value block. Show all populated fields in this order: `version`, `source`, `path`, `enabled (User)`, `enabled (Workspace)`, `commands`, `skills`, `agents`, `mcp_servers`, `context_files`.
 3. List-typed fields (commands, skills, agents, mcp_servers, context_files) render as inline arrays for ≤4 items, indented multi-line for more.
