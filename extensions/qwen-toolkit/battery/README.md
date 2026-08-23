@@ -25,6 +25,46 @@ which `opts.extensions.only` to dispatch with (see driver.ts's header
 comment) -- not part of `task.json` itself, since the same task is
 dispatched twice, once per arm, to get a toolkit/control pair.
 
+Also, per this same addendum: `max_output_tokens` (number, optional) --
+forwarded to `SpawnOpts.max_output_tokens`, the inner Qwen Code process's
+per-turn generation cap. `run_battery.py` (bead 3su.9) sets this
+generously (16384) per this repo's own eval-methodology finding: too low
+a cap truncates a tool call mid-write, which reads as a stall rather than
+a failure.
+
+## Runner (bead 3su.9 addendum)
+
+`battery/run_battery.py` is the stdlib-Python grader built against the
+driver's stdin/stdout contract above. Pure stdlib -- no pip, no venv.
+
+    python3 -m unittest discover -s extensions/qwen-toolkit/battery/tests -q
+
+Two mutually exclusive modes:
+
+- **`--gold-check`**: for each task, materializes the pristine `files/`
+  tree (must FAIL `verify`) and a second tree with `solution/` overlaid
+  on top (must PASS `verify` at `expected_exit_code`). No dispatch, no
+  backend/box contact -- safe to run any time, including in CI. Exits 1
+  if any fixture is broken.
+- **`--dispatch`**: the full A/B run. For each task, the gold-check runs
+  FIRST -- a task whose fixture is broken gets ZERO dispatch calls and is
+  listed in `broken_fixtures`, not silently measured. For each
+  surviving task, for each arm (`--arms toolkit,control`), for each
+  repetition (`--repeats N`): a fresh working tree, one `driver.ts`
+  dispatch, then the task's own `verify` command run by the grader
+  against the resulting tree -- pass/fail comes ONLY from `verify`'s
+  exit code, never from the driver's own `ok` field. One dispatch at a
+  time, always (bead `qwen-coprocessor-stack-7i1`: the box's shared 64K
+  unified-KV pool cannot take concurrent big requests).
+
+Output is one JSON document (stdout, and `--out FILE` if given):
+`gold_check` (per-task), `broken_fixtures`, `rows` (per task/arm/
+repetition), `summary` (per-arm `n`/`passed`/`pass_rate`/
+`median_tool_calls`/`median_elapsed_ms`). The control arm is the only
+valid baseline for comparison (see Baseline vs. calibration above) --
+the summary makes no reference to, and applies no threshold from, any
+prior calibration run.
+
 ## Relationship to `scripts/bench/cases.json`
 
 `scripts/bench/cases.json` is this repo's existing house style for

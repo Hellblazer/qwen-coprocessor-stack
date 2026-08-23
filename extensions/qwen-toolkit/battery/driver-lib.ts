@@ -40,6 +40,14 @@ export interface OracleSpec {
  * session then runs wherever SpawnOpts.cwd's own default puts it
  * (process.cwd()), which is almost never what a real battery run wants.
  * The runner should always set it.
+ *
+ * `max_output_tokens`, when present, is forwarded to
+ * `SpawnOpts.max_output_tokens` (the inner Qwen Code process's per-turn
+ * generation cap). This repo's own eval-methodology finding (CLAUDE.md
+ * "Eval methodology" §4, also RDR-006): too low a cap truncates a tool
+ * call mid-write, which reads as a stall rather than a failure -- the
+ * runner (bead 3su.9) sets this generously (16384) rather than leaving
+ * it at the qwen-code default.
  */
 export interface DriverStdinEnvelope {
   name: string;
@@ -52,6 +60,7 @@ export interface DriverStdinEnvelope {
   notes?: string;
   oracle?: OracleSpec;
   cwd?: string;
+  max_output_tokens?: number;
 }
 
 export type Arm = "toolkit" | "control";
@@ -144,6 +153,14 @@ export function parseTaskSpec(raw: string): DriverStdinEnvelope {
   if (spec["notes"] !== undefined && typeof spec["notes"] !== "string") {
     throw new Error("task spec field 'notes' must be a string when present");
   }
+  if (
+    spec["max_output_tokens"] !== undefined &&
+    (typeof spec["max_output_tokens"] !== "number" ||
+      !Number.isFinite(spec["max_output_tokens"]) ||
+      (spec["max_output_tokens"] as number) <= 0)
+  ) {
+    throw new Error("task spec field 'max_output_tokens' must be a positive number when present");
+  }
 
   const envelope: DriverStdinEnvelope = { name, prompt, max_tool_calls, timeout_ms };
   if (spec["family"] !== undefined) envelope.family = spec["family"] as DriverStdinEnvelope["family"];
@@ -152,6 +169,7 @@ export function parseTaskSpec(raw: string): DriverStdinEnvelope {
   if (spec["notes"] !== undefined) envelope.notes = spec["notes"] as string;
   if (spec["oracle"] !== undefined) envelope.oracle = spec["oracle"] as DriverStdinEnvelope["oracle"];
   if (spec["cwd"] !== undefined) envelope.cwd = spec["cwd"] as string;
+  if (spec["max_output_tokens"] !== undefined) envelope.max_output_tokens = spec["max_output_tokens"] as number;
   return envelope;
 }
 
@@ -180,6 +198,7 @@ export interface DispatchSpawnOpts {
   extensions: { only: string[] };
   max_tool_calls: number;
   cwd?: string;
+  max_output_tokens?: number;
 }
 
 /**
@@ -188,9 +207,9 @@ export interface DispatchSpawnOpts {
  * docs-explain) needs the inner session to actually edit files; a
  * read-only session cannot fix a bug or add a test.
  *
- * `cwd` is omitted entirely (not set to `undefined`) when the spec
- * doesn't carry one, matching the supervisor's own
- * `exactOptionalPropertyTypes: true` discipline.
+ * `cwd` and `max_output_tokens` are omitted entirely (not set to
+ * `undefined`) when the spec doesn't carry them, matching the
+ * supervisor's own `exactOptionalPropertyTypes: true` discipline.
  */
 export function buildSpawnOpts(spec: DriverStdinEnvelope, arm: Arm): DispatchSpawnOpts {
   const opts: DispatchSpawnOpts = {
@@ -199,6 +218,7 @@ export function buildSpawnOpts(spec: DriverStdinEnvelope, arm: Arm): DispatchSpa
     max_tool_calls: spec.max_tool_calls,
   };
   if (spec.cwd !== undefined) opts.cwd = spec.cwd;
+  if (spec.max_output_tokens !== undefined) opts.max_output_tokens = spec.max_output_tokens;
   return opts;
 }
 

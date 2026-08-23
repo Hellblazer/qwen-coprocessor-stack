@@ -131,6 +131,18 @@ describe("parseTaskSpec", () => {
     const spec = { ...JSON.parse(VALID_SPEC), cwd: 42 };
     expect(() => parseTaskSpec(JSON.stringify(spec))).toThrowError(/field 'cwd' must be a string/);
   });
+
+  it("carries an optional max_output_tokens through when present", () => {
+    const withCap = JSON.stringify({ ...JSON.parse(VALID_SPEC), max_output_tokens: 16384 });
+    expect(parseTaskSpec(withCap).max_output_tokens).toBe(16384);
+  });
+
+  it("throws when max_output_tokens is present but not a positive number", () => {
+    const zero = { ...JSON.parse(VALID_SPEC), max_output_tokens: 0 };
+    expect(() => parseTaskSpec(JSON.stringify(zero))).toThrowError(/field 'max_output_tokens' must be a positive number/);
+    const nonNumeric = { ...JSON.parse(VALID_SPEC), max_output_tokens: "16384" };
+    expect(() => parseTaskSpec(JSON.stringify(nonNumeric))).toThrowError(/field 'max_output_tokens' must be a positive number/);
+  });
 });
 
 // ── argv/opts construction ───────────────────────────────────────
@@ -174,6 +186,16 @@ describe("buildSpawnOpts", () => {
   it("sets cwd when the spec carries one", () => {
     const specWithCwd = parseTaskSpec(JSON.stringify({ ...JSON.parse(VALID_SPEC), cwd: "/tmp/instance-7" }));
     expect(buildSpawnOpts(specWithCwd, "toolkit").cwd).toBe("/tmp/instance-7");
+  });
+
+  it("omits max_output_tokens entirely when the spec has none", () => {
+    const opts = buildSpawnOpts(baseSpec, "toolkit");
+    expect("max_output_tokens" in opts).toBe(false);
+  });
+
+  it("sets max_output_tokens when the spec carries one (RDR-006 truncation-avoidance finding)", () => {
+    const specWithCap = parseTaskSpec(JSON.stringify({ ...JSON.parse(VALID_SPEC), max_output_tokens: 16384 }));
+    expect(buildSpawnOpts(specWithCap, "toolkit").max_output_tokens).toBe(16384);
   });
 });
 
