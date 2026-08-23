@@ -4,6 +4,9 @@
 // All heavy deps (SDK, QwenSession, backends) are mocked.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Backend, SpawnOpts, PollOpts, PollResult, BackendInfo } from "../src/types.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -124,6 +127,7 @@ import {
   matchUpstreamCliError,
   toWireResult,
 } from "../src/server.js";
+import { createPool } from "../src/pool.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -143,6 +147,54 @@ async function callTool(
 ): Promise<unknown> {
   const handler = handlers[name] as (args: unknown) => Promise<unknown>;
   return handler(args);
+}
+
+/**
+ * A real (non-mocked) fake "qwen" binary, rooted at `dir`. `extensions
+ * list` cats `listFile`; anything else appends its argv to `callLog`
+ * and echoes "ok: <argv>" UNLESS `failMarker` exists (fails EVERY
+ * subcommand including list) or `failMutationMarker` exists (fails
+ * every subcommand EXCEPT list — for batch cases that must enumerate
+ * successfully before a per-extension exec fails). This exercises the
+ * REAL exec layer (extensions.ts, unmocked in this file — qwen_spawn's
+ * opts.extensions tests depend on its real logic) end to end, matching
+ * the project's "integration over mocks" default.
+ */
+function makeFakeQwenBin(dir: string) {
+  const bin = join(dir, "fake-qwen.sh");
+  const listFile = join(dir, "list.txt");
+  const failMarker = join(dir, "FAIL");
+  const failMutationMarker = join(dir, "FAIL_MUTATION");
+  const callLog = join(dir, "calls.log");
+  writeFileSync(listFile, "No extensions installed.\n", "utf8");
+  writeFileSync(
+    bin,
+    [
+      "#!/usr/bin/env bash",
+      `echo "$*" >> "${callLog}"`,
+      `if [ "$1" = "extensions" ] && [ "$2" = "list" ]; then`,
+      `  if [ -f "${failMarker}" ]; then`,
+      '    echo "fixture failure on stderr" 1>&2',
+      "    exit 1",
+      "  fi",
+      `  cat "${listFile}"`,
+      "  exit 0",
+      "fi",
+      `if [ -f "${failMarker}" ] || [ -f "${failMutationMarker}" ]; then`,
+      '  echo "fixture failure on stderr" 1>&2',
+      "  exit 1",
+      "fi",
+      'echo "ok: $*"',
+    ].join("\n") + "\n",
+    "utf8",
+  );
+  chmodSync(bin, 0o755);
+  return { bin, listFile, failMarker, failMutationMarker, callLog };
+}
+
+function callCount(callLog: string): number {
+  if (!existsSync(callLog)) return 0;
+  return readFileSync(callLog, "utf8").split("\n").filter((l) => l !== "").length;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -598,10 +650,417 @@ describe("MCP tool handlers", () => {
   // ── qwen_extensions (read-only listing) ────────────────────
 
   describe("qwen_extensions", () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "qwen-extensions-mcp-"));
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
     it("returns [] when pool.qwenRealBin is unset", async () => {
       const handlers = createToolHandlers();
       const result = await handlers.qwen_extensions({});
       expect(result).toEqual([]);
+    });
+
+    it("returns the real listing when pool.qwenRealBin is set (closes the pre-existing gap, bead 3su.14 Work item 1)", async () => {
+      const fixture = makeFakeQwenBin(dir);
+      writeFileSync(
+        fixture.listFile,
+        "✓ alpha (1.0.0)\n Path: /tmp/alpha\n Enabled (User): true\n",
+        "utf8",
+      );
+      const pool = createPool({ qwenRealBin: fixture.bin });
+      const handlers = createToolHandlers(pool);
+      const result = await handlers.qwen_extensions({});
+      expect(result).toEqual([
+        expect.objectContaining({ name: "alpha", version: "1.0.0", enabled_user: true }),
+      ]);
+    });
+
+    it("fail-soft: returns [] (not an error envelope) when the shell-out fails", async () => {
+      const fixture = makeFakeQwenBin(dir);
+      writeFileSync(fixture.failMarker, "");
+      const pool = createPool({ qwenRealBin: fixture.bin });
+      const handlers = createToolHandlers(pool);
+      const result = await handlers.qwen_extensions({});
+      expect(result).toEqual([]);
+    });
+  });
+
+  // ── qwen_extension_install / remove / enable / disable / update ────
+  // (bead qwen-coprocessor-stack-3su.14 — W2 MCP tool surface)
+
+  describe("qwen_extension_install / remove / enable / disable / update", () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "qwen-ext-mcp-"));
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    /** Mirrors the qwen_reload_extensions describe block's makeMockCache
+     *  helper above — a hand-built InstalledExtensionsCache-shaped
+     *  object with a spy-able reload(), so "did the handler reload the
+     *  cache" is a direct assertion rather than an inference from a
+     *  simulated `qwen extensions list` state transition. */
+    function makeMockCache() {
+      const names = new Set<string>();
+      return {
+        get: () => names,
+        size: () => names.size,
+        reload: vi.fn().mockResolvedValue(names),
+      };
+    }
+
+    // ── conditional registration (mirrors qwen_reload_extensions) ──
+
+    it("all five handlers are undefined when no cache is provided", () => {
+      const fixture = makeFakeQwenBin(dir);
+      const pool = createPool({ qwenRealBin: fixture.bin });
+      const handlers = createToolHandlers(pool);
+      expect(handlers.qwen_extension_install).toBeUndefined();
+      expect(handlers.qwen_extension_remove).toBeUndefined();
+      expect(handlers.qwen_extension_enable).toBeUndefined();
+      expect(handlers.qwen_extension_disable).toBeUndefined();
+      expect(handlers.qwen_extension_update).toBeUndefined();
+    });
+
+    it("all five handlers are functions when a cache is provided", () => {
+      const fixture = makeFakeQwenBin(dir);
+      const pool = createPool({ qwenRealBin: fixture.bin });
+      const handlers = createToolHandlers(pool, makeMockCache());
+      expect(typeof handlers.qwen_extension_install).toBe("function");
+      expect(typeof handlers.qwen_extension_remove).toBe("function");
+      expect(typeof handlers.qwen_extension_enable).toBe("function");
+      expect(typeof handlers.qwen_extension_disable).toBe("function");
+      expect(typeof handlers.qwen_extension_update).toBe("function");
+    });
+
+    // ── qwen_extension_install ───────────────────────────────────
+
+    describe("qwen_extension_install", () => {
+      it("happy path: local source succeeds and reloads the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const extDir = join(dir, "my-ext");
+        mkdirSync(extDir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_install!({ source: extDir });
+        expect(result).toMatchObject({
+          argv: ["extensions", "install", extDir],
+          stdout: expect.stringContaining("ok:"),
+        });
+        expect(cache.reload).toHaveBeenCalledOnce();
+      });
+
+      it("invalid source: error envelope, never shells out, never reloads", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_install!({
+          source: join(dir, "does-not-exist"),
+        });
+        expect(result).toMatchObject({ error: { code: "invalid_source" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("Phase 0 gate: remote source refused loudly, never shells out, when QWEN_ALLOW_REMOTE_INSTALL is unset", async () => {
+        vi.stubEnv("QWEN_ALLOW_REMOTE_INSTALL", "");
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_install!({ source: "example-org/example-repo" });
+        expect(result).toMatchObject({ error: { code: "remote_install_gated" } });
+        expect((result as { error: { message: string } }).error.message).toMatch(/QWEN_ALLOW_REMOTE_INSTALL/);
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("Phase 0 gate: remote source permitted and shells out when QWEN_ALLOW_REMOTE_INSTALL=1", async () => {
+        vi.stubEnv("QWEN_ALLOW_REMOTE_INSTALL", "1");
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_install!({ source: "example-org/example-repo" });
+        expect(result).toMatchObject({
+          argv: ["extensions", "install", "example-org/example-repo"],
+        });
+        expect(cache.reload).toHaveBeenCalledOnce();
+      });
+
+      it("exec failure: error envelope with code exec_failed, cache not reloaded", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        writeFileSync(fixture.failMarker, "");
+        const extDir = join(dir, "fails-ext");
+        mkdirSync(extDir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_install!({ source: extDir });
+        expect(result).toMatchObject({ error: { code: "exec_failed" } });
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("a reload failure after a successful install does NOT turn the success into an error", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const extDir = join(dir, "my-ext2");
+        mkdirSync(extDir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = {
+          get: () => new Set<string>(),
+          size: () => 0,
+          reload: vi.fn().mockRejectedValue(new Error("reload boom")),
+        };
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_install!({ source: extDir });
+        expect(result).toMatchObject({ argv: ["extensions", "install", extDir] });
+        expect("error" in (result as object)).toBe(false);
+        expect(cache.reload).toHaveBeenCalledOnce();
+      });
+    });
+
+    // ── qwen_extension_remove ────────────────────────────────────
+
+    describe("qwen_extension_remove", () => {
+      it("happy path: execs 'extensions uninstall <name>' and reloads the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_remove!({ name: "serena" });
+        expect(result).toMatchObject({ argv: ["extensions", "uninstall", "serena"] });
+        expect(cache.reload).toHaveBeenCalledOnce();
+      });
+
+      it("invalid argument: empty name is refused before exec", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_remove!({ name: "   " });
+        expect(result).toMatchObject({ error: { code: "invalid_name" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("exec failure: error envelope with code exec_failed", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        writeFileSync(fixture.failMarker, "");
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_remove!({ name: "serena" });
+        expect(result).toMatchObject({ error: { code: "exec_failed" } });
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+    });
+
+    // ── qwen_extension_enable / disable ──────────────────────────
+
+    describe("qwen_extension_enable / qwen_extension_disable", () => {
+      it("enable: no scope opt defaults to 'user' (explicit wrapper default) and reloads the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_enable!({ name: "serena" });
+        expect(result).toMatchObject({
+          argv: ["extensions", "enable", "serena", "--scope", "user"],
+          scope: "user",
+        });
+        expect(cache.reload).toHaveBeenCalledOnce();
+      });
+
+      it("enable: explicit scope='workspace' passes through", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_enable!({ name: "serena", scope: "workspace" });
+        expect(result).toMatchObject({
+          argv: ["extensions", "enable", "serena", "--scope", "workspace"],
+        });
+      });
+
+      it("invalid argument: scope='system' is refused before exec (Phase 0 amendment)", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_enable!({ name: "serena", scope: "system" });
+        expect(result).toMatchObject({ error: { code: "invalid_scope" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("disable: no scope opt defaults to 'user' and reloads the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_disable!({ name: "serena" });
+        expect(result).toMatchObject({
+          argv: ["extensions", "disable", "serena", "--scope", "user"],
+          scope: "user",
+        });
+        expect(cache.reload).toHaveBeenCalledOnce();
+      });
+
+      it("disable: scope='systemdefaults' is refused before exec", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_disable!({ name: "serena", scope: "systemdefaults" });
+        expect(result).toMatchObject({ error: { code: "invalid_scope" } });
+      });
+
+      it("exec failure on enable: error envelope with code exec_failed", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        writeFileSync(fixture.failMarker, "");
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_enable!({ name: "serena" });
+        expect(result).toMatchObject({ error: { code: "exec_failed" } });
+      });
+    });
+
+    // ── qwen_extension_update ────────────────────────────────────
+
+    describe("qwen_extension_update", () => {
+      /** Wires a fixture extension directory (with a real
+       *  .qwen-extension-install.json) into both the fake binary's
+       *  `extensions list` output and the filesystem, so the real
+       *  updateExtensions classify-then-gate path has something to
+       *  read. */
+      function installFixtureExtension(
+        fixture: ReturnType<typeof makeFakeQwenBin>,
+        name: string,
+        installMetadata: { type: string; source?: string },
+      ): string {
+        const extPath = join(dir, name);
+        mkdirSync(extPath, { recursive: true });
+        writeFileSync(
+          join(extPath, ".qwen-extension-install.json"),
+          JSON.stringify(installMetadata),
+          "utf8",
+        );
+        writeFileSync(
+          fixture.listFile,
+          `✓ ${name} (1.0.0)\n Path: ${extPath}\n`,
+          "utf8",
+        );
+        return extPath;
+      }
+
+      it("happy path: a local-classified extension updates and reloads the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        installFixtureExtension(fixture, "local-ext", { type: "local" });
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_update!({ names: ["local-ext"] });
+        expect(result).toMatchObject({
+          items: [{ name: "local-ext", status: "updated" }],
+        });
+        expect(cache.reload).toHaveBeenCalledOnce();
+      });
+
+      it("omitting names updates every installed extension individually — never a raw --all", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const extPath = installFixtureExtension(fixture, "local-ext", { type: "local" });
+        void extPath;
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_update!({});
+        expect(result).toMatchObject({ items: [{ name: "local-ext", status: "updated" }] });
+        const calls = readFileSync(fixture.callLog, "utf8");
+        expect(calls).not.toContain("--all");
+      });
+
+      it("invalid argument: a name not in the installed listing is refused, not attempted", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_update!({ names: ["ghost-ext"] });
+        expect(result).toMatchObject({ items: [{ name: "ghost-ext", status: "refused" }] });
+        // one call for the initial `extensions list` enumeration, none for ghost-ext
+        expect(callCount(fixture.callLog)).toBe(before + 1);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("fails closed on missing .qwen-extension-install.json — refused, not attempted", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const extPath = join(dir, "no-metadata-ext");
+        mkdirSync(extPath);
+        writeFileSync(
+          fixture.listFile,
+          `✓ no-metadata-ext (1.0.0)\n Path: ${extPath}\n`,
+          "utf8",
+        );
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const result = await handlers.qwen_extension_update!({ names: ["no-metadata-ext"] });
+        expect(result).toMatchObject({
+          items: [{ name: "no-metadata-ext", status: "refused" }],
+        });
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("Phase 0 gate: a git-classified extension is refused without QWEN_ALLOW_REMOTE_INSTALL, never shelled", async () => {
+        vi.stubEnv("QWEN_ALLOW_REMOTE_INSTALL", "");
+        const fixture = makeFakeQwenBin(dir);
+        installFixtureExtension(fixture, "git-ext", { type: "git", source: "owner/repo" });
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_update!({ names: ["git-ext"] });
+        expect(result).toMatchObject({
+          items: [{ name: "git-ext", status: "refused" }],
+        });
+        // one call for the initial `extensions list` enumeration, none for the update itself
+        expect(callCount(fixture.callLog)).toBe(before + 1);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("exec failure on one item is reported per-item as 'failed', not thrown", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        installFixtureExtension(fixture, "local-ext", { type: "local" });
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache();
+        const handlers = createToolHandlers(pool, cache);
+        // failMutationMarker fails every subcommand EXCEPT `list`, so the
+        // initial `extensions list` enumeration succeeds and only the
+        // per-extension `extensions update local-ext` call fails.
+        writeFileSync(fixture.failMutationMarker, "");
+        const result = await handlers.qwen_extension_update!({ names: ["local-ext"] });
+        expect(result).toMatchObject({
+          items: [{ name: "local-ext", status: "failed" }],
+        });
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
     });
   });
 
