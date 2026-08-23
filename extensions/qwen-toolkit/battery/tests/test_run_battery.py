@@ -80,6 +80,15 @@ def write_synthetic_fixture(root: Path, *, buggy_value: str, solution_value: str
     return task_json_path
 
 
+def add_negative_gold_variant(task_json_path: Path, label: str, value: str) -> None:
+    """Add a solution-negative-<label>/counter.py variant to a fixture
+    written by write_synthetic_fixture, for gold-check negative-gold
+    tests."""
+    variant_dir = task_json_path.parent / f"solution-negative-{label}"
+    variant_dir.mkdir(parents=True)
+    (variant_dir / "counter.py").write_text(f"def value():\n    return {value}\n")
+
+
 class LoadTaskSpecTests(TempDirCase):
     def test_loads_real_fixture_001(self) -> None:
         task = rb.load_task_spec(REAL_TASKS_DIR / "001-interval-debug" / "task.json")
@@ -172,6 +181,35 @@ class GoldCheckRealFixtureTests(TempDirCase):
         self.assertTrue(result.gold_correctly_passes, f"gold tree unexpectedly failed (exit {result.gold_exit_code})")
         self.assertTrue(result.passed)
 
+    def test_fixture_002_gold_check_passes_including_negative_gold(self) -> None:
+        task = rb.load_task_spec(REAL_TASKS_DIR / "002-implement-tdd" / "task.json")
+        result = rb.gold_check_task(task, self.tmp)
+        self.assertTrue(result.buggy_correctly_fails, f"empty tree unexpectedly passed (exit {result.buggy_exit_code})")
+        self.assertTrue(result.gold_correctly_passes, f"gold tree unexpectedly failed (exit {result.gold_exit_code})")
+        self.assertEqual(len(result.negative_golds), 1)
+        self.assertEqual(result.negative_golds[0].label, "overengineered")
+        self.assertTrue(result.negative_golds[0].correctly_fails, "over-engineered variant unexpectedly passed verify")
+        self.assertTrue(result.passed)
+
+    def test_fixture_003_gold_check_passes_including_negative_gold(self) -> None:
+        task = rb.load_task_spec(REAL_TASKS_DIR / "003-version-compare-debug" / "task.json")
+        result = rb.gold_check_task(task, self.tmp)
+        self.assertTrue(result.buggy_correctly_fails, f"buggy tree unexpectedly passed (exit {result.buggy_exit_code})")
+        self.assertTrue(result.gold_correctly_passes, f"gold tree unexpectedly failed (exit {result.gold_exit_code})")
+        self.assertEqual(len(result.negative_golds), 1)
+        self.assertEqual(result.negative_golds[0].label, "test-weakened")
+        self.assertTrue(result.negative_golds[0].correctly_fails, "test-weakened variant unexpectedly passed verify")
+        self.assertTrue(result.passed)
+
+    def test_full_battery_gold_check_all_three_fixtures(self) -> None:
+        tasks = rb.discover_tasks(REAL_TASKS_DIR)
+        self.assertEqual(
+            [t.name for t in tasks], ["001-interval-debug", "002-implement-tdd", "003-version-compare-debug"]
+        )
+        results = [rb.gold_check_task(t, self.tmp) for t in tasks]
+        broken = [r.task for r in results if not r.passed]
+        self.assertEqual(broken, [], f"broken fixtures: {broken}")
+
 
 class GoldCheckMutationTests(TempDirCase):
     """Mutation-style checks: prove gold_check_task actually catches a
@@ -194,6 +232,72 @@ class GoldCheckMutationTests(TempDirCase):
         self.assertFalse(result.buggy_correctly_fails)
         self.assertTrue(result.gold_correctly_passes)
         self.assertFalse(result.passed)
+
+
+class NegativeGoldTests(TempDirCase):
+    """bead 3su.11: a fixture can ship solution-negative-* variants that
+    must FAIL verify despite often being otherwise-plausible. Prove the
+    mechanism runs them, labels them, and folds them into .passed
+    correctly in both directions."""
+
+    def test_negative_gold_that_correctly_fails_keeps_the_task_passed(self) -> None:
+        task_json = write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42")
+        add_negative_gold_variant(task_json, "wrong-value", "7")  # still wrong -- correctly fails
+        task = rb.load_task_spec(task_json)
+        result = rb.gold_check_task(task, self.tmp)
+        self.assertEqual(len(result.negative_golds), 1)
+        self.assertEqual(result.negative_golds[0].label, "wrong-value")
+        self.assertTrue(result.negative_golds[0].correctly_fails)
+        self.assertTrue(result.passed)
+
+    def test_negative_gold_that_wrongly_passes_breaks_the_task(self) -> None:
+        # A fixture-authoring mistake: the "negative" variant is actually
+        # correct (identical to the real solution) -- it will PASS verify,
+        # which must be caught, not silently accepted as fine.
+        task_json = write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42")
+        add_negative_gold_variant(task_json, "accidentally-correct", "42")
+        task = rb.load_task_spec(task_json)
+        result = rb.gold_check_task(task, self.tmp)
+        self.assertFalse(result.negative_golds[0].correctly_fails)
+        self.assertFalse(result.passed)
+
+    def test_multiple_negative_gold_variants_all_checked(self) -> None:
+        task_json = write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42")
+        add_negative_gold_variant(task_json, "a", "1")
+        add_negative_gold_variant(task_json, "b", "2")
+        task = rb.load_task_spec(task_json)
+        result = rb.gold_check_task(task, self.tmp)
+        self.assertEqual({ng.label for ng in result.negative_golds}, {"a", "b"})
+        self.assertTrue(result.passed)
+
+    def test_no_negative_gold_variants_is_fine(self) -> None:
+        task_json = write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42")
+        task = rb.load_task_spec(task_json)
+        result = rb.gold_check_task(task, self.tmp)
+        self.assertEqual(result.negative_golds, ())
+        self.assertTrue(result.passed)
+
+
+class VerifyCommandPlaceholderTests(TempDirCase):
+    def test_task_dir_placeholder_is_substituted(self) -> None:
+        task_json = write_synthetic_fixture(self.tmp, buggy_value="42", solution_value="42")
+        task = rb.load_task_spec(task_json)
+        # Override verify.command to reference a grader-only script that
+        # only exists beside task.json (never under files/), using the
+        # {task_dir} placeholder -- exactly tasks/002-implement-tdd's
+        # pattern.
+        checker = task.task_dir / "checker.py"
+        checker.write_text("print('checked')\nraise SystemExit(0)\n")
+        object.__setattr__(
+            task,
+            "verify",
+            rb.VerifySpec(command=[sys.executable, "{task_dir}/checker.py"], cwd=None, expected_exit_code=0),
+        )
+        tree = self.tmp / "tree"
+        rb.materialize_tree(task, tree)
+        exit_code, stdout, _ = rb.run_verify(task, tree)
+        self.assertEqual(exit_code, 0)
+        self.assertIn("checked", stdout)
 
 
 class DispatchViaDriverTests(TempDirCase):
@@ -289,6 +393,25 @@ class RunOneMutationTests(TempDirCase):
         rb.run_one(task, "toolkit", 1, self.tmp, dispatch_fn)
         rb.run_one(task, "toolkit", 2, self.tmp, dispatch_fn)
         self.assertEqual(len(set(calls)), 2, "each repetition must get a distinct fresh tree")
+
+    def test_verify_stdout_is_captured_on_the_row(self) -> None:
+        # 002's verify.py prints a VERIFY_DIAGNOSTICS line unconditionally
+        # (bead 3su.11: "record diff size alongside pass/fail") -- prove
+        # run_one surfaces it on the row, using the real fixture rather
+        # than reinventing a stdout-emitting synthetic verify command
+        # (plain `python3 -m unittest` writes its report to STDERR, not
+        # stdout, so a synthetic fixture built on it would test nothing
+        # here).
+        task = rb.load_task_spec(REAL_TASKS_DIR / "002-implement-tdd" / "task.json")
+
+        def dispatch_fn(task, tree, arm):
+            shutil.copy2(task.task_dir / "solution" / "ratelimiter.py", tree / "ratelimiter.py")
+            return rb.DispatchOutcome(ok=True, elapsed_ms=1, tool_calls=1, error=None)
+
+        row = rb.run_one(task, "toolkit", 1, self.tmp, dispatch_fn)
+        self.assertTrue(row.passed)
+        self.assertIsNotNone(row.verify_stdout)
+        self.assertIn("VERIFY_DIAGNOSTICS", row.verify_stdout)
 
     def test_resolved_extensions_echoed_from_dispatch_outcome_raw(self) -> None:
         # bead 3su.10 review finding: run-001-2026-08-22 shipped without

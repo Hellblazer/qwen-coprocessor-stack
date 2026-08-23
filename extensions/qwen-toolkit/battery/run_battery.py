@@ -203,14 +203,52 @@ def materialize_tree(task: TaskSpec, dest: Path, overlay_dir: Path | None = None
             shutil.copy2(item, target)
 
 
+def _resolve_verify_command(task: TaskSpec) -> list[str]:
+    """Substitute the ``{task_dir}`` placeholder in ``verify.command`` with
+    the task's own directory, resolved absolute.
+
+    Grader-only helper scripts (e.g. tasks/002-implement-tdd/verify.py)
+    live beside task.json, NOT under files/ -- they are never materialized
+    into the model's working tree. task.json itself must stay portable
+    (no absolute path baked in for a specific checkout), so a command
+    element containing the literal token ``{task_dir}`` is resolved here,
+    at run time, against ``task.task_dir`` -- not embedded in the spec.
+    The subprocess's cwd is still the MATERIALIZED TREE (or verify.cwd),
+    independent of this substitution, so a script invoked this way must
+    take the tree to check as an explicit argument (by convention, ".",
+    which resolves correctly against the subprocess's own cwd).
+    """
+    task_dir = str(task.task_dir)
+    return [part.replace("{task_dir}", task_dir) for part in task.verify.command]
+
+
 def run_verify(task: TaskSpec, tree: Path) -> tuple[int, str, str]:
     """Run the task's OWN verify command against ``tree``. Grader-run only."""
     cwd = tree if not task.verify.cwd or task.verify.cwd == "." else tree / task.verify.cwd
-    proc = subprocess.run(task.verify.command, cwd=str(cwd), capture_output=True, text=True)
+    command = _resolve_verify_command(task)
+    proc = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True)
     return proc.returncode, proc.stdout, proc.stderr
 
 
 # ── gold self-check ──────────────────────────────────────────────────────
+
+# A task directory may ship additional NEGATIVE-gold variants alongside the
+# one positive `solution/` -- each a sibling directory matching this glob,
+# overlaid the same way `solution/` is, but expected to FAIL verify despite
+# often passing the task's own test suite (bead 3su.11: "Gold self-check
+# must include a deliberately over-engineered solution that FAILS verify,
+# alongside the minimal one that passes -- proving the fixture can actually
+# catch the failure mode"). The directory name after the prefix becomes the
+# variant's label (e.g. `solution-negative-overengineered` -> "overengineered").
+NEGATIVE_GOLD_GLOB = "solution-negative-*"
+NEGATIVE_GOLD_PREFIX = "solution-negative-"
+
+
+@dataclass(frozen=True)
+class NegativeGoldResult:
+    label: str
+    exit_code: int
+    correctly_fails: bool
 
 
 @dataclass(frozen=True)
@@ -220,18 +258,28 @@ class GoldCheckResult:
     buggy_correctly_fails: bool
     gold_exit_code: int
     gold_correctly_passes: bool
+    negative_golds: tuple[NegativeGoldResult, ...] = ()
 
     @property
     def passed(self) -> bool:
-        return self.buggy_correctly_fails and self.gold_correctly_passes
+        return (
+            self.buggy_correctly_fails
+            and self.gold_correctly_passes
+            and all(ng.correctly_fails for ng in self.negative_golds)
+        )
 
 
 def gold_check_task(task: TaskSpec, work_root: Path) -> GoldCheckResult:
     """Validate the fixture ITSELF, before burning any model time.
 
     The pristine ``files/`` tree must FAIL verify (the seeded defect(s)
-    reproduce); ``files/`` with ``solution/`` overlaid must PASS verify at
-    ``expected_exit_code``. A fixture failing either half is broken and its
+    reproduce, or -- for an implement-from-spec task -- the feature simply
+    doesn't exist yet); ``files/`` with ``solution/`` overlaid must PASS
+    verify at ``expected_exit_code``. Any ``solution-negative-*`` variant
+    (see NEGATIVE_GOLD_GLOB) must FAIL verify too -- proving an objective
+    check (scope discipline, a LOC ceiling, oracle-tamper detection, ...)
+    actually catches the failure mode it exists for, not just that tests
+    happen to pass. A fixture failing any of these is broken and its
     numbers would be noise, not signal.
     """
     buggy_dir = work_root / task.name / "gold-check" / "buggy"
@@ -243,12 +291,29 @@ def gold_check_task(task: TaskSpec, work_root: Path) -> GoldCheckResult:
     materialize_tree(task, gold_dir, overlay_dir=solution_dir)
     gold_exit, _, _ = run_verify(task, gold_dir)
 
+    negative_golds: list[NegativeGoldResult] = []
+    for variant_dir in sorted(task.task_dir.glob(NEGATIVE_GOLD_GLOB)):
+        if not variant_dir.is_dir():
+            continue
+        label = variant_dir.name[len(NEGATIVE_GOLD_PREFIX) :]
+        variant_tree = work_root / task.name / "gold-check" / f"negative-{label}"
+        materialize_tree(task, variant_tree, overlay_dir=variant_dir)
+        variant_exit, _, _ = run_verify(task, variant_tree)
+        negative_golds.append(
+            NegativeGoldResult(
+                label=label,
+                exit_code=variant_exit,
+                correctly_fails=(variant_exit != task.verify.expected_exit_code),
+            )
+        )
+
     return GoldCheckResult(
         task=task.name,
         buggy_exit_code=buggy_exit,
         buggy_correctly_fails=(buggy_exit != task.verify.expected_exit_code),
         gold_exit_code=gold_exit,
         gold_correctly_passes=(gold_exit == task.verify.expected_exit_code),
+        negative_golds=tuple(negative_golds),
     )
 
 
@@ -259,6 +324,10 @@ def gold_check_to_dict(g: GoldCheckResult) -> dict:
         "buggy_correctly_fails": g.buggy_correctly_fails,
         "gold_exit_code": g.gold_exit_code,
         "gold_correctly_passes": g.gold_correctly_passes,
+        "negative_golds": [
+            {"label": ng.label, "exit_code": ng.exit_code, "correctly_fails": ng.correctly_fails}
+            for ng in g.negative_golds
+        ],
         "passed": g.passed,
     }
 
@@ -375,6 +444,16 @@ class RunRow:
     # resolveExtensions() dry-check instead; this closes the gap for
     # every run after it).
     resolved_extensions: object = None
+    # verify's own stdout, truncated. A fixture's verify command can print
+    # diagnostics beyond bare pass/fail (bead 3su.11: "record diff size
+    # alongside pass/fail -- passing with 5x the necessary code is a real
+    # finding" -- see tasks/002-implement-tdd/verify.py's
+    # VERIFY_DIAGNOSTICS line). None for fixtures whose verify prints
+    # nothing meaningful; never required.
+    verify_stdout: str | None = None
+
+
+VERIFY_STDOUT_MAX_CHARS = 2000
 
 
 def run_row_to_dict(r: RunRow) -> dict:
@@ -389,6 +468,7 @@ def run_row_to_dict(r: RunRow) -> dict:
         "tool_calls": r.tool_calls,
         "error": r.error,
         "resolved_extensions": r.resolved_extensions,
+        "verify_stdout": r.verify_stdout,
     }
 
 
@@ -402,10 +482,11 @@ def run_one(task: TaskSpec, arm: str, repetition: int, work_root: Path, dispatch
     # Unconditional: verify's exit code is read regardless of `outcome.ok`.
     # This IS the "grader decides, never the model" invariant -- there is
     # no branch here that skips verify or substitutes outcome.ok for it.
-    exit_code, _, _ = run_verify(task, tree)
+    exit_code, verify_stdout, _ = run_verify(task, tree)
     passed = exit_code == task.verify.expected_exit_code
 
     resolved_extensions = outcome.raw.get("resolved_extensions") if outcome.raw else None
+    verify_stdout_trimmed = verify_stdout[:VERIFY_STDOUT_MAX_CHARS] if verify_stdout else None
 
     return RunRow(
         task=task.name,
@@ -418,6 +499,7 @@ def run_one(task: TaskSpec, arm: str, repetition: int, work_root: Path, dispatch
         tool_calls=outcome.tool_calls,
         error=outcome.error,
         resolved_extensions=resolved_extensions,
+        verify_stdout=verify_stdout_trimmed,
     )
 
 
