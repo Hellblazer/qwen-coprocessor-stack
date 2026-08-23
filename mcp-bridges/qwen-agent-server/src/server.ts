@@ -1508,7 +1508,10 @@ export function createToolHandlers(
 
     qwen_extension_remove = async ({ name }) => {
       try {
-        const result = await uninstallExtension(pool.qwenRealBin, name);
+        // installedNames is required by uninstallExtension (bead 3su.16
+        // code-review remediation) — cache.get() is always in scope here
+        // since this handler only exists when a cache was wired in.
+        const result = await uninstallExtension(pool.qwenRealBin, name, cache.get());
         await reloadCacheOrWarn("remove");
         return result;
       } catch (err) {
@@ -1520,7 +1523,7 @@ export function createToolHandlers(
       try {
         const opts: { scope?: string } = {};
         if (scope !== undefined) opts.scope = scope;
-        const result = await enableExtension(pool.qwenRealBin, name, opts);
+        const result = await enableExtension(pool.qwenRealBin, name, cache.get(), opts);
         await reloadCacheOrWarn("enable");
         return result;
       } catch (err) {
@@ -1532,7 +1535,7 @@ export function createToolHandlers(
       try {
         const opts: { scope?: string } = {};
         if (scope !== undefined) opts.scope = scope;
-        const result = await disableExtension(pool.qwenRealBin, name, opts);
+        const result = await disableExtension(pool.qwenRealBin, name, cache.get(), opts);
         await reloadCacheOrWarn("disable");
         return result;
       } catch (err) {

@@ -709,9 +709,16 @@ describe("MCP tool handlers", () => {
      *  helper above — a hand-built InstalledExtensionsCache-shaped
      *  object with a spy-able reload(), so "did the handler reload the
      *  cache" is a direct assertion rather than an inference from a
-     *  simulated `qwen extensions list` state transition. */
-    function makeMockCache() {
-      const names = new Set<string>();
+     *  simulated `qwen extensions list` state transition.
+     *
+     *  Defaults to seeding "serena" as pre-installed — uninstallExtension
+     *  / enableExtension / disableExtension now require the caller's name
+     *  to be present in `cache.get()` before exec (bead 3su.16 code-
+     *  review remediation), so every existing remove/enable/disable test
+     *  exercising "serena" needs it to already be in the set. Pass an
+     *  explicit list (or `[]`) to test the unknown-name refusal path. */
+    function makeMockCache(initialNames: string[] = ["serena"]) {
+      const names = new Set<string>(initialNames);
       return {
         get: () => names,
         size: () => names.size,
@@ -868,6 +875,30 @@ describe("MCP tool handlers", () => {
         expect(result).toMatchObject({ error: { code: "exec_failed" } });
         expect(cache.reload).not.toHaveBeenCalled();
       });
+
+      it("unknown name: refused with code unknown_extension before exec (bead 3su.16 review remediation)", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache([]); // nothing installed
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_remove!({ name: "nonexistent" });
+        expect(result).toMatchObject({ error: { code: "unknown_extension" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("flag-shaped name: refused with code invalid_name before exec, even if present in the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache(["-y"]); // hypothetically "installed" — dash check must still fire
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_remove!({ name: "-y" });
+        expect(result).toMatchObject({ error: { code: "invalid_name" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
     });
 
     // ── qwen_extension_enable / disable ──────────────────────────
@@ -939,6 +970,54 @@ describe("MCP tool handlers", () => {
         const handlers = createToolHandlers(pool, cache);
         const result = await handlers.qwen_extension_enable!({ name: "serena" });
         expect(result).toMatchObject({ error: { code: "exec_failed" } });
+      });
+
+      it("enable: unknown name refused with code unknown_extension before exec (bead 3su.16 review remediation)", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache([]);
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_enable!({ name: "nonexistent" });
+        expect(result).toMatchObject({ error: { code: "unknown_extension" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("enable: flag-shaped name refused with code invalid_name before exec, even if present in the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache(["--force"]);
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_enable!({ name: "--force" });
+        expect(result).toMatchObject({ error: { code: "invalid_name" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("disable: unknown name refused with code unknown_extension before exec", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache([]);
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_disable!({ name: "nonexistent" });
+        expect(result).toMatchObject({ error: { code: "unknown_extension" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
+      });
+
+      it("disable: flag-shaped name refused with code invalid_name before exec, even if present in the cache", async () => {
+        const fixture = makeFakeQwenBin(dir);
+        const pool = createPool({ qwenRealBin: fixture.bin });
+        const cache = makeMockCache(["-x"]);
+        const handlers = createToolHandlers(pool, cache);
+        const before = callCount(fixture.callLog);
+        const result = await handlers.qwen_extension_disable!({ name: "-x" });
+        expect(result).toMatchObject({ error: { code: "invalid_name" } });
+        expect(callCount(fixture.callLog)).toBe(before);
+        expect(cache.reload).not.toHaveBeenCalled();
       });
     });
 
