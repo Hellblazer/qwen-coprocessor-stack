@@ -308,14 +308,14 @@ and shells out to the bundled Qwen CLI:
 | Operation (MCP tool / skill verb)          | Shells out to                              | Notes |
 |--------------------------------------------|--------------------------------------------|-------|
 | `list`                                     | `qwen extensions list`                     | Pass-through; optional client-side reformat to a tighter table. Native output already includes `Enabled (User)`, `Enabled (Workspace)`, `Path`, `Source`, declared `Commands`/`Skills`/`Agents`/`MCP servers`. |
-| `inspect <name>`                           | `qwen extensions list` filtered by `<name>` | The native `list` block per extension is exactly the "inspect" payload. No separate Qwen subcommand needed. Exit 1 with `extension '<name>' not found` if no extension matches. |
+| `inspect <name>`                           | `qwen extensions list` filtered by `<name>` | Implemented as `info` in the `/qwen-stack:extensions` skill (rename recorded 2026-08-22; same semantics). The native `list` block per extension is exactly the "inspect" payload. No separate Qwen subcommand needed. Exit 1 with `extension '<name>' not found` if no extension matches. |
 | `install <source>`                         | `qwen extensions install <source>`         | ⚠ Corrected 2026-08-22: upstream takes ONE positional `<source>` and auto-detects the type (`stat()` succeeds → local path; git URL → git; `@scope/name` → npm; `owner/repo` → git; else error). There is no `--source`/`--path` flag. Pass-through flags: `--ref`, `--auto-update`, `--pre-release`, `--registry`, `--consent`. **Remote sources (git/npm/marketplace) are refused unless `QWEN_ALLOW_REMOTE_INSTALL=1`** — see the 2026-08-22 amendment (autonomous-caller gate). Local paths are ungated. |
 | `remove <name>`                            | `qwen extensions uninstall <name>`         | Name translation only. Both `remove` and `uninstall` accepted as aliases for muscle-memory consistency. |
 | `enable <name> [--scope user\|workspace]`  | `qwen extensions enable <name> --scope <s>`  | ⚠ Corrected 2026-08-22: upstream *validates* `user\|workspace\|system\|systemdefaults` but its handlers only branch on `workspace` — `system`/`systemdefaults` SILENTLY act as `user`. Verbatim pass-through would export that lie; the wrapper accepts **`user`/`workspace` only** and rejects the other two. Upstream default with no scope: enable → ALL scopes. |
 | `disable <name> [--scope user\|workspace]` | `qwen extensions disable <name> --scope <s>` | Same scope restriction as `enable`. Upstream default with no scope: disable → `User` (asymmetric with enable; the wrapper surfaces its effective scope in the result rather than relying on the caller knowing the asymmetry). |
 | `update [<name>] [--all]`                  | `qwen extensions update …`                 | Bonus surface from upstream. Updating a remote-sourced extension fetches remote code → gated like remote `install`. **Detection mechanism**: `update` takes no source argument, so the wrapper classifies each target by reading its `.qwen-extension-install.json` (`installMetadata.type`/`source`) BEFORE shelling out — `git`/`npm`/marketplace types are refused without the gate; `local`/`link` proceed; missing or unrecognized metadata is refused under the gate (fail closed). `--all` is NEVER passed through raw: the wrapper enumerates installed extensions, applies the same per-extension classification, updates the permitted ones individually, and reports per-item results including the refused set. |
 | `link <path>`                              | `qwen extensions link <path>`              | Live-link an extension from a local source path (loader reads through to the source; edits are live). The extension-development workflow, and how `extensions/qwen-toolkit/` is installed. Local → ungated. |
-| `settings list <name>`                     | `qwen extensions settings list <name>`     | Per-extension settings table (sensitive values masked). |
+| `settings list <name>`                     | `qwen extensions settings list <name>`     | Per-extension settings table (sensitive values masked). **DEFERRED** — not in the initial W2 surface; tracked by bead `qwen-coprocessor-stack-wp7` (implement or record permanent deferral). |
 | `settings set <name> <setting> [--scope user\|workspace]` | `qwen extensions settings set …` | Per-extension setting mutation. |
 
 The interactive-REPL `/extensions` slash commands inside Qwen Code
@@ -568,6 +568,12 @@ RDR.
   author in-repo.
 
 ## Open work
+
+- **`settings list`/`settings set` surface** (deferred from the initial W2
+  implementation, 2026-08-22): the Layer-1 table rows exist but no MCP tool or
+  skill verb ships them yet. Bead `qwen-coprocessor-stack-wp7` tracks
+  implement-or-explicit-deferral. The never-echo-values rule from the
+  2026-08-22 amendment binds whichever way it resolves.
 
 - ~~**Decide Layer-1 `enable`/`disable` mechanism**~~ —
   **resolved 2026-05-04** by spike. Shell out to `qwen extensions
