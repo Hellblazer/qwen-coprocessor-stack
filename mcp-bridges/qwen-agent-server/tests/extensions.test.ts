@@ -4,21 +4,42 @@
 // RDR-002 §Decision → 'The wrapper-script bridge'.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  buildDisableArgv,
+  buildEnableArgv,
+  buildInstallArgv,
+  buildLinkArgv,
+  buildUninstallArgv,
+  buildUpdateArgv,
+  classifySource,
   createInstalledExtensionsCache,
+  DEFAULT_DISABLE_SCOPE,
+  DEFAULT_ENABLE_SCOPE,
+  defaultExecExtensionsMutate,
+  disableExtension,
+  enableExtension,
+  EXTENSION_INSTALL_METADATA_FILENAME,
+  ExtensionLifecycleError,
   ExtensionResolutionError,
   getSessionDefaultExtensions,
+  installExtension,
+  isRemoteSourceType,
+  linkExtension,
   listInstalledExtensions,
   parseInstalledExtensions,
   parseInstalledExtensionsRich,
+  QWEN_ALLOW_REMOTE_INSTALL_ENV,
   resolveExtensions,
   resolveQwenRealBin,
   resolveWrapperPath,
+  uninstallExtension,
   unionFrameworkRequired,
+  updateExtensions,
+  validateScope,
 } from "../src/extensions.js";
 import { _resetConfigCache } from "../src/backends.js";
 
@@ -611,5 +632,752 @@ describe("unionFrameworkRequired", () => {
 
   it("dedupes within the framework-required list itself", () => {
     expect(unionFrameworkRequired([], ["x", "X", "x"])).toEqual(["x"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// W2 — extension lifecycle exec layer (bead qwen-coprocessor-stack-3su.13)
+// RDR-002 §Layer 1, Phase 0 amendment (2026-08-22): source auto-detection
+// is a single positional (no --source flag), --scope accepts only
+// user|workspace, install/update of a remote source is env-gated via
+// QWEN_ALLOW_REMOTE_INSTALL=1, update classifies per-extension via
+// .qwen-extension-install.json and never passes --all through raw.
+
+describe("classifySource", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "qwen-source-classify-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // ── local paths — stat() succeeds is checked first, for every shape ──
+
+  it("classifies an existing absolute path as local, value unchanged", () => {
+    const extDir = join(dir, "my-ext");
+    mkdirSync(extDir);
+    expect(classifySource(extDir, dir)).toEqual({ type: "local", value: extDir });
+  });
+
+  it("resolves a relative './x' local path to an absolute value", () => {
+    const extDir = join(dir, "my-ext");
+    mkdirSync(extDir);
+    expect(classifySource("./my-ext", dir)).toEqual({ type: "local", value: extDir });
+  });
+
+  it("resolves a bare relative name (no './' prefix) that exists on disk", () => {
+    const extDir = join(dir, "bare-ext");
+    mkdirSync(extDir);
+    expect(classifySource("bare-ext", dir)).toEqual({ type: "local", value: extDir });
+  });
+
+  it("rejects a nonexistent explicit-marker local path BEFORE any exec, with a path-specific message", () => {
+    const missing = join(dir, "does-not-exist");
+    expect(() => classifySource("./does-not-exist", dir)).toThrowError(ExtensionLifecycleError);
+    try {
+      classifySource("./does-not-exist", dir);
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExtensionLifecycleError);
+      expect((err as ExtensionLifecycleError).code).toBe("invalid_source");
+      expect((err as Error).message).toContain(missing);
+      expect((err as Error).message).toMatch(/does not exist/);
+    }
+  });
+
+  it("rejects a nonexistent absolute local path before exec", () => {
+    const missing = join(dir, "also-missing");
+    expect(() => classifySource(missing, dir)).toThrowError(/does not exist/);
+  });
+
+  it("does NOT misclassify a nonexistent dot-relative path as an owner/repo git source", () => {
+    // Regression: './foo/bar' superficially matches an owner/repo shape
+    // (one slash, word characters either side). It must be rejected as a
+    // missing local path, never silently reinterpreted as git.
+    expect(() => classifySource("./foo/bar", dir)).toThrowError(ExtensionLifecycleError);
+    try {
+      classifySource("./foo/bar", dir);
+    } catch (err) {
+      expect((err as ExtensionLifecycleError).code).toBe("invalid_source");
+      expect((err as Error).message).toMatch(/does not exist/);
+    }
+  });
+
+  it("rejects empty / whitespace-only source before exec", () => {
+    expect(() => classifySource("", dir)).toThrowError(ExtensionLifecycleError);
+    expect(() => classifySource("   ", dir)).toThrowError(ExtensionLifecycleError);
+  });
+
+  // ── git URL ────────────────────────────────────────────────────
+
+  it.each([
+    "https://github.com/example/serena.git",
+    "http://example.com/repo.git",
+    "git@github.com:example/serena.git",
+    "git://example.com/repo.git",
+    "ssh://git@example.com/repo.git",
+  ])("classifies git URL '%s' as git, value verbatim", (source) => {
+    expect(classifySource(source, dir)).toEqual({ type: "git", value: source });
+  });
+
+  // ── npm @scope/name ────────────────────────────────────────────
+
+  it("classifies '@scope/name' as npm, value verbatim", () => {
+    expect(classifySource("@modelcontextprotocol/server-foo", dir)).toEqual({
+      type: "npm",
+      value: "@modelcontextprotocol/server-foo",
+    });
+  });
+
+  // ── owner/repo shorthand → git ─────────────────────────────────
+
+  it("classifies 'owner/repo' (no scheme, no leading path marker) as git", () => {
+    expect(classifySource("example-org/example-repo", dir)).toEqual({
+      type: "git",
+      value: "example-org/example-repo",
+    });
+  });
+
+  // ── marketplace url:name ───────────────────────────────────────
+
+  it("classifies 'host:name' as marketplace when it matches no other shape", () => {
+    expect(classifySource("marketplace.example.com:my-extension", dir)).toEqual({
+      type: "marketplace",
+      value: "marketplace.example.com:my-extension",
+    });
+  });
+
+  // ── otherwise: "Install source not found" ──────────────────────
+
+  it("rejects an unrecognized nonexistent bare source before exec", () => {
+    expect(() => classifySource("totally-not-a-thing-zzz9", dir)).toThrowError(
+      /Install source not found/,
+    );
+  });
+});
+
+describe("isRemoteSourceType / assertRemoteAllowed via installExtension", () => {
+  it("local is never remote", () => {
+    expect(isRemoteSourceType("local")).toBe(false);
+  });
+
+  it.each(["git", "npm", "marketplace"] as const)("%s is remote", (type) => {
+    expect(isRemoteSourceType(type)).toBe(true);
+  });
+});
+
+describe("validateScope", () => {
+  it("returns undefined when scope is undefined (caller applies its own default)", () => {
+    expect(validateScope(undefined)).toBeUndefined();
+  });
+
+  it("accepts 'user' and 'workspace' verbatim (lowercased)", () => {
+    expect(validateScope("user")).toBe("user");
+    expect(validateScope("workspace")).toBe("workspace");
+    expect(validateScope("User")).toBe("user");
+    expect(validateScope("WORKSPACE")).toBe("workspace");
+  });
+
+  it.each(["system", "systemdefaults", "System", "SystemDefaults"])(
+    "rejects '%s' with a message explaining the silent-downgrade hazard",
+    (scope) => {
+      expect(() => validateScope(scope)).toThrowError(ExtensionLifecycleError);
+      try {
+        validateScope(scope);
+        throw new Error("expected throw");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ExtensionLifecycleError);
+        expect((err as ExtensionLifecycleError).code).toBe("invalid_scope");
+        expect((err as Error).message).toMatch(/silently/);
+      }
+    },
+  );
+
+  it("rejects any other value with a generic invalid-scope message", () => {
+    expect(() => validateScope("global")).toThrowError(ExtensionLifecycleError);
+    try {
+      validateScope("global");
+    } catch (err) {
+      expect((err as ExtensionLifecycleError).code).toBe("invalid_scope");
+      expect((err as Error).message).toMatch(/user.*workspace|workspace.*user/i);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// argv builders — asserted exactly
+
+describe("argv builders", () => {
+  it("buildInstallArgv: extensions install <value>", () => {
+    expect(buildInstallArgv({ type: "local", value: "/abs/path" })).toEqual([
+      "extensions",
+      "install",
+      "/abs/path",
+    ]);
+    expect(buildInstallArgv({ type: "git", value: "owner/repo" })).toEqual([
+      "extensions",
+      "install",
+      "owner/repo",
+    ]);
+  });
+
+  it("buildUninstallArgv: extensions uninstall <name> — the remove→uninstall translation", () => {
+    expect(buildUninstallArgv("serena")).toEqual(["extensions", "uninstall", "serena"]);
+  });
+
+  it("buildEnableArgv: extensions enable <name> --scope <scope>", () => {
+    expect(buildEnableArgv("serena", "user")).toEqual([
+      "extensions",
+      "enable",
+      "serena",
+      "--scope",
+      "user",
+    ]);
+    expect(buildEnableArgv("serena", "workspace")).toEqual([
+      "extensions",
+      "enable",
+      "serena",
+      "--scope",
+      "workspace",
+    ]);
+  });
+
+  it("buildDisableArgv: extensions disable <name> --scope <scope>", () => {
+    expect(buildDisableArgv("serena", "user")).toEqual([
+      "extensions",
+      "disable",
+      "serena",
+      "--scope",
+      "user",
+    ]);
+  });
+
+  it("buildUpdateArgv: extensions update <name> — never --all", () => {
+    expect(buildUpdateArgv("serena")).toEqual(["extensions", "update", "serena"]);
+  });
+
+  it("buildLinkArgv: extensions link <path>", () => {
+    expect(buildLinkArgv("/abs/ext/path")).toEqual(["extensions", "link", "/abs/ext/path"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// installExtension — classification + remote gate + argv + exec, wired together
+
+describe("installExtension", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "qwen-install-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("local source: ungated, execs 'extensions install <abs path>'", async () => {
+    const extDir = join(dir, "local-ext");
+    mkdirSync(extDir);
+    let capturedArgv: string[] | null = null;
+    const result = await installExtension("/usr/bin/qwen", "./local-ext", {
+      cwd: dir,
+      env: {},
+      execFn: async (bin, argv) => {
+        expect(bin).toBe("/usr/bin/qwen");
+        capturedArgv = argv;
+        return "installed\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "install", extDir]);
+    expect(result).toEqual({
+      argv: ["extensions", "install", extDir],
+      stdout: "installed\n",
+      source: { type: "local", value: extDir },
+    });
+  });
+
+  it("remote source (git): refused with typed remote_install_gated error when env unset, NO exec call", async () => {
+    let execCalled = false;
+    await expect(
+      installExtension("/usr/bin/qwen", "example-org/example-repo", {
+        cwd: dir,
+        env: {},
+        execFn: async () => {
+          execCalled = true;
+          return "should not run";
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "ExtensionLifecycleError",
+      code: "remote_install_gated",
+    });
+    expect(execCalled).toBe(false);
+  });
+
+  it("remote source (git): the refusal error names QWEN_ALLOW_REMOTE_INSTALL", async () => {
+    await expect(
+      installExtension("/usr/bin/qwen", "example-org/example-repo", { cwd: dir, env: {} }),
+    ).rejects.toThrow(new RegExp(QWEN_ALLOW_REMOTE_INSTALL_ENV));
+  });
+
+  it("remote source (npm): permitted and execs when QWEN_ALLOW_REMOTE_INSTALL=1", async () => {
+    let capturedArgv: string[] | null = null;
+    const result = await installExtension("/usr/bin/qwen", "@scope/pkg", {
+      cwd: dir,
+      env: { [QWEN_ALLOW_REMOTE_INSTALL_ENV]: "1" },
+      execFn: async (_bin, argv) => {
+        capturedArgv = argv;
+        return "installed\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "install", "@scope/pkg"]);
+    expect(result.source).toEqual({ type: "npm", value: "@scope/pkg" });
+  });
+
+  it("remote source (marketplace): also gated, same as git/npm", async () => {
+    await expect(
+      installExtension("/usr/bin/qwen", "market.example.com:ext-name", { cwd: dir, env: {} }),
+    ).rejects.toMatchObject({ code: "remote_install_gated" });
+  });
+
+  it("invalid source: classification error propagates, no exec attempted", async () => {
+    let execCalled = false;
+    await expect(
+      installExtension("/usr/bin/qwen", "./nonexistent-xyz", {
+        cwd: dir,
+        env: {},
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_source" });
+    expect(execCalled).toBe(false);
+  });
+
+  it("mutation exec failure surfaces as a typed error carrying stderr (NOT fail-soft)", async () => {
+    const extDir = join(dir, "fails-ext");
+    mkdirSync(extDir);
+    await expect(
+      installExtension("/usr/bin/qwen", extDir, {
+        cwd: dir,
+        env: {},
+        execFn: async () => {
+          const err = new Error("install failed") as Error & { stderr?: string };
+          err.stderr = "permission denied: cannot write extension dir";
+          throw err;
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "ExtensionLifecycleError",
+      code: "exec_failed",
+      stderr: "permission denied: cannot write extension dir",
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// uninstallExtension — the remove→uninstall translation, no gate
+
+describe("uninstallExtension", () => {
+  it("execs 'extensions uninstall <name>' regardless of caller-facing 'remove' verb", async () => {
+    let capturedArgv: string[] | null = null;
+    const result = await uninstallExtension("/usr/bin/qwen", "serena", {
+      execFn: async (_bin, argv) => {
+        capturedArgv = argv;
+        return "removed\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "uninstall", "serena"]);
+    expect(result.stdout).toBe("removed\n");
+  });
+
+  it("mutation failure throws typed error with stderr", async () => {
+    await expect(
+      uninstallExtension("/usr/bin/qwen", "serena", {
+        execFn: async () => {
+          const err = new Error("boom") as Error & { stderr?: string };
+          err.stderr = "not installed";
+          throw err;
+        },
+      }),
+    ).rejects.toMatchObject({ code: "exec_failed", stderr: "not installed" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// enableExtension / disableExtension — explicit wrapper default + scope validation
+
+describe("enableExtension / disableExtension", () => {
+  it("DEFAULT_ENABLE_SCOPE and DEFAULT_DISABLE_SCOPE are both explicit 'user' (visible, symmetric)", () => {
+    // RDR-002 Phase 0 amendment: upstream's enable→all-scopes /
+    // disable→User asymmetry must NOT be silently inherited. This wrapper
+    // makes a single explicit default visible in the API instead.
+    expect(DEFAULT_ENABLE_SCOPE).toBe("user");
+    expect(DEFAULT_DISABLE_SCOPE).toBe("user");
+  });
+
+  it("enable with no scope opt uses the explicit default, not upstream's all-scopes default", async () => {
+    let capturedArgv: string[] | null = null;
+    const result = await enableExtension("/usr/bin/qwen", "serena", {
+      execFn: async (_bin, argv) => {
+        capturedArgv = argv;
+        return "enabled\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "enable", "serena", "--scope", "user"]);
+    expect(result.scope).toBe("user");
+  });
+
+  it("enable with explicit scope='workspace' passes it through", async () => {
+    let capturedArgv: string[] | null = null;
+    await enableExtension("/usr/bin/qwen", "serena", {
+      scope: "workspace",
+      execFn: async (_bin, argv) => {
+        capturedArgv = argv;
+        return "enabled\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "enable", "serena", "--scope", "workspace"]);
+  });
+
+  it("enable with scope='system' rejects BEFORE exec, no exec call made", async () => {
+    let execCalled = false;
+    await expect(
+      enableExtension("/usr/bin/qwen", "serena", {
+        scope: "system",
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_scope" });
+    expect(execCalled).toBe(false);
+  });
+
+  it("disable with no scope opt uses the explicit default", async () => {
+    let capturedArgv: string[] | null = null;
+    const result = await disableExtension("/usr/bin/qwen", "serena", {
+      execFn: async (_bin, argv) => {
+        capturedArgv = argv;
+        return "disabled\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "disable", "serena", "--scope", "user"]);
+    expect(result.scope).toBe("user");
+  });
+
+  it("disable with scope='systemdefaults' rejects BEFORE exec", async () => {
+    await expect(
+      disableExtension("/usr/bin/qwen", "serena", { scope: "systemdefaults" }),
+    ).rejects.toMatchObject({ code: "invalid_scope" });
+  });
+
+  it("mutation failure on enable throws typed error with stderr", async () => {
+    await expect(
+      enableExtension("/usr/bin/qwen", "serena", {
+        execFn: async () => {
+          const err = new Error("boom") as Error & { stderr?: string };
+          err.stderr = "extension not found";
+          throw err;
+        },
+      }),
+    ).rejects.toMatchObject({ code: "exec_failed", stderr: "extension not found" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// linkExtension — always local, always ungated
+
+describe("linkExtension", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "qwen-link-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("execs 'extensions link <abs path>' for an existing local path, no gate", async () => {
+    const extDir = join(dir, "dev-ext");
+    mkdirSync(extDir);
+    let capturedArgv: string[] | null = null;
+    const result = await linkExtension("/usr/bin/qwen", "./dev-ext", {
+      cwd: dir,
+      execFn: async (_bin, argv) => {
+        capturedArgv = argv;
+        return "linked\n";
+      },
+    });
+    expect(capturedArgv).toEqual(["extensions", "link", extDir]);
+    expect(result.stdout).toBe("linked\n");
+  });
+
+  it("rejects a nonexistent local path before exec", async () => {
+    await expect(
+      linkExtension("/usr/bin/qwen", "./nonexistent-link-target", { cwd: dir }),
+    ).rejects.toMatchObject({ code: "invalid_source" });
+  });
+
+  it("rejects a remote-shaped source — link only accepts local paths, never gated-through as remote", async () => {
+    let execCalled = false;
+    await expect(
+      linkExtension("/usr/bin/qwen", "owner/repo", {
+        cwd: dir,
+        execFn: async () => {
+          execCalled = true;
+          return "x";
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_source" });
+    expect(execCalled).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// updateExtensions — per-extension classification via
+// .qwen-extension-install.json, fail-closed on missing/unknown metadata,
+// --all never passed through raw.
+
+describe("updateExtensions", () => {
+  const installed = [
+    { name: "local-ext", path: "/exts/local-ext" },
+    { name: "git-ext", path: "/exts/git-ext" },
+    { name: "no-metadata-ext", path: "/exts/no-metadata-ext" },
+    { name: "unknown-type-ext", path: "/exts/unknown-type-ext" },
+  ];
+
+  function metadataFor(path: string): { type?: string; source?: string } | null {
+    const table: Record<string, { type?: string; source?: string } | null> = {
+      "/exts/local-ext": { type: "local", source: "/exts/local-ext" },
+      "/exts/git-ext": { type: "git", source: "owner/repo" },
+      "/exts/no-metadata-ext": null,
+      "/exts/unknown-type-ext": { type: "mystery-format" },
+    };
+    return table[path] ?? null;
+  }
+
+  it("EXTENSION_INSTALL_METADATA_FILENAME is the file the addendum names", () => {
+    expect(EXTENSION_INSTALL_METADATA_FILENAME).toBe(".qwen-extension-install.json");
+  });
+
+  it("'all' enumerates and classifies every installed extension individually — never a raw --all argv", async () => {
+    const execCalls: string[][] = [];
+    const result = await updateExtensions("/usr/bin/qwen", installed, "all", {
+      env: { [QWEN_ALLOW_REMOTE_INSTALL_ENV]: "1" },
+      readMetadataFn: async (path) => metadataFor(path),
+      execFn: async (_bin, argv) => {
+        execCalls.push(argv);
+        return "updated\n";
+      },
+    });
+
+    // No call ever contains "--all".
+    for (const argv of execCalls) {
+      expect(argv).not.toContain("--all");
+    }
+    // Local and git targets each got their own individual argv.
+    expect(execCalls).toContainEqual(["extensions", "update", "local-ext"]);
+    expect(execCalls).toContainEqual(["extensions", "update", "git-ext"]);
+    expect(execCalls).toHaveLength(2);
+
+    const byName = new Map(result.items.map((i) => [i.name, i]));
+    expect(byName.get("local-ext")).toMatchObject({ status: "updated" });
+    expect(byName.get("git-ext")).toMatchObject({ status: "updated" });
+    expect(byName.get("no-metadata-ext")).toMatchObject({ status: "refused" });
+    expect(byName.get("unknown-type-ext")).toMatchObject({ status: "refused" });
+    expect(result.items).toHaveLength(4);
+  });
+
+  it("fails CLOSED on missing metadata file (readMetadataFn returns null) — refused, not attempted", async () => {
+    let execCalled = false;
+    const result = await updateExtensions("/usr/bin/qwen", installed, ["no-metadata-ext"], {
+      env: { [QWEN_ALLOW_REMOTE_INSTALL_ENV]: "1" },
+      readMetadataFn: async () => null,
+      execFn: async () => {
+        execCalled = true;
+        return "x";
+      },
+    });
+    expect(execCalled).toBe(false);
+    expect(result.items).toEqual([
+      {
+        name: "no-metadata-ext",
+        status: "refused",
+        reason: expect.stringMatching(/missing or unreadable/i),
+      },
+    ]);
+  });
+
+  it("fails CLOSED on an unrecognized installMetadata.type — refused, not attempted", async () => {
+    let execCalled = false;
+    const result = await updateExtensions("/usr/bin/qwen", installed, ["unknown-type-ext"], {
+      env: { [QWEN_ALLOW_REMOTE_INSTALL_ENV]: "1" },
+      readMetadataFn: async () => ({ type: "mystery-format" }),
+      execFn: async () => {
+        execCalled = true;
+        return "x";
+      },
+    });
+    expect(execCalled).toBe(false);
+    expect(result.items[0]).toMatchObject({ status: "refused", reason: expect.stringMatching(/unknown/i) });
+  });
+
+  it("a git-classified target is refused (not attempted) when QWEN_ALLOW_REMOTE_INSTALL is unset", async () => {
+    let execCalled = false;
+    const result = await updateExtensions("/usr/bin/qwen", installed, ["git-ext"], {
+      env: {},
+      readMetadataFn: async (path) => metadataFor(path),
+      execFn: async () => {
+        execCalled = true;
+        return "x";
+      },
+    });
+    expect(execCalled).toBe(false);
+    expect(result.items[0]).toMatchObject({
+      status: "refused",
+      reason: expect.stringMatching(new RegExp(QWEN_ALLOW_REMOTE_INSTALL_ENV)),
+    });
+  });
+
+  it("a local-classified target updates ungated even when QWEN_ALLOW_REMOTE_INSTALL is unset", async () => {
+    const result = await updateExtensions("/usr/bin/qwen", installed, ["local-ext"], {
+      env: {},
+      readMetadataFn: async (path) => metadataFor(path),
+      execFn: async () => "updated\n",
+    });
+    expect(result.items[0]).toMatchObject({ status: "updated" });
+  });
+
+  it("a name not present in the installed list is refused as not-found, not attempted", async () => {
+    let execCalled = false;
+    const result = await updateExtensions("/usr/bin/qwen", installed, ["ghost-ext"], {
+      env: { [QWEN_ALLOW_REMOTE_INSTALL_ENV]: "1" },
+      readMetadataFn: async () => ({ type: "local" }),
+      execFn: async () => {
+        execCalled = true;
+        return "x";
+      },
+    });
+    expect(execCalled).toBe(false);
+    expect(result.items[0]).toMatchObject({ name: "ghost-ext", status: "refused" });
+  });
+
+  it("an exec failure on one item is captured per-item as 'failed' with the stderr-derived reason, not thrown", async () => {
+    const result = await updateExtensions("/usr/bin/qwen", installed, ["local-ext"], {
+      env: {},
+      readMetadataFn: async (path) => metadataFor(path),
+      execFn: async () => {
+        const err = new Error("update failed") as Error & { stderr?: string };
+        err.stderr = "network unreachable";
+        throw err;
+      },
+    });
+    expect(result.items[0]).toMatchObject({
+      name: "local-ext",
+      status: "failed",
+      reason: expect.stringMatching(/network unreachable|update failed/),
+    });
+  });
+
+  it("a batch mixes updated / refused / failed and reports every item (no early abort)", async () => {
+    const result = await updateExtensions(
+      "/usr/bin/qwen",
+      installed,
+      ["local-ext", "git-ext", "no-metadata-ext"],
+      {
+        env: {}, // git-ext will be refused (gate), local-ext will succeed
+        readMetadataFn: async (path) => metadataFor(path),
+        execFn: async () => "updated\n",
+      },
+    );
+    expect(result.items).toHaveLength(3);
+    const byName = new Map(result.items.map((i) => [i.name, i]));
+    expect(byName.get("local-ext")?.status).toBe("updated");
+    expect(byName.get("git-ext")?.status).toBe("refused");
+    expect(byName.get("no-metadata-ext")?.status).toBe("refused");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// execFile regression pin — must never become exec() (shell injection)
+//
+// Uses a REAL subprocess (a tiny fixture script) rather than an injected
+// fn: the property under test is about defaultExecExtensionsMutate's own
+// exec mechanism, which an injected fn can't observe. A shell-metachar
+// argument must arrive at the fixture script as one literal argv element;
+// if defaultExecExtensionsMutate were ever changed to child_process.exec,
+// the semicolon would be interpreted by a shell and create the marker
+// file this test asserts must NOT exist.
+
+describe("defaultExecExtensionsMutate — execFile regression pin", () => {
+  let dir: string;
+  let fakeQwen: string;
+  let markerFile: string;
+  let outFile: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "qwen-execfile-pin-"));
+    fakeQwen = join(dir, "fake-qwen.sh");
+    markerFile = join(dir, "pwned-marker");
+    outFile = join(dir, "argv-out");
+    writeFileSync(
+      fakeQwen,
+      [
+        "#!/usr/bin/env bash",
+        `: > "${outFile}"`,
+        'for a in "$@"; do printf \'%s\\n\' "$a" >> "' + outFile + '"; done',
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    chmodSync(fakeQwen, 0o755);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("passes a shell-metacharacter argument through literally, without shell interpretation", async () => {
+    const maliciousName = `; touch ${markerFile} #`;
+    const stdout = await defaultExecExtensionsMutate(fakeQwen, [
+      "extensions",
+      "uninstall",
+      maliciousName,
+    ]);
+    void stdout;
+
+    expect(existsSync(markerFile)).toBe(false);
+
+    const { readFileSync } = await import("node:fs");
+    const capturedLines = readFileSync(outFile, "utf8").split("\n").filter((l) => l !== "");
+    expect(capturedLines).toEqual(["extensions", "uninstall", maliciousName]);
+  });
+
+  it("resolves on clean exit with stdout", async () => {
+    const stdout = await defaultExecExtensionsMutate(fakeQwen, ["extensions", "list"]);
+    expect(stdout).toBe("");
+  });
+
+  it("rejects with a typed ExtensionLifecycleError carrying stderr on nonzero exit", async () => {
+    const failingScript = join(dir, "failing-qwen.sh");
+    writeFileSync(
+      failingScript,
+      ["#!/usr/bin/env bash", "echo 'boom on stderr' 1>&2", "exit 1"].join("\n") + "\n",
+      "utf8",
+    );
+    chmodSync(failingScript, 0o755);
+
+    await expect(
+      defaultExecExtensionsMutate(failingScript, ["extensions", "uninstall", "x"]),
+    ).rejects.toMatchObject({
+      name: "ExtensionLifecycleError",
+      code: "exec_failed",
+      stderr: expect.stringContaining("boom on stderr"),
+    });
   });
 });
