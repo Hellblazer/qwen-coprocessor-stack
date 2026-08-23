@@ -1,0 +1,16 @@
+{
+  "name": "001-interval-debug",
+  "family": "debug",
+  "prompt": "intervals.py provides merge() and subtract() over half-open ranges [start, end). test_intervals.py currently has at least one failing case. Make test_intervals.py pass in full, without altering its assertions.",
+  "setup": {
+    "copy_dir": "files"
+  },
+  "verify": {
+    "command": ["python3", "-m", "unittest", "-v", "test_intervals"],
+    "cwd": ".",
+    "expected_exit_code": 0
+  },
+  "max_tool_calls": 30,
+  "timeout_ms": 2400000,
+  "notes": "Difficulty calibration, not a baseline to beat: on 2026-08-16 qwen_oneshot (Qwen3.8-27B Q6_K, reasoning off, 64K ctx) solved this cold in 9.7 min / 11 tool calls -- fixed the real merge-adjacency bug and the real subtract skip-ahead bug, correctly dismissed the planted red herring, added its own edge-case test, 7/7 independently verified. That single run establishes what a solved run looks like on this hardware/model pairing; it is not a target time or tool-call count for future runs to beat."
+}
