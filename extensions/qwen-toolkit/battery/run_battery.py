@@ -448,12 +448,36 @@ def summarize(rows: Sequence[RunRow]) -> dict:
     return out
 
 
+HealthCheckFn = Callable[[], bool]
+
+
+def make_url_health_check(url: str, timeout_s: float = 5.0) -> HealthCheckFn:
+    """Production health check: GET url, True iff it returns HTTP 200.
+
+    Kept out of the stdlib module's hardcoded assumptions about WHICH url
+    (backends are config-driven, not code-driven -- see CLAUDE.md
+    "Conventions & Patterns") -- the caller supplies the url (e.g. the
+    coder-box's own /health endpoint) via --health-url.
+    """
+    import urllib.request
+
+    def check() -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout_s) as resp:  # noqa: S310
+                return resp.status == 200
+        except Exception:
+            return False
+
+    return check
+
+
 def run_battery(
     tasks: Sequence[TaskSpec],
     arms: Sequence[str],
     repeats: int,
     work_root: Path,
     dispatch_fn: DispatchFn,
+    health_check_fn: HealthCheckFn | None = None,
 ) -> dict:
     """The full A/B run: gold-check gate, then serial dispatch loops.
 
@@ -462,27 +486,50 @@ def run_battery(
     task/arm/repetition loops below are plain sequential `for` loops, no
     thread pool, no asyncio, no subprocess fan-out. Do not parallelize
     this.
+
+    When ``health_check_fn`` is given, it is called immediately before
+    EVERY dispatch (bead 3su.10: "if the BOX goes unhealthy... STOP the
+    run and report immediately rather than hammering it"). On the first
+    ``False``, the run stops immediately -- no further dispatch calls at
+    all, not even for the current arm/task -- and the returned doc carries
+    ``aborted_reason`` naming exactly where it stopped. A server-side
+    error from an individual dispatch (a 500, a context-exceeded) is NOT
+    a health-check failure -- that is a normal recorded DispatchOutcome
+    and the run continues; only the health probe itself failing halts
+    everything.
     """
     gold_results = [gold_check_task(t, work_root) for t in tasks]
     broken = {g.task for g in gold_results if not g.passed}
 
     rows: list[RunRow] = []
+    aborted_reason: str | None = None
+
     for task in tasks:
+        if aborted_reason is not None:
+            break
         if task.name in broken:
             # Fail loudly, not noisily: a broken fixture gets ZERO dispatch
             # calls (see broken_fixtures in the emitted doc), not a silent
             # pass/fail row that would look like a real measurement.
             continue
         for arm in arms:
+            if aborted_reason is not None:
+                break
             for rep in range(1, repeats + 1):
+                if health_check_fn is not None and not health_check_fn():
+                    aborted_reason = f"health check failed before {task.name}/{arm}/rep{rep} -- run stopped"
+                    break
                 rows.append(run_one(task, arm, rep, work_root, dispatch_fn))
 
-    return {
+    doc: dict = {
         "gold_check": [gold_check_to_dict(g) for g in gold_results],
         "broken_fixtures": sorted(broken),
         "rows": [run_row_to_dict(r) for r in rows],
         "summary": summarize(rows),
     }
+    if aborted_reason is not None:
+        doc["aborted_reason"] = aborted_reason
+    return doc
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -515,6 +562,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--task", action="append", dest="task_filter", default=None, help="Repeatable; limit to this task name.")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
+    parser.add_argument(
+        "--health-url",
+        default=None,
+        help="URL checked (HTTP GET, expect 200) before every dispatch; the run stops immediately on the first failure. Recommended for --dispatch against a live production box (bead 3su.10).",
+    )
     args = parser.parse_args(argv)
 
     tasks = discover_tasks(args.tasks_dir)
@@ -544,8 +596,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     def dispatch_fn(task: TaskSpec, tree: Path, arm: str) -> DispatchOutcome:
         return dispatch_via_driver(task, tree, arm, max_output_tokens=args.max_output_tokens)
 
-    doc = run_battery(tasks, arms, args.repeats, work_root, dispatch_fn)
+    health_check_fn = make_url_health_check(args.health_url) if args.health_url else None
+
+    doc = run_battery(tasks, arms, args.repeats, work_root, dispatch_fn, health_check_fn=health_check_fn)
     _emit(doc, args.out)
+    if doc.get("aborted_reason"):
+        print(f"RUN ABORTED: {doc['aborted_reason']}", file=sys.stderr)
+        return 3
     if doc["broken_fixtures"]:
         print(f"BROKEN FIXTURE(S), skipped -- see gold_check in the output: {', '.join(doc['broken_fixtures'])}", file=sys.stderr)
         return 1

@@ -378,6 +378,77 @@ class RunBatteryOrchestrationTests(TempDirCase):
         self.assertNotIn("baseline", blob.lower())
 
 
+class HealthCheckAbortTests(TempDirCase):
+    """Bead 3su.10 box discipline: 'if the BOX goes unhealthy... STOP the
+    run and report immediately rather than hammering it.' A health-check
+    failure must halt ALL further dispatch, not just skip one row."""
+
+    def test_unhealthy_before_first_dispatch_runs_zero_dispatches(self) -> None:
+        write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42", name="t")
+        tasks = rb.discover_tasks(self.tmp)
+        calls: list[str] = []
+
+        def dispatch_fn(task, tree, arm):
+            calls.append(arm)
+            return rb.DispatchOutcome(ok=True, elapsed_ms=1, tool_calls=1, error=None)
+
+        doc = rb.run_battery(
+            tasks, ["toolkit", "control"], 3, self.tmp / "work", dispatch_fn, health_check_fn=lambda: False
+        )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(doc["rows"], [])
+        self.assertIn("health check failed", doc["aborted_reason"])
+
+    def test_unhealthy_partway_through_stops_immediately(self) -> None:
+        write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42", name="t")
+        tasks = rb.discover_tasks(self.tmp)
+        calls: list[int] = []
+        # Healthy for the first 2 checks, then unhealthy from the 3rd on.
+        health_sequence = [True, True, False, False, False, False]
+        health_iter = iter(health_sequence)
+
+        def dispatch_fn(task, tree, arm):
+            calls.append(1)
+            return rb.DispatchOutcome(ok=True, elapsed_ms=1, tool_calls=1, error=None)
+
+        doc = rb.run_battery(
+            tasks, ["toolkit"], 5, self.tmp / "work", dispatch_fn, health_check_fn=lambda: next(health_iter)
+        )
+
+        self.assertEqual(len(calls), 2, "only the 2 dispatches whose health check passed should have run")
+        self.assertEqual(len(doc["rows"]), 2)
+        self.assertIn("rep3", doc["aborted_reason"])
+
+    def test_healthy_throughout_never_aborts(self) -> None:
+        write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42", name="t")
+        tasks = rb.discover_tasks(self.tmp)
+        doc = rb.run_battery(
+            tasks,
+            ["toolkit", "control"],
+            2,
+            self.tmp / "work",
+            lambda t, tr, a: rb.DispatchOutcome(True, 1, 1, None),
+            health_check_fn=lambda: True,
+        )
+        self.assertNotIn("aborted_reason", doc)
+        self.assertEqual(len(doc["rows"]), 4)
+
+    def test_no_health_check_fn_never_aborts(self) -> None:
+        write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42", name="t")
+        tasks = rb.discover_tasks(self.tmp)
+        doc = rb.run_battery(
+            tasks, ["toolkit"], 1, self.tmp / "work", lambda t, tr, a: rb.DispatchOutcome(True, 1, 1, None)
+        )
+        self.assertNotIn("aborted_reason", doc)
+
+
+class MakeUrlHealthCheckTests(unittest.TestCase):
+    def test_returns_false_for_an_unreachable_url(self) -> None:
+        check = rb.make_url_health_check("http://127.0.0.1:1", timeout_s=1.0)
+        self.assertFalse(check())
+
+
 class SummarizeTests(unittest.TestCase):
     def test_empty_rows(self) -> None:
         self.assertEqual(rb.summarize([]), {})
@@ -407,6 +478,27 @@ class CLITests(TempDirCase):
             code = rb.main(["--tasks-dir", str(self.tmp / "tasks"), "--work-root", str(self.tmp / "work"), "--gold-check"])
         self.assertEqual(code, 1)
         self.assertIn("BROKEN FIXTURE", stderr.getvalue())
+
+    def test_dispatch_mode_with_unreachable_health_url_aborts_before_any_dispatch(self) -> None:
+        # Real --dispatch code path, but the health check fails before
+        # dispatch_via_driver is ever reached -- no Node, no box needed.
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = rb.main(
+                [
+                    "--tasks-dir",
+                    str(REAL_TASKS_DIR),
+                    "--work-root",
+                    str(self.tmp / "work"),
+                    "--dispatch",
+                    "--health-url",
+                    "http://127.0.0.1:1",
+                ]
+            )
+        self.assertEqual(code, 3)
+        self.assertIn("RUN ABORTED", stderr.getvalue())
+        doc = json.loads(stdout.getvalue())
+        self.assertEqual(doc["rows"], [])
 
     def test_requires_gold_check_or_dispatch(self) -> None:
         stderr = io.StringIO()
