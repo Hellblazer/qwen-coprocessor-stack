@@ -14,6 +14,52 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+Ships the RDR-002 §Layer 1 extension-lifecycle surface: five new MCP tools
+(`qwen_extension_install`/`remove`/`enable`/`disable`/`update`) alongside the
+existing read-only `qwen_extensions`/`qwen_reload_extensions`, plus the
+`/qwen-stack:extensions` skill and `USER_GUIDE.md` rewritten for the full
+lifecycle (was read-only-listing-only). Local sources are ungated; remote
+sources (git/npm/marketplace) are refused unless `QWEN_ALLOW_REMOTE_INSTALL=1`
+is set in the supervisor's environment. `--scope` accepts only
+`user`/`workspace` (upstream's `system`/`systemdefaults` are validated but
+silently downgraded to `user` — this wrapper refuses them instead);
+`enable`/`disable` default to the explicit scope `user` when omitted, not
+upstream's own asymmetric default. `update` classifies every target via its
+`.qwen-extension-install.json` before exec and fails closed on missing or
+unrecognized metadata; it never shells a raw `--all` — omitting `names`
+enumerates and updates every installed extension individually, reporting
+per-item `updated`/`refused`/`failed` results. Every successful mutation
+reloads the supervisor's installed-extensions cache itself; no manual
+`qwen_reload_extensions` step is needed afterward.
+
+### Added
+
+- **`qwen_extension_install` / `qwen_extension_remove` / `qwen_extension_enable`
+  / `qwen_extension_disable` / `qwen_extension_update` MCP tools.** Thin
+  shell-out wrappers around `qwen extensions install`/`uninstall`/`enable`/
+  `disable`/`update`, gated on the Phase 0 remote-install decision and the
+  `--scope` validation described above. Registered whenever the supervisor's
+  installed-extensions cache is wired in, same as `qwen_reload_extensions`.
+
+### Changed
+
+- **`/qwen-stack:extensions` skill** rewritten for the full lifecycle — the
+  v0.3 read-only framing ("install/remove/enable/disable are deferred to
+  v0.4") is gone. Routes all seven subcommands (`list`/`info`/`install`/
+  `remove`/`enable`/`disable`/`update`), documents the remote-install gate and
+  the `--scope` restriction at the point of use, and states the auto-reload
+  behavior explicitly.
+- **`docs/USER_GUIDE.md`**: new "Recipe: manage extensions" section (install
+  from a local path, install from git showing the gate refusal, enable/disable
+  per scope, remove, update) placed before Troubleshooting.
+- **Plugin/marketplace description and tag drift.** `plugins/qwen-stack/.claude-plugin/plugin.json`
+  and `.claude-plugin/marketplace.json` said "Qwen 3.6" / tagged `qwen3.6`; the
+  box has served Qwen3.8-27B since v0.11's box-promotion release. Both now say
+  "Qwen 3" / tag `qwen3` — a generation-level reference rather than a minor
+  version pin, so this doesn't go stale again on the next model bump. Version
+  fields (`version`, `source.ref`) are untouched; those move only through the
+  release flow.
+
 ## [0.11.14] - 2026-06-28
 
 Tightens the RDR-014 `codeIntel` guidance so a coprocessor drives agent-lsp
