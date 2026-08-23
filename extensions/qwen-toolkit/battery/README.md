@@ -2,10 +2,28 @@
 
 Objective, repeatable tasks for measuring the qwen-toolkit extension
 (`extensions/qwen-toolkit/`) against a coprocessor backend. This document
-is the format only. No driver and no runner live here -- those are
-tracked separately (W4 dispatch driver, W4 runner/grader); this bead
-defines what a task looks like so both can be built against something
-concrete.
+is the format only; `battery/driver.ts` (bead 3su.8) is the dispatch
+driver built against it.
+
+## Driver stdin envelope (bead 3su.8 addendum)
+
+`battery/driver.ts` reads one JSON object on stdin, matching `task.json`
+verbatim plus one additional optional field:
+
+- **`cwd`** (string, absolute path) -- the already-materialized working
+  tree for this task instance (i.e. `setup.copy_dir`'s contents, already
+  copied into a fresh directory). The driver does no file materialization
+  of its own -- "thin by design," per the driver's own bead -- so
+  something upstream (the Python runner, bead 3su.9) must copy
+  `setup.copy_dir` into a real directory and pass its path here. Omitting
+  `cwd` is only for ad hoc/manual driver invocation; the inner session
+  then runs wherever it defaults to (`process.cwd()`), which is never
+  what a real battery run wants.
+
+The driver also takes one CLI flag, `--arm toolkit|control`, selecting
+which `opts.extensions.only` to dispatch with (see driver.ts's header
+comment) -- not part of `task.json` itself, since the same task is
+dispatched twice, once per arm, to get a toolkit/control pair.
 
 ## Relationship to `scripts/bench/cases.json`
 
