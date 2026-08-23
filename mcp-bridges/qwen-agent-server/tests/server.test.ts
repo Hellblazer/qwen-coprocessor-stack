@@ -754,7 +754,7 @@ describe("MCP tool handlers", () => {
         const handlers = createToolHandlers(pool, cache);
         const result = await handlers.qwen_extension_install!({ source: extDir });
         expect(result).toMatchObject({
-          argv: ["extensions", "install", extDir],
+          argv: ["extensions", "install", extDir, "--consent"],
           stdout: expect.stringContaining("ok:"),
         });
         expect(cache.reload).toHaveBeenCalledOnce();
@@ -796,7 +796,7 @@ describe("MCP tool handlers", () => {
         const handlers = createToolHandlers(pool, cache);
         const result = await handlers.qwen_extension_install!({ source: "example-org/example-repo" });
         expect(result).toMatchObject({
-          argv: ["extensions", "install", "example-org/example-repo"],
+          argv: ["extensions", "install", "example-org/example-repo", "--consent"],
         });
         expect(cache.reload).toHaveBeenCalledOnce();
       });
@@ -826,7 +826,7 @@ describe("MCP tool handlers", () => {
         };
         const handlers = createToolHandlers(pool, cache);
         const result = await handlers.qwen_extension_install!({ source: extDir });
-        expect(result).toMatchObject({ argv: ["extensions", "install", extDir] });
+        expect(result).toMatchObject({ argv: ["extensions", "install", extDir, "--consent"] });
         expect("error" in (result as object)).toBe(false);
         expect(cache.reload).toHaveBeenCalledOnce();
       });

@@ -811,16 +811,18 @@ describe("validateScope", () => {
 // argv builders — asserted exactly
 
 describe("argv builders", () => {
-  it("buildInstallArgv: extensions install <value>", () => {
+  it("buildInstallArgv: extensions install <value> --consent (non-interactive; see the function doc comment)", () => {
     expect(buildInstallArgv({ type: "local", value: "/abs/path" })).toEqual([
       "extensions",
       "install",
       "/abs/path",
+      "--consent",
     ]);
     expect(buildInstallArgv({ type: "git", value: "owner/repo" })).toEqual([
       "extensions",
       "install",
       "owner/repo",
+      "--consent",
     ]);
   });
 
@@ -891,9 +893,9 @@ describe("installExtension", () => {
         return "installed\n";
       },
     });
-    expect(capturedArgv).toEqual(["extensions", "install", extDir]);
+    expect(capturedArgv).toEqual(["extensions", "install", extDir, "--consent"]);
     expect(result).toEqual({
-      argv: ["extensions", "install", extDir],
+      argv: ["extensions", "install", extDir, "--consent"],
       stdout: "installed\n",
       source: { type: "local", value: extDir },
     });
@@ -933,7 +935,7 @@ describe("installExtension", () => {
         return "installed\n";
       },
     });
-    expect(capturedArgv).toEqual(["extensions", "install", "@scope/pkg"]);
+    expect(capturedArgv).toEqual(["extensions", "install", "@scope/pkg", "--consent"]);
     expect(result.source).toEqual({ type: "npm", value: "@scope/pkg" });
   });
 

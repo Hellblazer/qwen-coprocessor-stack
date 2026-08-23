@@ -924,8 +924,25 @@ async function runMutation(
 // argv builders — asserted exactly by tests. Pure functions; the unit
 // under test is argv construction itself.
 
+/**
+ * `--consent` is REQUIRED, not optional. Verified live against the real
+ * qwen 0.15.6 CLI (bead 3su.15's mandated end-to-end exercise): without
+ * it, `qwen extensions install <source>` prints an interactive
+ * "Do you want to continue? [Y/n]:" prompt and reads from stdin. The
+ * supervisor's exec layer (`defaultExecExtensionsMutate`) never writes
+ * to or closes the child's stdin, so a real invocation hangs the exec
+ * call — and the awaiting MCP tool call — forever. `--consent`
+ * ("Acknowledge the security risks of installing an extension and skip
+ * the confirmation prompt") makes install run non-interactively, same
+ * as every other subcommand this module shells out to. This is safe to
+ * always pass: the confirmation prompt exists for a human at an
+ * interactive terminal, which the supervisor never is; the Phase 0
+ * remote-install gate (`assertRemoteAllowed`, called before this
+ * function) is this wrapper's own consent gate for remote sources, and
+ * a local source needs no extra confirmation at all.
+ */
 export function buildInstallArgv(classified: ClassifiedSource): string[] {
-  return ["extensions", "install", classified.value];
+  return ["extensions", "install", classified.value, "--consent"];
 }
 
 /** The `remove` -> `uninstall` name translation lives entirely here: the
@@ -949,6 +966,20 @@ export function buildUpdateArgv(name: string): string[] {
   return ["extensions", "update", name];
 }
 
+/**
+ * KNOWN LIMITATION (found alongside the install --consent fix above,
+ * bead 3su.15's live exercise): `qwen extensions link <path>` shows the
+ * SAME interactive confirmation prompt as `install`, but — unlike
+ * install — its subcommand does not accept `--consent` at all
+ * (`Unknown argument: consent`, verified against qwen 0.15.6). There is
+ * currently no upstream flag to run `link` non-interactively. `link` is
+ * not wired to any MCP tool today (3su.14 scoped install/remove/enable/
+ * disable/update only), so this is dormant, not exploitable — but a
+ * future caller of `linkExtension` against a real qwen binary WILL
+ * hang. Do not expose it via an MCP tool without first confirming a
+ * non-interactive path exists upstream (or piping a "y" into stdin,
+ * which this module's exec layer does not currently support).
+ */
 export function buildLinkArgv(absPath: string): string[] {
   return ["extensions", "link", absPath];
 }
