@@ -425,6 +425,74 @@ The stack is the supervisor; your app wires its dispatch through it. Two pattern
 
 ---
 
+## Recipe: manage extensions
+
+Extensions are Qwen Code's tool-surface plugins — they live on the **supervisor
+host** (wherever `npx qwen-agent-server` runs), not the inference backend. The
+supervisor is a thin shell-out wrapper around the bundled `qwen extensions ...`
+CLI (RDR-002 §Layer 1); five MCP tools cover the lifecycle, plus the read-only
+`qwen_extensions` listing already covered above the fold.
+
+**The gate: local ungated, remote refused by default.** A local filesystem path
+always installs/updates. A git URL, an npm `@scope/name`, an `owner/repo`
+shorthand, or a marketplace `url:name` source is refused with
+`remote_install_gated` unless **`QWEN_ALLOW_REMOTE_INSTALL=1`** is set in the
+*supervisor's own environment* — set it where the supervisor process launches
+(same place as `OPENROUTER_API_KEY` or any other supervisor env var) and
+restart it; there's no per-call override.
+
+```jsonc
+// Install from a local path — e.g. an extension you're developing in-repo.
+// Ungated; no env var needed.
+qwen_extension_install({ source: "/abs/path/to/my-extension" })
+// → { argv, stdout, source: { type: "local", value: "/abs/path/to/my-extension" } }
+
+// Install from git — refused unless the supervisor has QWEN_ALLOW_REMOTE_INSTALL=1.
+qwen_extension_install({ source: "https://github.com/example/some-extension.git" })
+// → { error: { code: "remote_install_gated", message: "... set QWEN_ALLOW_REMOTE_INSTALL=1 ..." } }
+
+// Enable/disable take an explicit scope — the supervisor's own default is
+// "user" for BOTH verbs (upstream's own default is asymmetric: enable with no
+// --scope applies to ALL scopes, disable defaults to User). Only "user" and
+// "workspace" are accepted; "system"/"systemdefaults" are rejected outright
+// (upstream validates them but silently treats them as "user" — this wrapper
+// won't let that happen invisibly).
+qwen_extension_enable({ name: "serena" })                              // scope: "user" (default)
+qwen_extension_enable({ name: "serena", scope: "workspace" })          // explicit
+qwen_extension_disable({ name: "serena", scope: "workspace" })
+
+// Remove — "remove" is the operator-facing verb; the tool performs the
+// remove → uninstall translation to the upstream subcommand internally.
+qwen_extension_remove({ name: "serena" })
+
+// Update — omit `names` to update every installed extension. This is NEVER a
+// raw `qwen extensions update --all`: the supervisor enumerates the installed
+// set and updates each one individually, classifying it first via its
+// .qwen-extension-install.json (fails closed — missing or unrecognized
+// metadata refuses that one extension rather than guessing). The same remote
+// gate applies per extension.
+qwen_extension_update({})                       // every installed extension
+qwen_extension_update({ names: ["serena"] })     // just this one
+// → { items: [{ name: "serena", status: "updated", argv, stdout }] }
+//   or [{ name: "serena", status: "refused", reason: "..." }]
+//   or [{ name: "serena", status: "failed", reason: "..." }]
+```
+
+**Reload relationship: automatic, not manual.** `install` / `remove` / `enable`
+/ `disable` / `update` each reload the supervisor's installed-extensions cache
+themselves on success — a just-installed extension is immediately valid in
+`opts.extensions.only`/`enable` on the very next `qwen_spawn`. **Do not call
+`qwen_reload_extensions` after any of these; there's nothing left for it to
+do.** That tool still exists for the one case none of the five cover: the
+operator hand-edited `~/.qwen/extensions/extension-enablement.json` outside
+any supervisor tool.
+
+The `/qwen-stack:extensions` skill wraps all of this with table/key-value
+rendering and the same error-code handling — use it from the CLI; call the
+tools directly from your own application.
+
+---
+
 ## Troubleshooting
 
 Start with `/qwen-stack:status` — it shows process state, build freshness,
