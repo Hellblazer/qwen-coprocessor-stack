@@ -63,14 +63,24 @@ import {
 import { setupShutdown } from "./shutdown.js";
 import {
   createInstalledExtensionsCache,
+  disableExtension,
+  enableExtension,
+  ExtensionLifecycleError,
   ExtensionResolutionError,
   getSessionDefaultExtensions,
+  installExtension,
   listInstalledExtensions,
   resolveExtensions,
   resolveQwenRealBin,
   resolveWrapperPath,
+  uninstallExtension,
+  updateExtensions,
+  type EnableDisableResult,
   type ExtensionInfo,
+  type InstallExtensionResult,
   type InstalledExtensionsCache,
+  type UninstallExtensionResult,
+  type UpdateExtensionsResult,
 } from "./extensions.js";
 import {
   dispatchVisionOneshot,
@@ -530,6 +540,61 @@ export type ToolHandlers = {
    * untrusted-client surface to protect against.
    */
   qwen_reload_extensions?: (args: Record<string, never>) => Promise<{ size: number; names: string[] }>;
+
+  // ── W2 lifecycle mutation tools (bead 3su.14) ──────────────────
+  //
+  // All five are optional — registered iff a cache was wired into
+  // createToolHandlers, mirroring qwen_reload_extensions above. Every
+  // mutation must reload that cache on success (bead Work item 4;
+  // resolveExtensions' step-6 validation would otherwise reject a
+  // just-installed extension's name until an explicit reload), so a
+  // handler with no cache to reload has no way to honour the contract.
+  // Enforcement of the Phase 0 remote gate (QWEN_ALLOW_REMOTE_INSTALL)
+  // and --scope validation lives in extensions.ts, called before any
+  // exec; these handlers only translate its typed errors into the
+  // `{ error: { code, message } }` wire envelope used throughout this
+  // interface — see createToolHandlers for the tool-shape decision
+  // (one MCP tool per verb, not a single action-multiplexed tool).
+
+  /** Install an extension. Local sources are ungated; remote sources
+   *  (git/npm/marketplace) are refused unless QWEN_ALLOW_REMOTE_INSTALL=1
+   *  is set in the supervisor's environment. */
+  qwen_extension_install?: (args: {
+    source: string;
+  }) => Promise<InstallExtensionResult | { error: { code: string; message: string } }>;
+  /** Uninstall (upstream subcommand) an installed extension by name.
+   *  "remove" is the operator-facing verb (RDR-002 §Layer 1 table); this
+   *  handler performs the remove→uninstall translation. */
+  qwen_extension_remove?: (args: {
+    name: string;
+  }) => Promise<UninstallExtensionResult | { error: { code: string; message: string } }>;
+  /** Enable an installed extension. `scope` defaults to "user" when
+   *  omitted — an explicit supervisor default, not inherited from
+   *  upstream's own default (upstream defaults enable to ALL scopes).
+   *  Only "user" | "workspace" are accepted. */
+  qwen_extension_enable?: (args: {
+    name: string;
+    scope?: string;
+  }) => Promise<EnableDisableResult | { error: { code: string; message: string } }>;
+  /** Disable an installed extension. `scope` defaults to "user" when
+   *  omitted (matches upstream's own default for disable, made explicit
+   *  rather than silently inherited). Only "user" | "workspace" are
+   *  accepted; "system" | "systemdefaults" are rejected (upstream
+   *  silently downgrades them to "user"). */
+  qwen_extension_disable?: (args: {
+    name: string;
+    scope?: string;
+  }) => Promise<EnableDisableResult | { error: { code: string; message: string } }>;
+  /** Update one or more installed extensions. Omit `names` to update
+   *  every installed extension — still one `qwen extensions update
+   *  <name>` exec per extension, never a raw `--all`. Each target is
+   *  classified via its .qwen-extension-install.json before any exec;
+   *  refusals (missing/unknown metadata, ungated remote source) are
+   *  reported per-item in the response rather than thrown. */
+  qwen_extension_update?: (args: {
+    names?: string[];
+  }) => Promise<UpdateExtensionsResult | { error: { code: string; message: string } }>;
+
   /** True once shutdown has begun — spawn-initiating tools reject with a
    *  `shutting_down` envelope (RDR-008 P2: qwen_dispatch mirrors this). */
   isShuttingDown: () => boolean;
@@ -1316,6 +1381,144 @@ export function createToolHandlers(
     };
   }
 
+  // ── qwen_extension_install / remove / enable / disable / update ──
+  //
+  // Tool-shape decision (bead 3su.14, recorded per its explicit
+  // requirement — reject/choose named, not defaulted silently):
+  //
+  //   CHOSEN: one MCP tool per verb — qwen_extension_install,
+  //   qwen_extension_remove, qwen_extension_enable,
+  //   qwen_extension_disable, qwen_extension_update. Singular
+  //   "extension" distinguishes them from the existing plural
+  //   qwen_extensions (read-only listing) and qwen_reload_extensions
+  //   (cache reload) tools.
+  //
+  //   REJECTED: a single action-multiplexed tool (e.g.
+  //   qwen_extension_manage with an `action` enum + a discriminated-
+  //   union args shape covering all five verbs). Rejected because:
+  //     (a) ToolAnnotations (readOnlyHint/destructiveHint/
+  //         idempotentHint/openWorldHint) are per-TOOL, not per-call.
+  //         A multiplexed tool could only carry one blanket annotation
+  //         set covering the WORST case across every action —
+  //         destructiveHint would have to read true even for enable/
+  //         disable, which are actually non-destructive and idempotent.
+  //         Five tools let each carry the annotations that actually
+  //         describe it (see the registration block in main() for the
+  //         concrete per-verb sets) — the same "reduce the surface,
+  //         improve selection precision" argument RDR-002 already makes
+  //         for per-session extension loadouts, applied to tool shape.
+  //     (b) Discoverability: five small, precisely-typed Zod shapes are
+  //         easier for Claude to pick correctly than one tool whose
+  //         schema is a big discriminated union the caller must also
+  //         get right on top of picking the tool itself.
+  //     (c) No real schema-size saving: a single multiplexed tool would
+  //         still need five internal branches, so multiplexing buys
+  //         nothing here that isn't paid back in per-tool clarity.
+  //
+  // Every mutation handler is gated on `installedExtensionsCache !==
+  // undefined` (mirrors qwen_reload_extensions above) because every one
+  // must reload that cache on success. A mutation's own exec failure
+  // (ExtensionLifecycleError, or any other exec-boundary error) is
+  // translated to the wire error envelope; a reload failure AFTER an
+  // already-successful mutation is logged and swallowed rather than
+  // turning a real success into a reported failure — the extension WAS
+  // installed/removed/enabled/disabled/updated; only the cache's view
+  // of it is stale until the next reload.
+
+  function extensionErrorEnvelope(err: unknown): { error: { code: string; message: string } } {
+    if (err instanceof ExtensionLifecycleError) {
+      return { error: { code: err.code, message: err.message } };
+    }
+    return {
+      error: {
+        code: "exec_failed",
+        message: err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
+
+  let qwen_extension_install: ToolHandlers["qwen_extension_install"] | undefined;
+  let qwen_extension_remove: ToolHandlers["qwen_extension_remove"] | undefined;
+  let qwen_extension_enable: ToolHandlers["qwen_extension_enable"] | undefined;
+  let qwen_extension_disable: ToolHandlers["qwen_extension_disable"] | undefined;
+  let qwen_extension_update: ToolHandlers["qwen_extension_update"] | undefined;
+
+  if (installedExtensionsCache !== undefined) {
+    const cache = installedExtensionsCache;
+
+    const reloadCacheOrWarn = async (context: string): Promise<void> => {
+      try {
+        await cache.reload();
+      } catch (err) {
+        log.warn(
+          {
+            event_type: "extensions_cache_reload_failed",
+            context,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "installed-extensions cache reload failed after a successful mutation",
+        );
+      }
+    };
+
+    qwen_extension_install = async ({ source }) => {
+      try {
+        const result = await installExtension(pool.qwenRealBin, source);
+        await reloadCacheOrWarn("install");
+        return result;
+      } catch (err) {
+        return extensionErrorEnvelope(err);
+      }
+    };
+
+    qwen_extension_remove = async ({ name }) => {
+      try {
+        const result = await uninstallExtension(pool.qwenRealBin, name);
+        await reloadCacheOrWarn("remove");
+        return result;
+      } catch (err) {
+        return extensionErrorEnvelope(err);
+      }
+    };
+
+    qwen_extension_enable = async ({ name, scope }) => {
+      try {
+        const opts: { scope?: string } = {};
+        if (scope !== undefined) opts.scope = scope;
+        const result = await enableExtension(pool.qwenRealBin, name, opts);
+        await reloadCacheOrWarn("enable");
+        return result;
+      } catch (err) {
+        return extensionErrorEnvelope(err);
+      }
+    };
+
+    qwen_extension_disable = async ({ name, scope }) => {
+      try {
+        const opts: { scope?: string } = {};
+        if (scope !== undefined) opts.scope = scope;
+        const result = await disableExtension(pool.qwenRealBin, name, opts);
+        await reloadCacheOrWarn("disable");
+        return result;
+      } catch (err) {
+        return extensionErrorEnvelope(err);
+      }
+    };
+
+    qwen_extension_update = async ({ names }) => {
+      try {
+        const installed = await listInstalledExtensions(pool.qwenRealBin);
+        const result = await updateExtensions(pool.qwenRealBin, installed, names ?? "all");
+        if (result.items.some((item) => item.status === "updated")) {
+          await reloadCacheOrWarn("update");
+        }
+        return result;
+      } catch (err) {
+        return extensionErrorEnvelope(err);
+      }
+    };
+  }
+
   return {
     qwen_spawn,
     qwen_poll,
@@ -1331,6 +1534,11 @@ export function createToolHandlers(
     qwen_tokenize,
     qwen_extensions,
     ...(qwen_reload_extensions !== undefined ? { qwen_reload_extensions } : {}),
+    ...(qwen_extension_install !== undefined ? { qwen_extension_install } : {}),
+    ...(qwen_extension_remove !== undefined ? { qwen_extension_remove } : {}),
+    ...(qwen_extension_enable !== undefined ? { qwen_extension_enable } : {}),
+    ...(qwen_extension_disable !== undefined ? { qwen_extension_disable } : {}),
+    ...(qwen_extension_update !== undefined ? { qwen_extension_update } : {}),
     isShuttingDown: () => shuttingDown,
     __setShuttingDown: (v: boolean) => { shuttingDown = v; },
   };
@@ -1815,6 +2023,116 @@ async function main(): Promise<void> {
       },
     );
     log.info("qwen_reload_extensions tool registered");
+  }
+
+  // ── qwen_extension_install / remove / enable / disable / update ──
+  //
+  // Tool-shape decision recorded in createToolHandlers above (one MCP
+  // tool per verb, rejected alternative: a single action-multiplexed
+  // tool). Per-tool ToolAnnotations reflect the concrete verb rather
+  // than a blanket worst-case — this precision is the point of the
+  // per-verb shape. Registered whenever the corresponding handler
+  // exists (mirrors qwen_reload_extensions's conditional-registration
+  // pattern immediately above).
+
+  if (handlers.qwen_extension_install !== undefined) {
+    const installHandler = handlers.qwen_extension_install;
+    mcpServer.tool(
+      "qwen_extension_install",
+      "Install a Qwen Code extension from a local path, git URL, npm @scope/name, owner/repo shorthand, or marketplace url:name. Local sources are ungated; any remote source is refused unless QWEN_ALLOW_REMOTE_INSTALL=1 is set in the supervisor's environment. Reloads the installed-extensions cache on success.",
+      {
+        source: z.string().min(1, "source must be non-empty")
+          .describe("Extension source: local filesystem path, git URL, npm @scope/name, owner/repo, or marketplace url:name."),
+      },
+      { destructiveHint: false, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
+      async (args) => {
+        const result = await installHandler(args);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      },
+    );
+    log.info("qwen_extension_install tool registered");
+  }
+
+  if (handlers.qwen_extension_remove !== undefined) {
+    const removeHandler = handlers.qwen_extension_remove;
+    mcpServer.tool(
+      "qwen_extension_remove",
+      "Remove (uninstall) an installed Qwen Code extension by name. Reloads the installed-extensions cache on success.",
+      {
+        name: z.string().min(1, "name must be non-empty")
+          .describe("Installed extension's config.name (case-insensitive)."),
+      },
+      { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
+      async (args) => {
+        const result = await removeHandler(args);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      },
+    );
+    log.info("qwen_extension_remove tool registered");
+  }
+
+  if (handlers.qwen_extension_enable !== undefined) {
+    const enableHandler = handlers.qwen_extension_enable;
+    mcpServer.tool(
+      "qwen_extension_enable",
+      "Enable an installed Qwen Code extension. scope defaults to 'user' when omitted — an explicit supervisor default, NOT upstream's own default (upstream defaults enable to ALL scopes). Only 'user'/'workspace' are accepted; 'system'/'systemdefaults' are rejected (upstream silently downgrades them to 'user'). Reloads the installed-extensions cache on success.",
+      {
+        name: z.string().min(1, "name must be non-empty")
+          .describe("Installed extension's config.name (case-insensitive)."),
+        scope: z.enum(["user", "workspace"]).optional()
+          .describe("Defaults to 'user' when omitted."),
+      },
+      { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
+      async (args) => {
+        const handlerArgs: { name: string; scope?: string } = { name: args.name };
+        if (args.scope !== undefined) handlerArgs.scope = args.scope;
+        const result = await enableHandler(handlerArgs);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      },
+    );
+    log.info("qwen_extension_enable tool registered");
+  }
+
+  if (handlers.qwen_extension_disable !== undefined) {
+    const disableHandler = handlers.qwen_extension_disable;
+    mcpServer.tool(
+      "qwen_extension_disable",
+      "Disable an installed Qwen Code extension. scope defaults to 'user' when omitted (matches upstream's own default for disable, made explicit rather than inherited). Only 'user'/'workspace' are accepted; 'system'/'systemdefaults' are rejected (upstream silently downgrades them to 'user'). Reloads the installed-extensions cache on success.",
+      {
+        name: z.string().min(1, "name must be non-empty")
+          .describe("Installed extension's config.name (case-insensitive)."),
+        scope: z.enum(["user", "workspace"]).optional()
+          .describe("Defaults to 'user' when omitted."),
+      },
+      { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
+      async (args) => {
+        const handlerArgs: { name: string; scope?: string } = { name: args.name };
+        if (args.scope !== undefined) handlerArgs.scope = args.scope;
+        const result = await disableHandler(handlerArgs);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      },
+    );
+    log.info("qwen_extension_disable tool registered");
+  }
+
+  if (handlers.qwen_extension_update !== undefined) {
+    const updateHandler = handlers.qwen_extension_update;
+    mcpServer.tool(
+      "qwen_extension_update",
+      "Update one or more installed Qwen Code extensions. Omit names to update every installed extension — still executed one at a time per extension (never a raw --all). Each target is classified via its .qwen-extension-install.json before any exec; missing/unrecognized metadata and ungated remote sources are reported as per-item refusals in the response, not thrown. Reloads the installed-extensions cache when at least one item updates successfully.",
+      {
+        names: z.array(z.string().min(1)).optional()
+          .describe("Extension names to update; omit to update every installed extension."),
+      },
+      { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
+      async (args) => {
+        const handlerArgs: { names?: string[] } = {};
+        if (args.names !== undefined) handlerArgs.names = args.names;
+        const result = await updateHandler(handlerArgs);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      },
+    );
+    log.info("qwen_extension_update tool registered");
   }
 
   // ── Reaper interval ─────────────────────────────────────────
