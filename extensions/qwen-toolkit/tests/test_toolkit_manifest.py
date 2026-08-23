@@ -37,6 +37,13 @@ EXPECTED_AGENTS = {"debug.md", "implement-tdd.md", "docs-explain.md"}
 
 APPROVAL_MODES = {"plan", "default", "auto-edit", "yolo"}
 
+# SubagentValidator.validateName rejects these outright; a collision means the
+# agent throws at load and loadSubagentFromDir silently skips the file.
+RESERVED_NAMES = {"self", "system", "user", "model", "tool", "config", "default", "main"}
+
+# Production: /^[\p{L}\p{N}_-]+$/u AND no leading/trailing '-' or '_'.
+NAME_RE = re.compile(r"^(?![-_])[\w-]+(?<![-_])$")
+
 # qwen-code's subagent frontmatter regex requires a newline AFTER the closing
 # fence; without it the file silently fails to parse and the agent vanishes.
 FRONTMATTER_RE = re.compile(r"^---\n([\s\S]*?)\n---\n([\s\S]*)$")
@@ -99,7 +106,8 @@ class TestAgents(unittest.TestCase):
 
     def _parsed(self):
         for fname in sorted(EXPECTED_AGENTS):
-            content = (ROOT / "agents" / fname).read_text()
+            # utf-8-sig mirrors production's normalizeContent BOM strip
+            content = (ROOT / "agents" / fname).read_text(encoding="utf-8-sig")
             m = FRONTMATTER_RE.match(content)
             yield fname, m
 
@@ -120,11 +128,28 @@ class TestAgents(unittest.TestCase):
             self.assertIsNotNone(name_m, f"{fname}: missing required 'name'")
             name = name_m.group(1)
             self.assertTrue(2 <= len(name) <= 50, f"{fname}: name length {len(name)} outside 2-50")
-            self.assertRegex(name, r"^[\w-]+$", f"{fname}: invalid name chars")
+            self.assertRegex(name, NAME_RE, f"{fname}: invalid name (chars, or leading/trailing '-'/'_')")
+            self.assertNotIn(
+                name, RESERVED_NAMES,
+                f"{fname}: '{name}' is RESERVED — production throws and the agent is silently skipped",
+            )
             self.assertIsNotNone(
                 re.search(r"^description:\s*\S", fm, re.M),
                 f"{fname}: missing required 'description'",
             )
+
+    def test_disallowed_tools_is_string_list(self):
+        # docs-explain relies on disallowedTools for its read-only posture; a
+        # malformed value degrades to "tools not removed" with no error.
+        for fname, m in self._parsed():
+            self.assertIsNotNone(m, f"{fname}: unparseable")
+            fm = m.group(1)
+            if re.search(r"^disallowedTools:", fm, re.M):
+                items = re.findall(r"^disallowedTools:\s*$\n((?:[ \t]+-[ \t]*\S+\s*\n?)+)", fm, re.M)
+                self.assertTrue(
+                    items,
+                    f"{fname}: disallowedTools present but not a non-empty YAML list of strings",
+                )
 
     def test_approval_mode_values(self):
         for fname, m in self._parsed():
