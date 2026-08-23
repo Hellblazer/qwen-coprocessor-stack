@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -300,58 +303,256 @@ class VerifyCommandPlaceholderTests(TempDirCase):
         self.assertIn("checked", stdout)
 
 
+class FakePopen:
+    """Stands in for subprocess.Popen at dispatch_via_driver's
+    popen_factory seam.
+
+    communicate() either returns (stdout, stderr) or raises
+    subprocess.TimeoutExpired -- ONLY on the first call, matching real
+    Popen: dispatch_via_driver's timeout handler calls communicate() a
+    SECOND time (to drain output after killing), which must return
+    normally rather than time out again.
+    """
+
+    def __init__(
+        self,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        raise_timeout: bool = False,
+        pid: int = 424242,
+    ) -> None:
+        self.pid = pid
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+        self._raise_timeout = raise_timeout
+        self.communicate_calls = 0
+
+    def communicate(self, input: str | None = None, timeout: float | None = None):  # noqa: A002
+        self.communicate_calls += 1
+        if self._raise_timeout and self.communicate_calls == 1:
+            raise subprocess.TimeoutExpired(cmd="driver.ts", timeout=timeout)
+        return self._stdout, self._stderr
+
+
+def fake_popen_factory(fake: FakePopen) -> rb.PopenFactory:
+    def factory(*args, **kwargs):
+        return fake
+
+    return factory
+
+
 class DispatchViaDriverTests(TempDirCase):
     def _task(self) -> rb.TaskSpec:
         return rb.load_task_spec(write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42"))
 
     def test_parses_a_well_formed_result(self) -> None:
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args,
-                returncode=0,
-                stdout=json.dumps({"ok": True, "elapsed_ms": 1234, "tool_calls": 7, "error": None}),
-                stderr="",
-            )
+        fake = FakePopen(returncode=0, stdout=json.dumps({"ok": True, "elapsed_ms": 1234, "tool_calls": 7, "error": None}))
 
-        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", run=fake_run)
+        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", popen_factory=fake_popen_factory(fake))
         self.assertTrue(outcome.ok)
         self.assertEqual(outcome.elapsed_ms, 1234)
         self.assertEqual(outcome.tool_calls, 7)
         self.assertIsNone(outcome.error)
 
     def test_malformed_stdout_is_a_recorded_error_not_a_crash_or_silent_pass(self) -> None:
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(args=args, returncode=1, stdout="not json at all", stderr="")
+        fake = FakePopen(returncode=1, stdout="not json at all")
 
-        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", run=fake_run)
+        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", popen_factory=fake_popen_factory(fake))
         self.assertFalse(outcome.ok)
         self.assertIsNotNone(outcome.error)
         self.assertIn("malformed driver output", outcome.error)
 
     def test_json_array_stdout_is_also_treated_as_malformed(self) -> None:
         # Valid JSON, but not the expected object shape.
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="[1,2,3]", stderr="")
+        fake = FakePopen(returncode=0, stdout="[1,2,3]")
 
-        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", run=fake_run)
+        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", popen_factory=fake_popen_factory(fake))
         self.assertFalse(outcome.ok)
         self.assertIn("malformed driver output", outcome.error)
 
-    def test_subprocess_timeout_is_a_recorded_error_not_a_crash(self) -> None:
-        def fake_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd="driver.ts", timeout=1.0)
+    def test_empty_stdout_is_recorded_not_silently_passed(self) -> None:
+        fake = FakePopen(returncode=137, stdout="", stderr="killed")
 
-        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", run=fake_run)
+        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", popen_factory=fake_popen_factory(fake))
+        self.assertFalse(outcome.ok)
+        self.assertIn("killed", outcome.error)
+
+    def test_timeout_kills_the_whole_process_group_not_just_the_child(self) -> None:
+        # bead 3su.12 review (CRITICAL): a plain child-only kill leaves the
+        # qwen-code CLI grandchild running against the box. Prove
+        # dispatch_via_driver's timeout path resolves the CHILD's pgid and
+        # kills THAT (not the pid directly) with SIGKILL.
+        fake = FakePopen(raise_timeout=True, pid=999)
+        killpg_calls: list[tuple[int, int]] = []
+        getpgid_calls: list[int] = []
+
+        def fake_killpg(pgid, sig):
+            killpg_calls.append((pgid, sig))
+            if sig == 0:
+                # Liveness probe: simulate the group being gone as soon as
+                # we start checking, so the poll loop resolves in one pass.
+                raise ProcessLookupError
+
+        def fake_getpgid(pid):
+            getpgid_calls.append(pid)
+            return 999  # new-session process group id == the child's own pid
+
+        outcome = rb.dispatch_via_driver(
+            self._task(),
+            self.tmp / "tree",
+            "toolkit",
+            popen_factory=fake_popen_factory(fake),
+            killpg=fake_killpg,
+            getpgid=fake_getpgid,
+        )
+
+        self.assertFalse(outcome.ok)
+        self.assertIn("timed out", outcome.error)
+        self.assertIn("killed", outcome.error)
+        self.assertNotIn("not confirmed dead", outcome.error)
+        self.assertEqual(getpgid_calls, [999])
+        # First call is the actual SIGKILL; second is the liveness probe
+        # (signal 0) that confirmed the group was gone.
+        self.assertEqual(killpg_calls, [(999, signal.SIGKILL), (999, 0)])
+        # The drain-after-kill communicate() call must have happened too.
+        self.assertEqual(fake.communicate_calls, 2)
+
+    def test_timeout_error_flags_when_kill_could_not_be_confirmed(self) -> None:
+        # killpg's signal-0 liveness probe never raises -- "still alive"
+        # forever -- so _kill_process_group's poll loop must run out its
+        # (default, ~2s) grace period and report unconfirmed. Real time,
+        # no mocking: exercises the actual polling loop rather than a
+        # stand-in for it.
+        fake = FakePopen(raise_timeout=True, pid=999)
+
+        outcome = rb.dispatch_via_driver(
+            self._task(),
+            self.tmp / "tree",
+            "toolkit",
+            popen_factory=fake_popen_factory(fake),
+            killpg=lambda pgid, sig: None,
+            getpgid=lambda pid: 999,
+        )
+
+        self.assertFalse(outcome.ok)
+        self.assertIn("not confirmed dead", outcome.error)
+
+
+class KillProcessGroupTests(unittest.TestCase):
+    """Unit tests for _kill_process_group's own polling/confirmation logic,
+    fully isolated from real OS process groups."""
+
+    def test_confirms_dead_once_getpgid_raises_on_probe(self) -> None:
+        probes = {"count": 0}
+
+        def fake_killpg(pgid, sig):
+            if sig == 0:
+                probes["count"] += 1
+                if probes["count"] >= 2:
+                    raise ProcessLookupError
+
+        result = rb._kill_process_group(
+            123,
+            killpg=fake_killpg,
+            getpgid=lambda pid: 123,
+            sleep=lambda s: None,
+            now=_counting_clock(),
+            grace_s=10.0,
+            poll_interval_s=0.01,
+        )
+        self.assertTrue(result)
+
+    def test_returns_false_when_never_confirmed_within_grace_period(self) -> None:
+        result = rb._kill_process_group(
+            123,
+            killpg=lambda pgid, sig: None,  # never raises -- "still alive" forever
+            getpgid=lambda pid: 123,
+            sleep=lambda s: None,
+            now=_counting_clock(),
+            grace_s=0.03,
+            poll_interval_s=0.01,
+        )
+        self.assertFalse(result)
+
+    def test_already_gone_before_getpgid_returns_true_immediately(self) -> None:
+        def raising_getpgid(pid):
+            raise ProcessLookupError
+
+        result = rb._kill_process_group(123, getpgid=raising_getpgid)
+        self.assertTrue(result)
+
+    def test_process_gone_the_instant_killpg_is_sent_returns_true(self) -> None:
+        def fake_killpg(pgid, sig):
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError
+
+        result = rb._kill_process_group(123, killpg=fake_killpg, getpgid=lambda pid: 123)
+        self.assertTrue(result)
+
+
+def _counting_clock():
+    """A fake monotonic clock that advances by 0.02s per call -- fast
+    deterministic tests without a real sleep."""
+    state = {"t": 0.0}
+
+    def clock():
+        state["t"] += 0.02
+        return state["t"]
+
+    return clock
+
+
+class RealSubprocessGroupKillTests(unittest.TestCase):
+    """The bead 3su.12 review's explicit ask: a REAL subprocess test, not
+    just the injected-seam unit tests above -- a stub 'driver' that spawns
+    its own real OS grandchild, confirm BOTH are dead after dispatch_via_driver
+    times out and kills the group. No live box involved."""
+
+    def test_real_grandchild_is_killed_on_timeout(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="killpg-real-test-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+
+        pidfile = tmp / "grandchild.pid"
+        stub = tmp / "stub_driver.py"
+        stub.write_text(
+            "import os, subprocess, sys, time\n"
+            "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"open({str(pidfile)!r}, 'w').write(str(grandchild.pid))\n"
+            "time.sleep(60)\n"
+        )
+
+        task_json = write_synthetic_fixture(tmp, buggy_value="1", solution_value="42")
+        task = rb.load_task_spec(task_json)
+        object.__setattr__(task, "timeout_ms", 300)  # 0.3s -- fast test
+
+        outcome = rb.dispatch_via_driver(
+            task,
+            tmp / "tree",
+            "toolkit",
+            tsx_bin=Path(sys.executable),
+            driver_ts=stub,
+            extra_timeout_s=0.2,
+        )
+
         self.assertFalse(outcome.ok)
         self.assertIn("timed out", outcome.error)
 
-    def test_empty_stdout_is_recorded_not_silently_passed(self) -> None:
-        def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(args=args, returncode=137, stdout="", stderr="killed")
-
-        outcome = rb.dispatch_via_driver(self._task(), self.tmp / "tree", "toolkit", run=fake_run)
-        self.assertFalse(outcome.ok)
-        self.assertIn("killed", outcome.error)
+        # Give the (already-SIGKILLed) grandchild's PID a moment to
+        # actually finish exiting at the OS level -- SIGKILL is
+        # unblockable but exit bookkeeping isn't instantaneous.
+        grandchild_pid = int(pidfile.read_text())
+        deadline = time.monotonic() + 5.0
+        grandchild_dead = False
+        while time.monotonic() < deadline:
+            try:
+                os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                grandchild_dead = True
+                break
+            time.sleep(0.05)
+        self.assertTrue(grandchild_dead, f"grandchild pid {grandchild_pid} survived the timeout kill")
 
 
 class RunOneMutationTests(TempDirCase):
@@ -653,6 +854,87 @@ class CLITests(TempDirCase):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             code = rb.main(["--tasks-dir", str(self.tmp / "empty"), "--gold-check"])
         self.assertEqual(code, 2)
+
+
+class WorkRootCleanupTests(TempDirCase):
+    """bead 3su.12 review (Important): the default tempfile.mkdtemp() work
+    root was never cleaned up -- every real run leaked materialized trees
+    into /tmp forever."""
+
+    def _run_with_mkdtemp_capture(self, extra_args: list[str]) -> tuple[int, list[str]]:
+        created: list[str] = []
+        original_mkdtemp = tempfile.mkdtemp
+
+        def capturing_mkdtemp(*args, **kwargs):
+            d = original_mkdtemp(*args, **kwargs)
+            created.append(d)
+            return d
+
+        tempfile.mkdtemp = capturing_mkdtemp
+        try:
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = rb.main(["--tasks-dir", str(REAL_TASKS_DIR), "--task", "001-interval-debug", *extra_args])
+        finally:
+            tempfile.mkdtemp = original_mkdtemp
+        return code, created
+
+    def test_default_work_root_is_deleted_after_gold_check(self) -> None:
+        code, created = self._run_with_mkdtemp_capture(["--gold-check"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(created), 1)
+        self.assertFalse(Path(created[0]).exists(), "default work root was not cleaned up")
+
+    def test_keep_work_flag_preserves_the_default_work_root(self) -> None:
+        code, created = self._run_with_mkdtemp_capture(["--gold-check", "--keep-work"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(created), 1)
+        try:
+            self.assertTrue(Path(created[0]).exists(), "--keep-work should have preserved the work root")
+        finally:
+            shutil.rmtree(created[0], ignore_errors=True)
+
+    def test_explicit_work_root_is_never_deleted(self) -> None:
+        explicit_root = self.tmp / "my-own-work-root"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = rb.main(
+                [
+                    "--tasks-dir",
+                    str(REAL_TASKS_DIR),
+                    "--task",
+                    "001-interval-debug",
+                    "--work-root",
+                    str(explicit_root),
+                    "--gold-check",
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(explicit_root.exists(), "an explicitly-given --work-root must never be auto-deleted")
+
+    def test_default_work_root_is_deleted_even_on_broken_fixture(self) -> None:
+        # Cleanup must fire on every return path, not just the happy one.
+        broken_tasks_dir = self.tmp / "tasks"
+        write_synthetic_fixture(broken_tasks_dir, buggy_value="1", solution_value="1", name="broken")
+        created: list[str] = []
+        original_mkdtemp = tempfile.mkdtemp
+
+        def capturing_mkdtemp(*args, **kwargs):
+            d = original_mkdtemp(*args, **kwargs)
+            created.append(d)
+            return d
+
+        tempfile.mkdtemp = capturing_mkdtemp
+        try:
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = rb.main(["--tasks-dir", str(broken_tasks_dir), "--gold-check"])
+        finally:
+            tempfile.mkdtemp = original_mkdtemp
+
+        self.assertEqual(code, 1)
+        self.assertEqual(len(created), 1)
+        self.assertFalse(Path(created[0]).exists())
 
 
 if __name__ == "__main__":

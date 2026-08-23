@@ -57,6 +57,16 @@ Two mutually exclusive modes:
   time, always (bead `qwen-coprocessor-stack-7i1`: the box's shared 64K
   unified-KV pool cannot take concurrent big requests).
 
+**Work root and cleanup (bead 3su.12 review addendum).** Every
+materialized tree lives under a work root. By default that's a fresh
+`tempfile.mkdtemp()` directory, deleted automatically when `main()`
+returns (any return path -- success, a broken fixture, an aborted run)
+so a real run doesn't leak trees into `/tmp` forever. Two ways to keep
+it: pass `--work-root DIR` to use (and never auto-delete) your own
+directory instead -- it's yours, not ours to clean up -- or pass
+`--keep-work` to preserve the default tempfile-created root for
+inspecting a confusing row's materialized tree after the run.
+
 Output is one JSON document (stdout, and `--out FILE` if given):
 `gold_check` (per-task), `broken_fixtures`, `rows` (per task/arm/
 repetition), `summary` (per-arm `n`/`passed`/`pass_rate`/
@@ -323,7 +333,13 @@ never materialized) checks, in order:
    implementation wrapped in an `ABC` strategy interface, a config
    `dataclass`, logging, and a factory function) is 109 lines and
    passes every test, but fails this check alone.
-4. **Correctness** -- `python3 -m unittest -v test_ratelimiter` exits 0.
+4. **Correctness** -- the model's `ratelimiter.py` is copied, alongside
+   the PRISTINE `test_ratelimiter.py` (never the tree's own copy), into a
+   private staging directory, and `python3 -m unittest -v
+   test_ratelimiter` runs there (bead 3su.12 review: aligned with
+   fixture 003's isolation pattern below, rather than trusting the
+   tree's own test file in place -- the oracle-integrity check above
+   still independently catches tampering, gating `ok` on its own).
 
 `verify.py` prints one `VERIFY_DIAGNOSTICS: <json>` line unconditionally
 (line count, extra/missing files, oracle-tamper flag, test exit code),

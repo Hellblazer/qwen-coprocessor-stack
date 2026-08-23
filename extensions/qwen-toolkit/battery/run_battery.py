@@ -68,10 +68,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -351,7 +354,73 @@ class DispatchOutcome:
 
 
 DispatchFn = Callable[[TaskSpec, Path, str], DispatchOutcome]
-SubprocessRunner = Callable[..., subprocess.CompletedProcess]
+PopenFactory = Callable[..., subprocess.Popen]
+KillpgFn = Callable[[int, int], None]
+GetpgidFn = Callable[[int], int]
+
+# Grace period + poll cadence for confirming a killed process group actually
+# died. SIGKILL cannot be blocked, so this should resolve almost instantly
+# in practice; it exists to make "nothing survived" a checked fact in the
+# error message, not an assumption.
+KILL_GROUP_GRACE_S = 2.0
+KILL_GROUP_POLL_INTERVAL_S = 0.05
+
+
+def _kill_process_group(
+    pid: int,
+    *,
+    killpg: KillpgFn = os.killpg,
+    getpgid: GetpgidFn = os.getpgid,
+    sleep: Callable[[float], None] = time.sleep,
+    now: Callable[[], float] = time.monotonic,
+    grace_s: float = KILL_GROUP_GRACE_S,
+    poll_interval_s: float = KILL_GROUP_POLL_INTERVAL_S,
+) -> bool:
+    """SIGKILL the entire process group rooted at ``pid``, then confirm.
+
+    bead qwen-coprocessor-stack-3su.12 review (CRITICAL): a plain
+    ``subprocess`` timeout-kill reaches only the immediate child (the
+    node/tsx process running driver.ts). driver.ts's inner
+    ``@qwen-code/sdk`` spawns the real qwen-code CLI as a further OS
+    grandchild (session.ts's ``pathToQwenExecutable``), and
+    ``QwenSession.stop()`` is cooperative-only -- so on a hard timeout the
+    grandchild survives, unreaped, still talking to the box. That is
+    exactly the bead-7i1 failure mode this battery exists to avoid
+    causing. Killing the whole PROCESS GROUP (not just ``pid``) reaches
+    it: ``dispatch_via_driver`` launches with ``start_new_session=True``
+    so the child's pgid equals its own pid, and every process it spawns
+    inherits that same group unless it explicitly detaches.
+
+    Returns True once the group is confirmed gone (or was already gone);
+    False if something was still alive after ``grace_s`` -- best-effort,
+    surfaced in the caller's error message rather than silently assumed.
+    """
+    try:
+        pgid = getpgid(pid)
+    except ProcessLookupError:
+        return True  # already gone before we got here
+
+    try:
+        killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+
+    deadline = now() + grace_s
+    while now() < deadline:
+        try:
+            killpg(pgid, 0)  # signal 0: liveness probe, no actual delivery
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            # Observed on macOS: a process group whose leader was JUST
+            # SIGKILLed can report EPERM (not ESRCH) on a signal-0 probe
+            # for a brief window before fully reaping -- the target's
+            # existence is ambiguous here, not confirmed gone. Keep
+            # polling rather than treating this as either "confirmed
+            # dead" or a crash.
+            pass
+        sleep(poll_interval_s)
+    return False
 
 
 def dispatch_via_driver(
@@ -363,14 +432,22 @@ def dispatch_via_driver(
     driver_ts: Path = DRIVER_TS,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     extra_timeout_s: float = DRIVER_TIMEOUT_SLACK_S,
-    run: SubprocessRunner = subprocess.run,
+    popen_factory: PopenFactory = subprocess.Popen,
+    killpg: KillpgFn = os.killpg,
+    getpgid: GetpgidFn = os.getpgid,
 ) -> DispatchOutcome:
     """Production ``dispatch_fn``: spec on stdin -> driver.ts -> result JSON.
 
     Malformed/absent driver output is a RECORDED error
     (``DispatchOutcome(ok=False, ...)``), never a crash and never a silent
-    pass -- ``run`` is injected so tests can exercise every failure branch
-    (timeout, non-JSON stdout, non-object JSON) without Node installed.
+    pass -- ``popen_factory``/``killpg``/``getpgid`` are injected so tests
+    can exercise every failure branch (timeout-and-kill, non-JSON stdout,
+    non-object JSON) without Node installed.
+
+    Launches in its own process group (``start_new_session=True``) so a
+    timeout can reap the WHOLE tree (driver.ts's node process and the
+    qwen-code CLI grandchild it spawns), not just the immediate child --
+    see ``_kill_process_group``.
     """
     envelope: dict = {
         "name": task.name,
@@ -383,30 +460,48 @@ def dispatch_via_driver(
     if task.family is not None:
         envelope["family"] = task.family
 
+    timeout_s = (task.timeout_ms / 1000.0) + extra_timeout_s
+    proc = popen_factory(
+        [str(tsx_bin), str(driver_ts), "--arm", arm],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        proc = run(
-            [str(tsx_bin), str(driver_ts), "--arm", arm],
-            input=json.dumps(envelope),
-            capture_output=True,
-            text=True,
-            timeout=(task.timeout_ms / 1000.0) + extra_timeout_s,
+        stdout, stderr = proc.communicate(input=json.dumps(envelope), timeout=timeout_s)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        all_dead = _kill_process_group(proc.pid, killpg=killpg, getpgid=getpgid)
+        try:
+            # Drain whatever output already landed and let Popen finish
+            # reaping the (now-killed) child; SIGKILL is unblockable so
+            # this should return almost immediately.
+            proc.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            pass
+        survival_note = "" if all_dead else " (WARNING: process group not confirmed dead after kill)"
+        return DispatchOutcome(
+            ok=False,
+            elapsed_ms=0,
+            tool_calls=0,
+            error=f"driver subprocess (and its process group) timed out after {timeout_s:.0f}s and was killed{survival_note}",
         )
-    except subprocess.TimeoutExpired as exc:
-        return DispatchOutcome(ok=False, elapsed_ms=0, tool_calls=0, error=f"driver subprocess timed out: {exc}")
 
-    stdout = (proc.stdout or "").strip()
+    stdout = (stdout or "").strip()
     try:
         parsed = json.loads(stdout) if stdout else None
     except json.JSONDecodeError:
         parsed = None
 
     if not isinstance(parsed, dict):
-        detail = stdout[:500] if stdout else (proc.stderr or "")[:500]
+        detail = stdout[:500] if stdout else (stderr or "")[:500]
         return DispatchOutcome(
             ok=False,
             elapsed_ms=0,
             tool_calls=0,
-            error=f"malformed driver output (exit {proc.returncode}): {detail}",
+            error=f"malformed driver output (exit {returncode}): {detail}",
         )
 
     return DispatchOutcome(
@@ -643,7 +738,18 @@ def _emit(doc: dict, out_path: Path | None) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tasks-dir", type=Path, default=DEFAULT_TASKS_DIR)
-    parser.add_argument("--work-root", type=Path, default=None, help="Defaults to a fresh tempfile.mkdtemp().")
+    parser.add_argument(
+        "--work-root",
+        type=Path,
+        default=None,
+        help="Reuse this directory instead of a fresh tempfile.mkdtemp() one. "
+        "An explicitly-given --work-root is NEVER auto-deleted (it's the caller's directory, not ours to clean up).",
+    )
+    parser.add_argument(
+        "--keep-work",
+        action="store_true",
+        help="Keep the (default, tempfile.mkdtemp()-created) work root after the run instead of deleting it -- for inspecting a materialized tree after a confusing row.",
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--gold-check",
@@ -675,36 +781,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"no tasks found under {args.tasks_dir}", file=sys.stderr)
         return 2
 
-    work_root = args.work_root
-    if work_root is None:
-        work_root = Path(tempfile.mkdtemp(prefix="qwen-battery-"))
+    # Cleanup-on-exit by default (bead 3su.12 review, Important): the
+    # default tempfile.mkdtemp() work root was never removed, so every
+    # real run leaked materialized trees into /tmp forever. An explicitly
+    # given --work-root is the CALLER's directory -- never auto-deleted,
+    # regardless of --keep-work. Only the default (ours, tempfile-created)
+    # root is subject to cleanup, and --keep-work opts back out of that
+    # for debugging a confusing row's materialized tree.
+    work_root_is_ours = args.work_root is None
+    work_root = args.work_root if args.work_root is not None else Path(tempfile.mkdtemp(prefix="qwen-battery-"))
     work_root.mkdir(parents=True, exist_ok=True)
+    should_cleanup = work_root_is_ours and not args.keep_work
 
-    if args.gold_check:
-        results = [gold_check_task(t, work_root) for t in tasks]
-        broken = [r.task for r in results if not r.passed]
-        _emit({"gold_check": [gold_check_to_dict(r) for r in results], "broken_fixtures": broken}, args.out)
-        if broken:
-            print(f"BROKEN FIXTURE(S): {', '.join(broken)}", file=sys.stderr)
+    try:
+        if args.gold_check:
+            results = [gold_check_task(t, work_root) for t in tasks]
+            broken = [r.task for r in results if not r.passed]
+            _emit({"gold_check": [gold_check_to_dict(r) for r in results], "broken_fixtures": broken}, args.out)
+            if broken:
+                print(f"BROKEN FIXTURE(S): {', '.join(broken)}", file=sys.stderr)
+                return 1
+            return 0
+
+        arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+
+        def dispatch_fn(task: TaskSpec, tree: Path, arm: str) -> DispatchOutcome:
+            return dispatch_via_driver(task, tree, arm, max_output_tokens=args.max_output_tokens)
+
+        health_check_fn = make_url_health_check(args.health_url) if args.health_url else None
+
+        doc = run_battery(tasks, arms, args.repeats, work_root, dispatch_fn, health_check_fn=health_check_fn)
+        _emit(doc, args.out)
+        if doc.get("aborted_reason"):
+            print(f"RUN ABORTED: {doc['aborted_reason']}", file=sys.stderr)
+            return 3
+        if doc["broken_fixtures"]:
+            print(f"BROKEN FIXTURE(S), skipped -- see gold_check in the output: {', '.join(doc['broken_fixtures'])}", file=sys.stderr)
             return 1
         return 0
-
-    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
-
-    def dispatch_fn(task: TaskSpec, tree: Path, arm: str) -> DispatchOutcome:
-        return dispatch_via_driver(task, tree, arm, max_output_tokens=args.max_output_tokens)
-
-    health_check_fn = make_url_health_check(args.health_url) if args.health_url else None
-
-    doc = run_battery(tasks, arms, args.repeats, work_root, dispatch_fn, health_check_fn=health_check_fn)
-    _emit(doc, args.out)
-    if doc.get("aborted_reason"):
-        print(f"RUN ABORTED: {doc['aborted_reason']}", file=sys.stderr)
-        return 3
-    if doc["broken_fixtures"]:
-        print(f"BROKEN FIXTURE(S), skipped -- see gold_check in the output: {', '.join(doc['broken_fixtures'])}", file=sys.stderr)
-        return 1
-    return 0
+    finally:
+        if should_cleanup:
+            shutil.rmtree(work_root, ignore_errors=True)
 
 
 if __name__ == "__main__":
