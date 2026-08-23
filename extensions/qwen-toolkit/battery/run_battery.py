@@ -363,6 +363,18 @@ class RunRow:
     elapsed_ms: int
     tool_calls: int
     error: str | None
+    # Echoed from DispatchOutcome.raw["resolved_extensions"] (driver.ts's
+    # own real resolveExtensions() result -- see driver.ts's dispatchOne
+    # docstring) when the production dispatch_via_driver populated it.
+    # None when a stub dispatch_fn didn't set `raw`, or the driver failed
+    # before resolution. Lets a run's own JSON answer "did the toolkit arm
+    # actually get qwen-toolkit and the control arm actually get 'none'?"
+    # directly, per row, without a separate out-of-band check (bead
+    # 3su.10 review finding: run-001-2026-08-22 shipped without this
+    # field -- confirmed correct for that run via a standalone
+    # resolveExtensions() dry-check instead; this closes the gap for
+    # every run after it).
+    resolved_extensions: object = None
 
 
 def run_row_to_dict(r: RunRow) -> dict:
@@ -376,6 +388,7 @@ def run_row_to_dict(r: RunRow) -> dict:
         "elapsed_ms": r.elapsed_ms,
         "tool_calls": r.tool_calls,
         "error": r.error,
+        "resolved_extensions": r.resolved_extensions,
     }
 
 
@@ -392,6 +405,8 @@ def run_one(task: TaskSpec, arm: str, repetition: int, work_root: Path, dispatch
     exit_code, _, _ = run_verify(task, tree)
     passed = exit_code == task.verify.expected_exit_code
 
+    resolved_extensions = outcome.raw.get("resolved_extensions") if outcome.raw else None
+
     return RunRow(
         task=task.name,
         arm=arm,
@@ -402,6 +417,7 @@ def run_one(task: TaskSpec, arm: str, repetition: int, work_root: Path, dispatch
         elapsed_ms=outcome.elapsed_ms,
         tool_calls=outcome.tool_calls,
         error=outcome.error,
+        resolved_extensions=resolved_extensions,
     )
 
 

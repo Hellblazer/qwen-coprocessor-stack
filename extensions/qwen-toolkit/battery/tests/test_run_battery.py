@@ -290,6 +290,25 @@ class RunOneMutationTests(TempDirCase):
         rb.run_one(task, "toolkit", 2, self.tmp, dispatch_fn)
         self.assertEqual(len(set(calls)), 2, "each repetition must get a distinct fresh tree")
 
+    def test_resolved_extensions_echoed_from_dispatch_outcome_raw(self) -> None:
+        # bead 3su.10 review finding: run-001-2026-08-22 shipped without
+        # this field in the row JSON. Confirm it's threaded through now.
+        task = rb.load_task_spec(write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42"))
+
+        def dispatch_fn(task, tree, arm):
+            raw = {"ok": True, "resolved_extensions": ["qwen-toolkit"] if arm == "toolkit" else "none"}
+            return rb.DispatchOutcome(ok=True, elapsed_ms=1, tool_calls=1, error=None, raw=raw)
+
+        toolkit_row = rb.run_one(task, "toolkit", 1, self.tmp, dispatch_fn)
+        control_row = rb.run_one(task, "control", 1, self.tmp, dispatch_fn)
+        self.assertEqual(toolkit_row.resolved_extensions, ["qwen-toolkit"])
+        self.assertEqual(control_row.resolved_extensions, "none")
+
+    def test_resolved_extensions_is_none_when_raw_absent(self) -> None:
+        task = rb.load_task_spec(write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42"))
+        row = rb.run_one(task, "toolkit", 1, self.tmp, lambda t, tr, a: rb.DispatchOutcome(True, 1, 1, None))
+        self.assertIsNone(row.resolved_extensions)
+
 
 class RunBatteryGoldPathTests(TempDirCase):
     """The bead's own literal requirement: run the runner against fixture
