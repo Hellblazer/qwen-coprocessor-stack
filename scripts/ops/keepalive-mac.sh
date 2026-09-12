@@ -15,7 +15,7 @@
 set -u
 VENV="$HOME/.qwen-coprocessor-stack/mlx-venv"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"  # …/qwen-coprocessor-stack
-export HF_HOME="/Volumes/Transcend Hell/hf-cache"
+export HF_HOME="/Volumes/SanHell/hf-cache"
 LOGDIR="$HOME/.qwen-coprocessor-stack/logs"; mkdir -p "$LOGDIR"
 VISION_MODEL="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
 REASON_MODEL="mlx-community/Qwen3.6-35B-A3B-4bit"
