@@ -1,0 +1,100 @@
+# Builds a PATCHED ggml-vulkan.dll for the box (bead iuq).
+#
+# Upstream's own release job builds ONLY the backend DLL for Vulkan
+# (-DGGML_BACKEND_DL=ON -DGGML_CPU=OFF, target ggml-vulkan) and merges it with
+# the windows-cpu artifacts at release time. We mirror that exactly, so the
+# result differs from the official llama-<tag>-bin-win-vulkan-x64.zip in one
+# file and one patch -- nothing else. Drop the DLL into an extracted official
+# zip of the SAME tag.
+#
+# workflow_dispatch ONLY, on purpose: this is an on-demand tool, not a gate.
+# Nothing here runs on push or PR.
+name: llama.cpp patched Vulkan backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_tag:
+        description: 'llama.cpp release tag to build against'
+        required: true
+        default: 'b10867'
+      patch:
+        description: 'Patch file under scripts/ops/patches/'
+        required: true
+        default: 'vulkan-uma-honor-disable-host-visible-vidmem.patch'
+
+concurrency:
+  group: llama-vulkan-patched-${{ github.event.inputs.base_tag }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    env:
+      VULKAN_VERSION: 1.4.357.0
+
+    steps:
+      - name: Checkout this repo (for the patch)
+        uses: actions/checkout@v6
+        with:
+          path: stack
+
+      - name: Checkout llama.cpp at ${{ github.event.inputs.base_tag }}
+        uses: actions/checkout@v6
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ github.event.inputs.base_tag }}
+          path: llama.cpp
+          fetch-depth: 1
+
+      - name: Apply patch
+        working-directory: llama.cpp
+        run: |
+          $p = "${{ github.workspace }}/stack/scripts/ops/patches/${{ github.event.inputs.patch }}"
+          Write-Host "Applying $p"
+          git apply --check --verbose $p
+          git apply $p
+          Write-Host "--- patched region ---"
+          Select-String -Path ggml/src/ggml-vulkan/ggml-vulkan.cpp -Pattern "Carve-first" -Context 2,14
+
+      - name: Install Vulkan SDK
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build ggml-vulkan
+        working-directory: llama.cpp
+        run: |
+          cmake -S . -B build -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU=OFF -DGGML_BACKEND_DL=ON -DLLAMA_BUILD_BORINGSSL=ON
+          cmake --build build --config Release --target ggml-vulkan
+
+      - name: Stamp provenance
+        working-directory: llama.cpp
+        run: |
+          $dll = "build/bin/Release/ggml-vulkan.dll"
+          if (-not (Test-Path $dll)) { throw "ggml-vulkan.dll not produced" }
+          $sha = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $dll).Length
+          $base = git rev-parse HEAD
+          @"
+          base_tag  : ${{ github.event.inputs.base_tag }}
+          base_sha  : $base
+          patch     : ${{ github.event.inputs.patch }}
+          dll_sha256: $sha
+          dll_bytes : $size
+          built_by  : github-actions run ${{ github.run_id }}
+          "@ | Set-Content -Path build/bin/Release/PATCHED-BUILD.txt -Encoding utf8
+          Get-Content build/bin/Release/PATCHED-BUILD.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v6
+        with:
+          name: ggml-vulkan-${{ github.event.inputs.base_tag }}-patched
+          path: |
+            llama.cpp/build/bin/Release/ggml-vulkan.dll
+            llama.cpp/build/bin/Release/PATCHED-BUILD.txt
