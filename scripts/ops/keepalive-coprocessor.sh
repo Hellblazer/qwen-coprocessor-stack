@@ -137,6 +137,7 @@ EXPECT_PAGEFILE_MB=131072          # fixed 128 GiB, NOT Windows-automatic.
 GPU_DEDICATED_MIN_GB=24
 GPU_DEDICATED_MAX_GB=40
 MAX_GPU_RETRIES=2                  # then STAND DOWN with a standing alert; see gpu_check().
+GPUCHK_EVERY=45                    # runtime residency re-check cadence, in 20s cycles (~15 min)
 PREFLIGHT_ENFORCE=${QWEN_PREFLIGHT_ENFORCE:-1}   # 0 = bypass, logged every launch.
 PREFLIGHT_REFUSED=0
 GPU_FAILS=0
@@ -227,6 +228,18 @@ adopt() {
   if [ "$cmd" = "$want" ]; then
     EXPECTED_PID=$pid
     log "adopted serving pid $pid (build + cmdline verified)"
+    # An ADOPTED server never went through start_coder, so it never got the
+    # post-load residency assertion. Measured 2026-09-12: a keepalive restart
+    # usually does NOT kill the box-side llama-server (the Windows sshd child
+    # outlives the dropped connection), so adoption is the common path on
+    # restart -- which would otherwise be a permanent hole in the #22930 guard.
+    if gpu_check; then
+      log "GPU residency OK on adopted server ($GPU_LAST)"
+      GPU_ALERT=""
+    else
+      GPU_ALERT="$GPU_REASON"
+      log "ALERT: GPU residency assertion FAILED on the adopted server -- $GPU_REASON (measured: $GPU_LAST)"
+    fi
     write_state   # keep state json honest for the adopted server too
   else
     reclaim "foreign cmdline on :1235 (pid $pid)"
@@ -527,6 +540,20 @@ while true; do
     reclaim "wrong build on :1235 (want $EXPECTED_BUILD)"
   else
     CYC=$((CYC+1))
+    # Residency can degrade at RUNTIME, not only at load (a co-loaded second
+    # model, a driver evicting the carve). The post-load and adopt-time samples
+    # cover the launch paths; this covers the rest of the server's life. It does
+    # NOT restart anything -- by the time a healthy-looking server has drifted
+    # out of the carve, the fix is a carve/BIOS decision, not a relaunch loop.
+    if [ $((CYC % GPUCHK_EVERY)) -eq 0 ]; then
+      if gpu_check; then
+        [ -n "$GPU_ALERT" ] && { log "GPU residency recovered ($GPU_LAST)"; GPU_ALERT=""; write_state; }
+      elif [ "$GPU_ALERT" != "$GPU_REASON" ]; then
+        GPU_ALERT="$GPU_REASON"
+        log "ALERT: GPU residency assertion failed on the SERVING model -- $GPU_REASON (measured: $GPU_LAST). NOT restarting from the periodic check; :1235 liveness and tok/s will both look fine."
+        write_state
+      fi
+    fi
     if [ "$EXPECTED_PID" -eq 0 ] || [ $((CYC % PIDCHECK_EVERY)) -eq 0 ]; then
       pid=$(ownerpid)
       if [ -z "$pid" ]; then
