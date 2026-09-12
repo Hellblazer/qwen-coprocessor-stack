@@ -1973,6 +1973,81 @@
       ],
       "verified_at": "2026-08-16T01:10:56Z",
       "notes": "RDR-016 A10 (bead r28): Qwen3.8-27B MLX 4-bit (4.501 bpw, group 64) for the Mac (mlx-lm 0.31.3, text-only); converted on the CPU device"
+    },
+    {
+      "id": "gemma-4-26b-a4b-it-qat-q4_0-gguf@d1c082be",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+        "revision": "d1c082be9cf3c8a514acf63b8761f4b41935842e",
+        "url": "https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/"
+      },
+      "format": "gguf",
+      "trust_tier": "origin",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": ".gitattributes",
+          "sha256": "e33a964fc605748fe74d1c47c08def72764bd8fe0300648a3d1e8fc305944eaa",
+          "size": 1767,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "safe",
+            "protectAiScan": "unscanned",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "unscanned",
+            "jFrogScan": "unscanned"
+          }
+        },
+        {
+          "path": "README.md",
+          "sha256": "f9e8c5e65c069adf1ea0e212f5c20303e68e78469bf549d10e631fe9c3612873",
+          "size": 29288,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "safe",
+            "protectAiScan": "unscanned",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "unscanned",
+            "jFrogScan": "unscanned"
+          }
+        },
+        {
+          "path": "gemma-4-26B-it-mmproj.gguf",
+          "sha256": "a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b",
+          "size": 1194828160,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "safe",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "safe"
+          }
+        },
+        {
+          "path": "gemma-4-26B_q4_0-it.gguf",
+          "sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d",
+          "size": 14439363584,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "safe"
+          }
+        }
+      ],
+      "verified_on": [
+        "mac"
+      ],
+      "verified_at": "2026-09-12T17:15:19Z",
+      "notes": "bead nso: Gemma 4 26B-A4B QAT q4_0, ORIGIN-tier GGUF published by google. 25.2B total / ~3.8B active MoE, 256K ctx, multimodal. gemma4 arch is present in our pinned b9596 (LLM_ARCH_GEMMA4), so this is servable without the iuq patched build."
     }
   ]
 }
