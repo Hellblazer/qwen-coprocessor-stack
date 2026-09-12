@@ -1,0 +1,67 @@
+Subject: vulkan: let GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM reach UMA devices
+
+PR #22930 ("vulkan: prefer host-visible memory buffers on UMA devices",
+commit 32120c10e3, first shipped in build b9668) made the device->uma branch
+of ggml_vk_create_buffer_device() request
+{eDeviceLocal|eHostVisible|eHostCoherent} FIRST, ahead of bare eDeviceLocal.
+ggml_vk_find_memory_properties returns every matching memory type and the
+caller takes the first that allocates, so on an AMD APU under the Windows
+proprietary driver a host-visible/GTT-backed type wins over the BIOS-carved
+dedicated heap. The weights then live in pageable "shared" memory: GPU
+dedicated collapses, the pagefile grows, and decode tok/s is UNCHANGED
+(shared and dedicated are the same LPDDR5X at the same bandwidth), so the
+failure is invisible to throughput monitoring.
+
+Measured on a Ryzen AI Max+ 395 / Radeon 8060S (Strix Halo, gfx1151, 96 GB
+BIOS carve, Windows AMD proprietary driver), same model and same flags across
+three builds (Qwen3.8-27B-Q6_K + mmproj, 64K ctx, -ngl 99, --flash-attn 1):
+
+  b9596   28.17 GB dedicated, Available 4714 MB, 12s load
+  b9667   28.17 GB dedicated, Available 4685 MB, 12s load   (d5fb104293, pre-#22930)
+  b9668    0.07 GB dedicated, Available  273 MB, 60s load   (32120c10e3, IS #22930)
+
+b9667 and b9668 are 39 minutes and one commit apart. All three print an
+identical device probe (Vulkan0, 114507 MiB total, 108782 MiB free), so this
+is allocator placement, not device discovery.
+
+The same ordering change also made GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM
+unreachable on every integrated GPU, because the uma branch is tested BEFORE
+the disable_host_visible_vidmem branch. That is why setting the variable had
+no observable effect on this hardware.
+
+This patch does not revert #22930 and does not change any default. It makes
+the existing environment variable do what its name says on UMA devices too:
+when GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM is set, prefer the dedicated heap and
+keep the host-visible options as fallbacks.
+
+Generated against tag b10867. Regenerate if the base moves.
+
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3800,11 +3800,21 @@
+             buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                                                        vk::MemoryPropertyFlagBits::eDeviceLocal});
+         } else if (device->uma) {
+-            // On UMA, prefer host-visible memory so direct tensor borrowing works.
+-            // If unavailable, fall back to device-local memory.
+-            buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+-                                                       vk::MemoryPropertyFlagBits::eDeviceLocal,
+-                                                       vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
++            if (device->disable_host_visible_vidmem) {
++                // Carve-first: on an APU with a BIOS-reserved (dedicated) heap, a
++                // host-visible type can shadow it and push the weights into pageable
++                // shared memory. Ask for the dedicated heap first, keep the rest as
++                // fallbacks.
++                buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal,
++                                                           vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
++                                                           vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
++            } else {
++                // On UMA, prefer host-visible memory so direct tensor borrowing works.
++                // If unavailable, fall back to device-local memory.
++                buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
++                                                           vk::MemoryPropertyFlagBits::eDeviceLocal,
++                                                           vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
++            }
+         } else if (device->disable_host_visible_vidmem) {
+             if (device->allow_sysmem_fallback) {
+                 buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal,
