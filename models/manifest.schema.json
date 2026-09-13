@@ -166,7 +166,8 @@
         "base_tag",
         "base_sha",
         "patch_path",
-        "patch_sha256"
+        "patch_sha256",
+        "verification"
       ],
       "additionalProperties": false,
       "properties": {
@@ -179,7 +180,12 @@
         "base_tag": { "type": "string", "minLength": 1 },
         "base_sha": { "type": "string" },
         "patch_path": { "type": "string", "minLength": 1 },
-        "patch_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+        "patch_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        "verification": {
+          "type": "string",
+          "enum": ["online-artifact-hash", "offline-unverified"]
+        },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" }
       }
     }
   }

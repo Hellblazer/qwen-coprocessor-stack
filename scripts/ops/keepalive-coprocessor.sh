@@ -242,6 +242,33 @@ except Exception as e:
   if [ -z "$len" ]; then PROV_REASON="could not stat $LL on box"; return 1; fi
   PROV_RUNTIME_ID=$("$PYTHON" "$PROV" check-path llama-server.exe --host box --id "$rt" --size "$len" --print-id 2>/tmp/prov-gate.err) \
     || { PROV_REASON="runtime not verified ($rt): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  # Overlay runtimes (RDR-016 overlay add-runtime) swap ONE file inside the
+  # official release tree (e.g. ggml-vulkan.dll) without touching
+  # llama-server.exe's own hash/size, so the check above alone would pass a
+  # box with a stale or reverted DLL sitting next to a verified exe. Gate
+  # that file too, but ONLY when $rt's own manifest entry actually carries
+  # an `overlay` object -- a plain runtime (b9596: no overlay) launches with
+  # byte-identical behavior to before this block existed. Like every other
+  # check-path call in this gate, this is membership + SIZE only, not a
+  # hash re-check -- a full byte-for-byte re-verification is
+  # `verify --root`/`--listing` on demand, not the per-respawn gate.
+  local overlay_file overlay_path
+  overlay_file=$("$PYTHON" -c 'import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+    for a in m.get("artifacts", []):
+        if a.get("id") == sys.argv[2]:
+            print((a.get("overlay") or {}).get("file", ""))
+            break
+except Exception:
+    pass' "$REPO_DIR/models/MANIFEST.json" "$rt" 2>/dev/null)
+  if [ -n "$overlay_file" ]; then
+    overlay_path="${LL%\\*}\\$overlay_file"
+    len=$(boxlen "$overlay_path")
+    if [ -z "$len" ]; then PROV_REASON="could not stat overlay file $overlay_path on box"; return 1; fi
+    "$PYTHON" "$PROV" check-path "$overlay_path" --host box --id "$rt" --size "$len" >/tmp/prov-gate.err 2>&1 \
+      || { PROV_REASON="overlay file not verified ($rt $overlay_file): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  fi
   return 0
 }
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }

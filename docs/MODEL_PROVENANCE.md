@@ -123,9 +123,9 @@ member's `sha256`/`size` are overwritten with the overlay file's real hash, so
 `verify`/`check-path` need no code path of their own — the patched file
 verifies, the un-patched official file at that path does not. The entry
 carries an `overlay` object (`repo`, `run_id`, `artifact`, `file`, `sha256`,
-`bytes`, `base_tag`, `base_sha`, `patch_path`, `patch_sha256`) and its
-`trust_tier` is `self-quantized`, not `origin` — one file in it is ours, not
-upstream-verbatim.
+`bytes`, `base_tag`, `base_sha`, `patch_path`, `patch_sha256`, `verification`,
+and `head_sha` when verified online) and its `trust_tier` is `self-quantized`,
+not `origin` — one file in it is ours, not upstream-verbatim.
 
 ```bash
 $P add-runtime --tag b10867 --from-zip llama-b10867-bin-win-vulkan-x64.zip \
@@ -143,16 +143,43 @@ anything but exactly one other file alongside it; the overlay file's real
 hash/size not matching `PATCHED-BUILD.txt`'s declared `dll_sha256`/
 `dll_bytes`; `PATCHED-BUILD.txt`'s `base_tag` not equal to `--tag`, or its
 `patch` not equal to `--patch`'s basename; the overlay file not a member of
-the official zip; `--patch` not found on disk. Without `--offline`, the
-workflow run named by `--overlay-repo`/`--overlay-run` is also checked via the
-GitHub API: `conclusion` must be `success` and its workflow `path` must be
-`.github/workflows/llama-vulkan-patched.yml`.
+the official zip; `--patch` not found on disk.
+
+**Online verification (default, no `--offline`)** ties the local
+`--overlay-dir` file to the named run's own output, not just to "some
+successful run of the right repo/workflow": the run must have `conclusion:
+success` on workflow path `.github/workflows/llama-vulkan-patched.yml`; its
+`head_sha` must resolve as a real commit on `--overlay-repo` (recorded on the
+entry); the run's artifact list must contain one named
+`--overlay-artifact` (default `ggml-vulkan-<tag>-patched`) that is not
+expired; and that artifact's zip, downloaded via the GitHub API, must contain
+`ggml-vulkan.dll` and `PATCHED-BUILD.txt` matching the local `--overlay-dir`
+copies byte-for-byte by sha256/size. Any mismatch refuses, naming which file
+and why. `overlay.verification` records which mode produced the entry:
+`online-artifact-hash` or `offline-unverified` — `--offline` stays allowed
+(GitHub Actions artifacts expire, currently 2026-12-11 for the b10867 one, and
+re-verifying an old entry must still work after that), but the entry says so
+plainly rather than looking the same as an online-verified one.
+
+**Auth**: the GitHub API calls (run metadata, commit lookup, artifact list,
+artifact download) need a token. `GH_TOKEN` / `GITHUB_TOKEN` env win when set;
+otherwise the tool shells out to `gh auth token` (best-effort — `gh` is
+already a required tool in this repo's own git workflow, so this avoids
+asking an operator to mint a separate PAT for a read-only Actions API call).
+No token resolved just means the request goes out unauthenticated and GitHub
+refuses it itself — fail closed, not silently degraded.
 
 The keepalive derives its build-identity guard's expected `/props`
 `build_info` from the base tag (a `-patched` suffix on the runtime directory
 name is stripped before the comparison) while the provenance lookup still
 uses the full directory tag — an overlay changes one DLL, not what the
-upstream build reports about itself.
+upstream build reports about itself. When a served runtime's manifest entry
+carries an `overlay`, the keepalive's launch gate also `check-path`s the
+overlaid file itself (e.g. `ggml-vulkan.dll` next to `llama-server.exe` in the
+same box directory) against that entry — like every other `check-path` call
+in the gate, this is membership + size only, not a hash re-check; a full
+byte-for-byte re-verification is `verify --root`/`--listing`, not the
+per-respawn gate.
 
 ### Files that were already on a host before this protocol (`adopt`)
 

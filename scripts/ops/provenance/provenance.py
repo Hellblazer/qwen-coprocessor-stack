@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -563,6 +564,68 @@ def download_to_path(url: str, dest_path: Path, headers: dict[str, str], chunk_s
     return h.hexdigest(), size
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Stop urllib from auto-following a redirect so the caller can inspect
+    the Location header and decide what to forward on the next request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N803 (stdlib signature)
+        return None
+
+
+def download_gh_artifact_zip(url: str, dest_path: Path, headers: dict[str, str]) -> tuple[str, int]:
+    """Download a GitHub Actions artifact zip (the `archive_download_url`
+    from the run-artifacts API).
+
+    That endpoint responds with a redirect to a time-limited, pre-signed
+    URL on a DIFFERENT host (Azure blob storage in practice). Plain
+    `download_to_path` would forward our GitHub Authorization header across
+    that cross-host redirect (`urllib` does this by default, unlike `curl`,
+    which strips sensitive headers on a cross-host redirect unless passed
+    `--location-trusted`) -- the storage backend then rejects the GitHub
+    bearer token with 401 rather than ignoring it. Confirmed live against
+    run 34707921300's artifact (RDR-016 bead 9so review remediation).
+
+    Follows the redirect manually and re-issues the download to the
+    Location WITHOUT the GitHub auth header. Falls back to treating a
+    non-redirect 2xx response as the artifact body directly (the shape a
+    test double serves; the real API always redirects).
+    """
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        resp = opener.open(req, timeout=30)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (301, 302, 303, 307, 308):
+            location = exc.headers.get("Location")
+            if not location:
+                raise ProvenanceError(f"GET {url} redirected ({exc.code}) with no Location header")
+            return download_to_path(location, dest_path, {})
+        raise ProvenanceError(f"GET {url} failed: {exc}")
+    except urllib.error.URLError as exc:
+        raise ProvenanceError(f"GET {url} failed: {exc}")
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path = dest_path.with_name(dest_path.name + ".part")
+    h = hashlib.sha256()
+    size = 0
+    try:
+        with resp:
+            with open(part_path, "wb") as f:
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    h.update(chunk)
+                    size += len(chunk)
+    except BaseException:
+        part_path.unlink(missing_ok=True)
+        dest_path.unlink(missing_ok=True)
+        raise
+    part_path.replace(dest_path)
+    return h.hexdigest(), size
+
+
 # --------------------------------------------------------------------------
 # validate
 # --------------------------------------------------------------------------
@@ -789,11 +852,28 @@ DEFAULT_GH_API_BASE = "https://api.github.com"
 
 
 def build_gh_headers() -> dict[str, str]:
+    """Auth headers for the GitHub API. GH_TOKEN / GITHUB_TOKEN env win when
+    set; otherwise fall back to `gh auth token` (best-effort subprocess --
+    `gh` is already a required tool in this repo's own workflow, see CLAUDE.md
+    git steps, so shelling out to its cached credentials avoids asking an
+    operator to mint and export a separate PAT just for this read-only
+    Actions API call). Any failure (gh missing, not logged in, timeout)
+    leaves the request unauthenticated -- GitHub's Actions API then refuses
+    it itself (fail closed at the HTTP layer, not silently degraded here).
+    """
     headers = {
         "User-Agent": "qwen-coprocessor-stack-provenance/1",
         "Accept": "application/vnd.github+json",
     }
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        try:
+            proc = subprocess.run(
+                ["gh", "auth", "token"], capture_output=True, text=True, timeout=10, check=True
+            )
+            token = proc.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            token = None
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -801,6 +881,14 @@ def build_gh_headers() -> dict[str, str]:
 
 def fetch_gh_run_meta(gh_api_base: str, repo: str, run_id: int, headers: dict[str, str]) -> dict[str, Any]:
     return _http_get_json(f"{gh_api_base}/repos/{repo}/actions/runs/{run_id}", headers)
+
+
+def fetch_gh_commit(gh_api_base: str, repo: str, sha: str, headers: dict[str, str]) -> dict[str, Any]:
+    return _http_get_json(f"{gh_api_base}/repos/{repo}/commits/{sha}", headers)
+
+
+def fetch_gh_run_artifacts(gh_api_base: str, repo: str, run_id: int, headers: dict[str, str]) -> dict[str, Any]:
+    return _http_get_json(f"{gh_api_base}/repos/{repo}/actions/runs/{run_id}/artifacts", headers)
 
 
 def parse_patched_build_txt(text: str) -> dict[str, str]:
@@ -948,6 +1036,10 @@ def _apply_overlay(
     target_member["sha256"] = actual_sha256
     target_member["size"] = actual_size
 
+    artifact_name = args.overlay_artifact or f"ggml-vulkan-{args.tag}-patched"
+    verification = "offline-unverified"
+    head_sha: str | None = None
+
     if not args.offline:
         headers = build_gh_headers()
         meta = fetch_gh_run_meta(args.gh_api_base, args.overlay_repo, overlay_run_id, headers)
@@ -965,10 +1057,92 @@ def _apply_overlay(
                 "sanctioned patched-build workflow."
             )
 
-    return {
+        head_sha = meta.get("head_sha")
+        if not head_sha or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise ProvenanceError(
+                f"refusing: workflow run {args.overlay_repo}#{overlay_run_id} has "
+                f"no well-formed head_sha ({head_sha!r}); refusing to record an "
+                "unverifiable base commit."
+            )
+        try:
+            fetch_gh_commit(args.gh_api_base, args.overlay_repo, head_sha, headers)
+        except ProvenanceError as exc:
+            raise ProvenanceError(
+                f"refusing: run {args.overlay_repo}#{overlay_run_id} head_sha "
+                f"{head_sha} is not a commit on {args.overlay_repo}: {exc}"
+            )
+
+        # Tie the LOCAL --overlay-dir file to this run's own output, not just
+        # to "some successful run of the right repo/workflow" -- list the
+        # run's artifacts, require the named one present and unexpired, then
+        # download and hash its contents against the local files.
+        artifacts_meta = fetch_gh_run_artifacts(args.gh_api_base, args.overlay_repo, overlay_run_id, headers)
+        artifact = next(
+            (a for a in artifacts_meta.get("artifacts", []) if a.get("name") == artifact_name), None
+        )
+        if artifact is None:
+            raise ProvenanceError(
+                f"refusing: run {args.overlay_repo}#{overlay_run_id} has no "
+                f"artifact named {artifact_name!r}. Sanctioned next step: pass "
+                "--overlay-artifact with the run's actual artifact name."
+            )
+        if artifact.get("expired"):
+            raise ProvenanceError(
+                f"refusing: artifact {artifact_name!r} on run "
+                f"{args.overlay_repo}#{overlay_run_id} has expired (GitHub "
+                "Actions artifacts expire). Sanctioned next step: re-run the "
+                "workflow for a fresh artifact, or pass --offline if the local "
+                "--overlay-dir DLL is otherwise trusted."
+            )
+        download_url = artifact.get("archive_download_url")
+        if not download_url:
+            raise ProvenanceError(
+                f"refusing: run {args.overlay_repo}#{overlay_run_id} artifact "
+                f"{artifact_name!r} has no archive_download_url."
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            artifact_zip = Path(td) / "artifact.zip"
+            download_gh_artifact_zip(download_url, artifact_zip, headers)
+            with zipfile.ZipFile(artifact_zip) as zf:
+                names = zf.namelist()
+                remote_dll_name = next((n for n in names if Path(n).name == replacement_path.name), None)
+                if remote_dll_name is None:
+                    raise ProvenanceError(
+                        f"refusing: artifact {artifact_name!r} does not contain "
+                        f"{replacement_path.name!r}."
+                    )
+                remote_dll_bytes = zf.read(remote_dll_name)
+                remote_txt_name = next((n for n in names if Path(n).name == "PATCHED-BUILD.txt"), None)
+                if remote_txt_name is None:
+                    raise ProvenanceError(
+                        f"refusing: artifact {artifact_name!r} does not contain "
+                        "PATCHED-BUILD.txt."
+                    )
+                remote_txt_bytes = zf.read(remote_txt_name)
+
+        remote_dll_sha = hashlib.sha256(remote_dll_bytes).hexdigest()
+        if remote_dll_sha.lower() != actual_sha256.lower() or len(remote_dll_bytes) != actual_size:
+            raise ProvenanceError(
+                f"refusing: artifact {artifact_name!r}'s {replacement_path.name} "
+                f"(sha256={remote_dll_sha} bytes={len(remote_dll_bytes)}) does not "
+                f"match the local --overlay-dir file (sha256={actual_sha256} "
+                f"bytes={actual_size}). Sanctioned next step: re-extract the "
+                "artifact from this run; do not hand-edit the local overlay dir."
+            )
+        local_txt_bytes = (Path(args.overlay_dir) / "PATCHED-BUILD.txt").read_bytes()
+        if hashlib.sha256(remote_txt_bytes).hexdigest().lower() != hashlib.sha256(local_txt_bytes).hexdigest().lower():
+            raise ProvenanceError(
+                f"refusing: artifact {artifact_name!r}'s PATCHED-BUILD.txt does "
+                "not match the local --overlay-dir copy byte-for-byte. "
+                "Sanctioned next step: re-extract the artifact from this run."
+            )
+        verification = "online-artifact-hash"
+
+    overlay_obj: dict[str, Any] = {
         "repo": args.overlay_repo,
         "run_id": overlay_run_id,
-        "artifact": args.overlay_artifact or f"ggml-vulkan-{args.tag}-patched",
+        "artifact": artifact_name,
         "file": replacement_path.name,
         "sha256": actual_sha256,
         "bytes": actual_size,
@@ -976,7 +1150,11 @@ def _apply_overlay(
         "base_sha": fields["base_sha"],
         "patch_path": args.patch,
         "patch_sha256": patch_sha256,
+        "verification": verification,
     }
+    if head_sha:
+        overlay_obj["head_sha"] = head_sha
+    return overlay_obj
 
 
 def cmd_add_runtime(args: argparse.Namespace) -> int:

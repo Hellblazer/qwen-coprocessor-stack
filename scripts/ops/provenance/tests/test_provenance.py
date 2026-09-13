@@ -1248,6 +1248,13 @@ class AddRuntimeOverlayTests(ProvenanceTestCase):
         cls.overlay_zip_bytes = _build_zip(cls.overlay_members)
         cls.overlay_asset = "llama-boverlay-bin-win-vulkan-x64.zip"
         cls.patched_dll_bytes = b"PATCHED-VULKAN-DLL-BYTES-DIFFERENT-LENGTH"
+        # Online tests run WITHOUT --offline, so cmd_add_runtime's own
+        # official-zip remote-vs-`--from-zip` compare also fires (same flag
+        # gates both). Serve the identical bytes back so that half always
+        # succeeds and each online test isolates exactly one overlay check.
+        cls.server.routes[f"/ggml-org/llama.cpp/releases/download/boverlay/{cls.overlay_asset}"] = (
+            lambda body=cls.overlay_zip_bytes: (lambda: Response(200, {}, body))
+        )()
 
     def _write_patch(self, td: Path) -> Path:
         patch_path = td / "vulkan-uma-honor-disable-host-visible-vidmem.patch"
@@ -1297,6 +1304,7 @@ class AddRuntimeOverlayTests(ProvenanceTestCase):
         *,
         overlay_repo: str = "Hellblazer/qwen-coprocessor-stack",
         overlay_run: str = "34707921300",
+        offline: bool = True,
         extra_args: list[str] | None = None,
     ) -> int:
         argv = [
@@ -1307,12 +1315,13 @@ class AddRuntimeOverlayTests(ProvenanceTestCase):
             self.overlay_asset,
             "--from-zip",
             str(local_zip),
-            "--offline",
             "--manifest",
             manifest_path,
             "--dest",
             self.make_dest_dir(),
             "--gh-base",
+            self.server.base_url,
+            "--gh-api-base",
             self.server.base_url,
             "--overlay-dir",
             str(overlay_dir),
@@ -1323,9 +1332,43 @@ class AddRuntimeOverlayTests(ProvenanceTestCase):
             "--patch",
             str(patch_path),
         ]
+        if offline:
+            argv.append("--offline")
         if extra_args:
             argv += extra_args
         return self.run_main(argv)
+
+    # -- GitHub Actions API fakes for the online verification path ---------
+
+    def _register_gh_run(
+        self,
+        *,
+        run_id: int,
+        repo: str = "Hellblazer/qwen-coprocessor-stack",
+        conclusion: str = "success",
+        workflow_path: str | None = None,
+        head_sha: str | None = None,
+    ) -> None:
+        workflow_path = prov.OVERLAY_WORKFLOW_PATH if workflow_path is None else workflow_path
+        body = json.dumps({"conclusion": conclusion, "path": workflow_path, "head_sha": head_sha}).encode()
+        self.server.routes[f"/repos/{repo}/actions/runs/{run_id}"] = (
+            lambda b=body: (lambda: Response(200, {}, b))
+        )()
+
+    def _register_gh_commit(self, *, repo: str = "Hellblazer/qwen-coprocessor-stack", sha: str) -> None:
+        body = json.dumps({"sha": sha}).encode()
+        self.server.routes[f"/repos/{repo}/commits/{sha}"] = (lambda b=body: (lambda: Response(200, {}, b)))()
+
+    def _register_gh_artifacts(
+        self, *, run_id: int, repo: str = "Hellblazer/qwen-coprocessor-stack", artifacts: list[dict]
+    ) -> None:
+        body = json.dumps({"total_count": len(artifacts), "artifacts": artifacts}).encode()
+        self.server.routes[f"/repos/{repo}/actions/runs/{run_id}/artifacts"] = (
+            lambda b=body: (lambda: Response(200, {}, b))
+        )()
+
+    def _register_gh_artifact_zip(self, *, path: str, zip_bytes: bytes) -> None:
+        self.server.routes[path] = (lambda b=zip_bytes: (lambda: Response(200, {}, b)))()
 
     def test_overlay_success_swaps_hash_and_records_overlay_object(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1544,6 +1587,156 @@ class AddRuntimeOverlayTests(ProvenanceTestCase):
                 ["verify", "--manifest", manifest_path, "--id", entry_id, "--root", str(official_dir)]
             )
             self.assertEqual(rc, 2)
+
+    # -- online verification (--overlay-* without --offline) ---------------
+
+    def _prep_online(self, td: Path) -> tuple[Path, Path, Path]:
+        local_zip = td / "local.zip"
+        local_zip.write_bytes(self.overlay_zip_bytes)
+        patch_path = self._write_patch(td)
+        overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes)
+        return local_zip, overlay_dir, patch_path
+
+    def _register_full_online(
+        self,
+        *,
+        run_id: int,
+        overlay_dir: Path,
+        conclusion: str = "success",
+        workflow_path: str | None = None,
+        head_sha: str | None = None,
+        register_commit: bool = True,
+        artifact_name: str = "ggml-vulkan-boverlay-patched",
+        register_artifact_entry: bool = True,
+        expired: bool = False,
+        remote_dll_bytes: bytes | None = None,
+        register_zip: bool = True,
+    ) -> str:
+        """Register a FULLY VALID online scenario (every route a happy path
+        would need), then let the caller flip exactly one knob away from
+        valid. This means each refusal test fails specifically because of
+        the ONE check it targets -- deleting that check lets every other
+        (still-valid) route carry the run through to success, rather than
+        coincidentally refusing for an unrelated reason (e.g. an
+        unregistered route 404ing).
+        """
+        if head_sha is None:
+            head_sha = sha1_commit(f"overlay-run-{run_id}")
+        self._register_gh_run(run_id=run_id, conclusion=conclusion, workflow_path=workflow_path, head_sha=head_sha)
+        if register_commit:
+            self._register_gh_commit(sha=head_sha)
+        if register_artifact_entry:
+            local_txt_bytes = (overlay_dir / "PATCHED-BUILD.txt").read_bytes()
+            dll_bytes = self.patched_dll_bytes if remote_dll_bytes is None else remote_dll_bytes
+            artifact_zip_bytes = _build_zip({"ggml-vulkan.dll": dll_bytes, "PATCHED-BUILD.txt": local_txt_bytes})
+            artifact_zip_path = f"/repos/Hellblazer/qwen-coprocessor-stack/actions/artifacts/{run_id}001/zip"
+            if register_zip:
+                self._register_gh_artifact_zip(path=artifact_zip_path, zip_bytes=artifact_zip_bytes)
+            self._register_gh_artifacts(
+                run_id=run_id,
+                artifacts=[
+                    {
+                        "id": run_id * 1000 + 1,
+                        "name": artifact_name,
+                        "size_in_bytes": len(artifact_zip_bytes),
+                        "expired": expired,
+                        "archive_download_url": f"{self.server.base_url}{artifact_zip_path}",
+                    }
+                ],
+            )
+        return head_sha
+
+    def test_overlay_online_success_records_verification_and_head_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip, overlay_dir, patch_path = self._prep_online(td)
+            run_id = 6001
+            head_sha = self._register_full_online(run_id=run_id, overlay_dir=overlay_dir)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path, overlay_run=str(run_id), offline=False)
+        self.assertEqual(rc, 0)
+        overlay = prov.load_manifest(manifest_path)["artifacts"][0]["overlay"]
+        self.assertEqual(overlay["verification"], "online-artifact-hash")
+        self.assertEqual(overlay["head_sha"], head_sha)
+
+    def test_overlay_online_refuses_conclusion_failure(self) -> None:
+        # Everything else (path, head_sha, commit, artifact, DLL/txt content)
+        # is left VALID -- only conclusion is wrong. If the conclusion check
+        # is deleted, the run would otherwise succeed.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip, overlay_dir, patch_path = self._prep_online(td)
+            run_id = 6002
+            self._register_full_online(run_id=run_id, overlay_dir=overlay_dir, conclusion="failure")
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path, overlay_run=str(run_id), offline=False)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_online_refuses_wrong_workflow_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip, overlay_dir, patch_path = self._prep_online(td)
+            run_id = 6003
+            self._register_full_online(
+                run_id=run_id, overlay_dir=overlay_dir, workflow_path=".github/workflows/other.yml"
+            )
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path, overlay_run=str(run_id), offline=False)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_online_refuses_head_sha_not_a_commit(self) -> None:
+        # head_sha is well-formed and the artifact/DLL are otherwise valid;
+        # only the commit-existence route is left unregistered.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip, overlay_dir, patch_path = self._prep_online(td)
+            run_id = 6004
+            self._register_full_online(run_id=run_id, overlay_dir=overlay_dir, register_commit=False)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path, overlay_run=str(run_id), offline=False)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_online_refuses_missing_artifact(self) -> None:
+        # A real artifact exists on the run, just under a different name --
+        # so "no artifact named X" is what refuses, not an empty list.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip, overlay_dir, patch_path = self._prep_online(td)
+            run_id = 6005
+            self._register_full_online(run_id=run_id, overlay_dir=overlay_dir, artifact_name="some-other-artifact")
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path, overlay_run=str(run_id), offline=False)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_online_refuses_expired_artifact(self) -> None:
+        # The artifact's content matches byte-for-byte -- expired=True is
+        # the ONLY thing standing between this test and rc=0.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip, overlay_dir, patch_path = self._prep_online(td)
+            run_id = 6006
+            self._register_full_online(run_id=run_id, overlay_dir=overlay_dir, expired=True)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path, overlay_run=str(run_id), offline=False)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_online_refuses_artifact_dll_hash_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip, overlay_dir, patch_path = self._prep_online(td)
+            run_id = 6007
+            self._register_full_online(
+                run_id=run_id, overlay_dir=overlay_dir, remote_dll_bytes=self.patched_dll_bytes + b"-TAMPERED"
+            )
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path, overlay_run=str(run_id), offline=False)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
 
 
 # --------------------------------------------------------------------------
