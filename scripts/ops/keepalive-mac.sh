@@ -15,10 +15,11 @@
 set -u
 VENV="$HOME/.qwen-coprocessor-stack/mlx-venv"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"  # …/qwen-coprocessor-stack
-export HF_HOME="/Volumes/Transcend Hell/hf-cache"
+export HF_HOME="/Volumes/SanHell/hf-cache"
 LOGDIR="$HOME/.qwen-coprocessor-stack/logs"; mkdir -p "$LOGDIR"
 VISION_MODEL="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
 REASON_MODEL="mlx-community/Qwen3.6-35B-A3B-4bit"
+REASON_ENABLED="${REASON_ENABLED:-0}"  # 2026-09-12: reason-mac OFF by default to free ~20 GB of unified memory for large-model work (DeepSeek-V4-Flash trial). REASON_ENABLED=1 restores it; also re-add the reason-mac backend to ~/.qwen-coprocessor-stack/config.json.
 REASON_MAX_TOKENS="${REASON_MAX_TOKENS:-4096}"  # generation-length guardrail for reason-mac (mlx_lm.server has no --max-kv-size; --max-tokens bounds generation -> bounds KV growth since operator prompts are small). Override via env.
 MIN_FREE_GB="${MIN_FREE_GB:-6}"   # memory backstop: don't (re)spawn a ~4.5G+ MLX model when reclaimable RAM is below this — defers respawn (logs) instead of thrashing disk under pressure (qwen-coprocessor-stack-25s, spec item 4). Override via env.
 LOAD_BUDGET="${LOAD_BUDGET:-900}"  # seconds a freshly-spawned MLX server is allowed to load off the slow external disk before we treat a still-down port as stuck and respawn. Generous so a slow-but-progressing cold load is not killed (qwen-coprocessor-stack-hxp). Override via env.
@@ -149,17 +150,17 @@ start_rerank() {
     && log "rerank-local UP" || log "rerank-local start returned nonzero (see rerank-mac.log)"
 }
 trap 'log "shutdown; killing servers"; reap_pat "mlx_vlm\.server" vision-mac; reap_pat "mlx_lm\.server" reason-mac; kpidfile "$REPO_ROOT/logs/llama-embed.pid"; kpidfile "$REPO_ROOT/logs/llama-rerank.pid"; exit 0' TERM INT
-log "mac keepalive started (pid $$) — vision-mac + reason-mac + embed-local + rerank-local"
+log "mac keepalive started (pid $$) — vision-mac + embed-local + rerank-local (reason-mac enabled=$REASON_ENABLED)"
 while true; do
   # Backstop: prune duplicate MLX servers (keep the one serving its port) before the health
   # checks, so a stuck/orphaned instance can't keep failing `up` and stacking respawns.
   guard_single 'mlx_vlm\.server' 8083 vision-mac
-  guard_single 'mlx_lm\.server'  8084 reason-mac
+  [ "$REASON_ENABLED" = 1 ] && guard_single 'mlx_lm\.server'  8084 reason-mac
   # Non-blocking ensures: neither MLX load gates the other (hxp) — both proceed concurrently,
   # and the deadline gate inside ensure_mlx prevents respawn-while-loading (the leak/thrash).
   # The memory backstop lives inside ensure_mlx (mem_ok before any spawn).
   ensure_mlx 8083 vision-mac VISION_PID VISION_DEADLINE start_vision
-  ensure_mlx 8084 reason-mac REASON_PID REASON_DEADLINE start_reason
+  [ "$REASON_ENABLED" = 1 ] && ensure_mlx 8084 reason-mac REASON_PID REASON_DEADLINE start_reason
   uph 8081 || start_embed
   uph 8082 || start_rerank
   sleep 20
