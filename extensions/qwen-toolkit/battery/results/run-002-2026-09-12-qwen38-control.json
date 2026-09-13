@@ -1,0 +1,173 @@
+{
+  "broken_fixtures": [],
+  "gold_check": [
+    {
+      "buggy_correctly_fails": true,
+      "buggy_exit_code": 1,
+      "gold_correctly_passes": true,
+      "gold_exit_code": 0,
+      "negative_golds": [],
+      "passed": true,
+      "task": "001-interval-debug"
+    },
+    {
+      "buggy_correctly_fails": true,
+      "buggy_exit_code": 1,
+      "gold_correctly_passes": true,
+      "gold_exit_code": 0,
+      "negative_golds": [
+        {
+          "correctly_fails": true,
+          "exit_code": 1,
+          "label": "overengineered"
+        }
+      ],
+      "passed": true,
+      "task": "002-implement-tdd"
+    },
+    {
+      "buggy_correctly_fails": true,
+      "buggy_exit_code": 1,
+      "gold_correctly_passes": true,
+      "gold_exit_code": 0,
+      "negative_golds": [
+        {
+          "correctly_fails": true,
+          "exit_code": 1,
+          "label": "test-weakened"
+        }
+      ],
+      "passed": true,
+      "task": "003-version-compare-debug"
+    }
+  ],
+  "rows": [
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 191958,
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "resolved_extensions": "none",
+      "task": "001-interval-debug",
+      "tool_calls": 6,
+      "verify_exit_code": 0,
+      "verify_stdout": null
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 222549,
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "resolved_extensions": "none",
+      "task": "001-interval-debug",
+      "tool_calls": 7,
+      "verify_exit_code": 0,
+      "verify_stdout": null
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 180846,
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "resolved_extensions": "none",
+      "task": "001-interval-debug",
+      "tool_calls": 6,
+      "verify_exit_code": 0,
+      "verify_stdout": null
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 121039,
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "resolved_extensions": "none",
+      "task": "002-implement-tdd",
+      "tool_calls": 3,
+      "verify_exit_code": 0,
+      "verify_stdout": "VERIFY_DIAGNOSTICS: {\"tree\": \"/private/var/folders/57/ghpx07d96d50v1g9d2531jx80000gn/T/qwen-battery-fdv07m_b/002-implement-tdd/control/rep-01\", \"oracle_modified\": false, \"extra_files\": [], \"missing_pristine_files\": [], \"ratelimiter_present\": true, \"loc\": 45, \"loc_ceiling\": 50, \"tests_exit_code\": 0, \"tests_stderr_tail\": \"test_default_clock_is_usable (test_ratelimiter.TokenBucketTests.test_default_clock_is_usable) ... ok\\ntest_fractional_refill_accumulates_across_calls (test_ratelimiter.TokenBucketTests.test_fractional_refill_accumulates_across_calls) ... ok\\ntest_no_time_elapsed_denies_when_exhausted (test_ratelimiter.TokenBucketTests.test_no_time_elapsed_denies_when_exhausted) ... ok\\ntest_refill_caps_at_capacity (test_ratelimiter.TokenBucketTests.test_refill_caps_at_capacity) ... ok\\ntest_refills_over_time (test_ratelimiter.TokenBucketTests.test_refills_over_time) ... ok\\ntest_starts_full (test_ratelimiter.TokenBucketTests.test_starts_full) ... ok\\n\\n----------------------------------------------------------------------\\nRan 6 tests in 0.000s\\n\\nOK\\n\", \"ok\": true}\n"
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 129287,
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "resolved_extensions": "none",
+      "task": "002-implement-tdd",
+      "tool_calls": 3,
+      "verify_exit_code": 0,
+      "verify_stdout": "VERIFY_DIAGNOSTICS: {\"tree\": \"/private/var/folders/57/ghpx07d96d50v1g9d2531jx80000gn/T/qwen-battery-fdv07m_b/002-implement-tdd/control/rep-02\", \"oracle_modified\": false, \"extra_files\": [], \"missing_pristine_files\": [], \"ratelimiter_present\": true, \"loc\": 38, \"loc_ceiling\": 50, \"tests_exit_code\": 0, \"tests_stderr_tail\": \"test_default_clock_is_usable (test_ratelimiter.TokenBucketTests.test_default_clock_is_usable) ... ok\\ntest_fractional_refill_accumulates_across_calls (test_ratelimiter.TokenBucketTests.test_fractional_refill_accumulates_across_calls) ... ok\\ntest_no_time_elapsed_denies_when_exhausted (test_ratelimiter.TokenBucketTests.test_no_time_elapsed_denies_when_exhausted) ... ok\\ntest_refill_caps_at_capacity (test_ratelimiter.TokenBucketTests.test_refill_caps_at_capacity) ... ok\\ntest_refills_over_time (test_ratelimiter.TokenBucketTests.test_refills_over_time) ... ok\\ntest_starts_full (test_ratelimiter.TokenBucketTests.test_starts_full) ... ok\\n\\n----------------------------------------------------------------------\\nRan 6 tests in 0.000s\\n\\nOK\\n\", \"ok\": true}\n"
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 129245,
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "resolved_extensions": "none",
+      "task": "002-implement-tdd",
+      "tool_calls": 3,
+      "verify_exit_code": 0,
+      "verify_stdout": "VERIFY_DIAGNOSTICS: {\"tree\": \"/private/var/folders/57/ghpx07d96d50v1g9d2531jx80000gn/T/qwen-battery-fdv07m_b/002-implement-tdd/control/rep-03\", \"oracle_modified\": false, \"extra_files\": [], \"missing_pristine_files\": [], \"ratelimiter_present\": true, \"loc\": 41, \"loc_ceiling\": 50, \"tests_exit_code\": 0, \"tests_stderr_tail\": \"test_default_clock_is_usable (test_ratelimiter.TokenBucketTests.test_default_clock_is_usable) ... ok\\ntest_fractional_refill_accumulates_across_calls (test_ratelimiter.TokenBucketTests.test_fractional_refill_accumulates_across_calls) ... ok\\ntest_no_time_elapsed_denies_when_exhausted (test_ratelimiter.TokenBucketTests.test_no_time_elapsed_denies_when_exhausted) ... ok\\ntest_refill_caps_at_capacity (test_ratelimiter.TokenBucketTests.test_refill_caps_at_capacity) ... ok\\ntest_refills_over_time (test_ratelimiter.TokenBucketTests.test_refills_over_time) ... ok\\ntest_starts_full (test_ratelimiter.TokenBucketTests.test_starts_full) ... ok\\n\\n----------------------------------------------------------------------\\nRan 6 tests in 0.000s\\n\\nOK\\n\", \"ok\": true}\n"
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 125670,
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "resolved_extensions": "none",
+      "task": "003-version-compare-debug",
+      "tool_calls": 4,
+      "verify_exit_code": 0,
+      "verify_stdout": "VERIFY_DIAGNOSTICS: {\"tree\": \"/private/var/folders/57/ghpx07d96d50v1g9d2531jx80000gn/T/qwen-battery-fdv07m_b/003-version-compare-debug/control/rep-01\", \"test_file_tampered\": false, \"implementation_present\": true, \"tests_exit_code\": 0, \"tests_stderr_tail\": \"s.test_leading_zeros_do_not_change_numeric_value) ... ok\\ntest_missing_trailing_component_is_treated_as_zero (test_compareversions.CompareVersionsTests.test_missing_trailing_component_is_treated_as_zero) ... ok\\ntest_missing_trailing_component_still_compares_correctly (test_compareversions.CompareVersionsTests.test_missing_trailing_component_still_compares_correctly) ... ok\\ntest_numeric_not_lexicographic_ordering (test_compareversions.CompareVersionsTests.test_numeric_not_lexicographic_ordering) ... ok\\ntest_simple_greater_than (test_compareversions.CompareVersionsTests.test_simple_greater_than) ... ok\\ntest_simple_less_than (test_compareversions.CompareVersionsTests.test_simple_less_than) ... ok\\n\\n----------------------------------------------------------------------\\nRan 7 tests in 0.000s\\n\\nOK\\n\", \"ok\": true}\n"
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 118925,
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "resolved_extensions": "none",
+      "task": "003-version-compare-debug",
+      "tool_calls": 4,
+      "verify_exit_code": 0,
+      "verify_stdout": "VERIFY_DIAGNOSTICS: {\"tree\": \"/private/var/folders/57/ghpx07d96d50v1g9d2531jx80000gn/T/qwen-battery-fdv07m_b/003-version-compare-debug/control/rep-02\", \"test_file_tampered\": false, \"implementation_present\": true, \"tests_exit_code\": 0, \"tests_stderr_tail\": \"s.test_leading_zeros_do_not_change_numeric_value) ... ok\\ntest_missing_trailing_component_is_treated_as_zero (test_compareversions.CompareVersionsTests.test_missing_trailing_component_is_treated_as_zero) ... ok\\ntest_missing_trailing_component_still_compares_correctly (test_compareversions.CompareVersionsTests.test_missing_trailing_component_still_compares_correctly) ... ok\\ntest_numeric_not_lexicographic_ordering (test_compareversions.CompareVersionsTests.test_numeric_not_lexicographic_ordering) ... ok\\ntest_simple_greater_than (test_compareversions.CompareVersionsTests.test_simple_greater_than) ... ok\\ntest_simple_less_than (test_compareversions.CompareVersionsTests.test_simple_less_than) ... ok\\n\\n----------------------------------------------------------------------\\nRan 7 tests in 0.000s\\n\\nOK\\n\", \"ok\": true}\n"
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 121278,
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "resolved_extensions": "none",
+      "task": "003-version-compare-debug",
+      "tool_calls": 4,
+      "verify_exit_code": 0,
+      "verify_stdout": "VERIFY_DIAGNOSTICS: {\"tree\": \"/private/var/folders/57/ghpx07d96d50v1g9d2531jx80000gn/T/qwen-battery-fdv07m_b/003-version-compare-debug/control/rep-03\", \"test_file_tampered\": false, \"implementation_present\": true, \"tests_exit_code\": 0, \"tests_stderr_tail\": \"s.test_leading_zeros_do_not_change_numeric_value) ... ok\\ntest_missing_trailing_component_is_treated_as_zero (test_compareversions.CompareVersionsTests.test_missing_trailing_component_is_treated_as_zero) ... ok\\ntest_missing_trailing_component_still_compares_correctly (test_compareversions.CompareVersionsTests.test_missing_trailing_component_still_compares_correctly) ... ok\\ntest_numeric_not_lexicographic_ordering (test_compareversions.CompareVersionsTests.test_numeric_not_lexicographic_ordering) ... ok\\ntest_simple_greater_than (test_compareversions.CompareVersionsTests.test_simple_greater_than) ... ok\\ntest_simple_less_than (test_compareversions.CompareVersionsTests.test_simple_less_than) ... ok\\n\\n----------------------------------------------------------------------\\nRan 7 tests in 0.000s\\n\\nOK\\n\", \"ok\": true}\n"
+    }
+  ],
+  "summary": {
+    "control": {
+      "dispatch_ok": 9,
+      "median_elapsed_ms": 129245.0,
+      "median_tool_calls": 4.0,
+      "n": 9,
+      "pass_rate": 1.0,
+      "passed": 9
+    }
+  }
+}
