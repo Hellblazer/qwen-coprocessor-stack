@@ -170,6 +170,17 @@ LAUNCH_T0=0
 # (adopt the serving pid at the next check instead of reclaiming — a keepalive
 # restart over a healthy server must not churn it).
 EXPECTED_BUILD=${LL#*llama-}; EXPECTED_BUILD=${EXPECTED_BUILD%%\\*}
+# BASE_BUILD: what buildok() actually compares against /props build_info.
+# EXPECTED_BUILD is the full runtime id used for the provenance lookup
+# (rt="llama.cpp@$EXPECTED_BUILD") and may carry a "-patched" suffix for an
+# overlay runtime directory (e.g. "b10867-patched", RDR-016 overlay
+# add-runtime) -- but upstream llama.cpp never bakes that suffix into its
+# own build_info string (an overlay swaps one DLL, not the build's self-
+# report), so the two must diverge for a patched build to pass. Set once
+# EXPECTED_BUILD is final (after the format guard below); "-patched" is the
+# only suffix an overlay id can carry (provenance.py's default-id
+# convention), so a plain "%-patched" strip is exact, not a fuzzy trim.
+BASE_BUILD=""
 EXPECTED_PID=0
 PIDCHECK_EVERY=15   # pid identity check cadence, in 20s cycles (~5 min): ssh isn't free
 # Reclaim damping (bead 68a): identity-triggered reclaims are capped. An
@@ -199,8 +210,8 @@ buildok() {
     return 0
   fi
   [ "$BUILDCHK_DARK" -eq 1 ] && { log "build check recovered"; BUILDCHK_DARK=0; }
-  [ -z "$EXPECTED_BUILD" ] && return 0
-  printf '%s' "$bi" | grep -qE "\"build_info\":\"$EXPECTED_BUILD(-|\")"
+  [ -z "$BASE_BUILD" ] && return 0
+  printf '%s' "$bi" | grep -qE "\"build_info\":\"$BASE_BUILD(-|\")"
 }
 ownerpid() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERPID_B64" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+ -?[0-9]+$' | head -1 | cut -d' ' -f1; }
 ownercmd() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERCMD_B64" 2>/dev/null | tr -d '\r' | grep 'llama-server' | head -1 | sed 's/"//g; s/[[:space:]]*$//'; }
@@ -304,6 +315,60 @@ except Exception as e:
   if [ -z "$len" ]; then PROV_REASON="could not stat $LL on box"; return 1; fi
   PROV_RUNTIME_ID=$("$PYTHON" "$PROV" check-path llama-server.exe --host box --id "$rt" --size "$len" --print-id 2>/tmp/prov-gate.err) \
     || { PROV_REASON="runtime not verified ($rt): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  # Overlay runtimes (RDR-016 overlay add-runtime) swap ONE file inside the
+  # official release tree (e.g. ggml-vulkan.dll) without touching
+  # llama-server.exe's own hash/size, so the check above alone would pass a
+  # box with a stale or reverted DLL sitting next to a verified exe. Gate
+  # that file too, but ONLY when $rt's own manifest entry actually carries
+  # an `overlay` object -- a plain runtime (b9596: no overlay) launches with
+  # byte-identical behavior to before this block existed. Like every other
+  # check-path call in this gate, this is membership + SIZE only, not a
+  # hash re-check -- a full byte-for-byte re-verification is
+  # `verify --root`/`--listing` on demand, not the per-respawn gate.
+  # Fails CLOSED, not open: exit 0 + a filename means "this entry has an
+  # overlay, gate it"; exit 0 + empty output means "entry found, genuinely
+  # no overlay" (the common case -- b9596 etc.); any OTHER outcome (bad
+  # JSON, unreadable manifest, $rt not found even though the check-path
+  # above just verified it) is exit 1, and bash below treats a nonzero
+  # exit as a gate failure exactly like every other check in this
+  # function -- an `except Exception: pass` that let a lookup error look
+  # identical to "no overlay" would silently skip the DLL check instead.
+  local overlay_file overlay_rc
+  overlay_file=$("$PYTHON" -c 'import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+    entry = None
+    for a in m.get("artifacts", []):
+        if a.get("id") == sys.argv[2]:
+            entry = a
+            break
+    if entry is None:
+        print("no manifest entry with id " + sys.argv[2], file=sys.stderr)
+        sys.exit(1)
+    overlay = entry.get("overlay")
+    if overlay:
+        f = overlay.get("file", "")
+        if not f:
+            print("overlay object present but has no file field", file=sys.stderr)
+            sys.exit(1)
+        print(f)
+    sys.exit(0)
+except Exception as e:
+    print(type(e).__name__ + ": " + str(e), file=sys.stderr)
+    sys.exit(1)' "$REPO_DIR/models/MANIFEST.json" "$rt" 2>/tmp/prov-gate.err)
+  overlay_rc=$?
+  if [ "$overlay_rc" -ne 0 ]; then
+    PROV_REASON="overlay lookup failed for $rt: $(tr -d '\n' </tmp/prov-gate.err)"
+    return 1
+  fi
+  if [ -n "$overlay_file" ]; then
+    local overlay_path
+    overlay_path="${LL%\\*}\\$overlay_file"
+    len=$(boxlen "$overlay_path")
+    if [ -z "$len" ]; then PROV_REASON="could not stat overlay file $overlay_path on box"; return 1; fi
+    "$PYTHON" "$PROV" check-path "$overlay_path" --host box --id "$rt" --size "$len" >/tmp/prov-gate.err 2>&1 \
+      || { PROV_REASON="overlay file not verified ($rt $overlay_file): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  fi
   return 0
 }
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
@@ -510,7 +575,10 @@ case "$EXPECTED_BUILD" in
   b[0-9]*) ;;
   *) log "WARN: unparsable build tag from LL ('$EXPECTED_BUILD') — build guard disabled"; EXPECTED_BUILD="" ;;
 esac
-log "keepalive started (pid $$) — coder-box only (build guard: ${EXPECTED_BUILD:-off})"
+BASE_BUILD=${EXPECTED_BUILD%-patched}
+BUILDGUARD_NOTE=""
+[ -n "$BASE_BUILD" ] && [ "$BASE_BUILD" != "$EXPECTED_BUILD" ] && BUILDGUARD_NOTE=" (build_info compared against $BASE_BUILD)"
+log "keepalive started (pid $$) — coder-box only (build guard: ${EXPECTED_BUILD:-off})$BUILDGUARD_NOTE"
 # SELFTEST: exercise the session guard + every assertion against the LIVE box and
 # exit, launching nothing and touching no running server. This exists because a
 # real keepalive restart IS a service interruption -- the held ssh is

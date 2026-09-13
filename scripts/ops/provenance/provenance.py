@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -563,6 +564,102 @@ def download_to_path(url: str, dest_path: Path, headers: dict[str, str], chunk_s
     return h.hexdigest(), size
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Stop urllib from auto-following a redirect so the caller can inspect
+    the Location header and decide what to forward on the next request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N803 (stdlib signature)
+        return None
+
+
+def _redact_url_query(url: str) -> str:
+    """Strip the query string from a URL before it can appear in any log or
+    ProvenanceError message. A GitHub artifact redirect's Location carries a
+    time-limited SAS/signature token in its query string -- that token must
+    never be written to a log line or an exception message a caller might
+    print, store, or paste into a bug report.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def download_gh_artifact_zip(
+    url: str, dest_path: Path, headers: dict[str, str], *, allow_http_redirect: bool = False
+) -> tuple[str, int]:
+    """Download a GitHub Actions artifact zip (the `archive_download_url`
+    from the run-artifacts API).
+
+    That endpoint responds with a redirect to a time-limited, pre-signed
+    URL on a DIFFERENT host (Azure blob storage in practice). Plain
+    `download_to_path` would forward our GitHub Authorization header across
+    that cross-host redirect (`urllib` does this by default, unlike `curl`,
+    which strips sensitive headers on a cross-host redirect unless passed
+    `--location-trusted`) -- the storage backend then rejects the GitHub
+    bearer token with 401 rather than ignoring it. Confirmed live against
+    run 34707921300's artifact (RDR-016 bead 9so review remediation).
+
+    Follows the redirect manually and re-issues the download to the
+    Location WITHOUT the GitHub auth header, and never surfaces the
+    Location's query string (which carries the pre-signed token) in any
+    error message -- `_redact_url_query` scrubs it first. The redirect
+    target must be `https` unless `allow_http_redirect` is set (the caller
+    passes this only when `--gh-api-base` itself points at a local test
+    server, so the offline test double -- which serves plain http -- still
+    works; a real GitHub redirect is always https). Falls back to treating
+    a non-redirect 2xx response as the artifact body directly (the shape a
+    test double serves; the real API always redirects).
+    """
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        resp = opener.open(req, timeout=30)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (301, 302, 303, 307, 308):
+            location = exc.headers.get("Location")
+            if not location:
+                raise ProvenanceError(f"GET {_redact_url_query(url)} redirected ({exc.code}) with no Location header")
+            scheme = urllib.parse.urlsplit(location).scheme
+            if scheme != "https" and not allow_http_redirect:
+                raise ProvenanceError(
+                    f"refusing: artifact redirect target is not https "
+                    f"({_redact_url_query(location)}). Sanctioned next step: this is "
+                    "only permitted when --gh-api-base itself points at a local test "
+                    "server; a real GitHub redirect is always https."
+                )
+            try:
+                return download_to_path(location, dest_path, {})
+            except ProvenanceError:
+                # Re-raise WITHOUT download_to_path's own message, which embeds the
+                # full (SAS-token-bearing) URL verbatim.
+                raise ProvenanceError(
+                    f"artifact download failed from redirect target {_redact_url_query(location)}"
+                )
+        raise ProvenanceError(f"GET {_redact_url_query(url)} failed: {exc}")
+    except urllib.error.URLError as exc:
+        raise ProvenanceError(f"GET {_redact_url_query(url)} failed: {exc}")
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    part_path = dest_path.with_name(dest_path.name + ".part")
+    h = hashlib.sha256()
+    size = 0
+    try:
+        with resp:
+            with open(part_path, "wb") as f:
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    h.update(chunk)
+                    size += len(chunk)
+    except BaseException:
+        part_path.unlink(missing_ok=True)
+        dest_path.unlink(missing_ok=True)
+        raise
+    part_path.replace(dest_path)
+    return h.hexdigest(), size
+
+
 # --------------------------------------------------------------------------
 # validate
 # --------------------------------------------------------------------------
@@ -780,6 +877,325 @@ def hash_zip_members(zip_path: Path) -> list[dict[str, Any]]:
     return members
 
 
+# --------------------------------------------------------------------------
+# add-runtime --overlay-* (patched-DLL overlay on an official release zip)
+# --------------------------------------------------------------------------
+
+OVERLAY_WORKFLOW_PATH = ".github/workflows/llama-vulkan-patched.yml"
+DEFAULT_GH_API_BASE = "https://api.github.com"
+
+
+def build_gh_headers() -> dict[str, str]:
+    """Auth headers for the GitHub API. GH_TOKEN / GITHUB_TOKEN env win when
+    set; otherwise fall back to `gh auth token` (best-effort subprocess --
+    `gh` is already a required tool in this repo's own workflow, see CLAUDE.md
+    git steps, so shelling out to its cached credentials avoids asking an
+    operator to mint and export a separate PAT just for this read-only
+    Actions API call). Any failure (gh missing, not logged in, timeout)
+    leaves the request unauthenticated -- GitHub's Actions API then refuses
+    it itself (fail closed at the HTTP layer, not silently degraded here).
+    """
+    headers = {
+        "User-Agent": "qwen-coprocessor-stack-provenance/1",
+        "Accept": "application/vnd.github+json",
+    }
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        try:
+            proc = subprocess.run(
+                ["gh", "auth", "token"], capture_output=True, text=True, timeout=10, check=True
+            )
+            token = proc.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            token = None
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_gh_run_meta(gh_api_base: str, repo: str, run_id: int, headers: dict[str, str]) -> dict[str, Any]:
+    return _http_get_json(f"{gh_api_base}/repos/{repo}/actions/runs/{run_id}", headers)
+
+
+def fetch_gh_commit(gh_api_base: str, repo: str, sha: str, headers: dict[str, str]) -> dict[str, Any]:
+    return _http_get_json(f"{gh_api_base}/repos/{repo}/commits/{sha}", headers)
+
+
+def fetch_gh_run_artifacts(gh_api_base: str, repo: str, run_id: int, headers: dict[str, str]) -> dict[str, Any]:
+    return _http_get_json(f"{gh_api_base}/repos/{repo}/actions/runs/{run_id}/artifacts", headers)
+
+
+def parse_patched_build_txt(text: str) -> dict[str, str]:
+    """Parse a PATCHED-BUILD.txt written by llama-vulkan-patched.yml.
+
+    Tolerant `key: value` (or `key=value`) lines, one field per line; blank
+    lines and '#' comments are ignored. Not a general-purpose format -- just
+    enough structure to carry base_tag/base_sha/patch/dll_sha256/dll_bytes/
+    built_by out of the workflow artifact.
+    """
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^([A-Za-z0-9_]+)\s*[:=]\s*(.*)$", line)
+        if m:
+            out[m.group(1).strip()] = m.group(2).strip()
+    return out
+
+
+def _read_overlay_dir(overlay_dir: Path) -> tuple[Path, dict[str, str]]:
+    """Return (replacement_file_path, patched_build_fields) from an extracted
+    llama-vulkan-patched.yml artifact directory.
+
+    Refuses unless the directory holds exactly PATCHED-BUILD.txt plus one
+    other file (the declared replacement), and PATCHED-BUILD.txt carries all
+    required fields.
+    """
+    if not overlay_dir.is_dir():
+        raise ProvenanceError(f"--overlay-dir is not a directory: {overlay_dir}")
+    entries = sorted(p for p in overlay_dir.iterdir() if p.is_file())
+    manifest_txt = overlay_dir / "PATCHED-BUILD.txt"
+    if manifest_txt not in entries:
+        raise ProvenanceError(
+            f"refusing: --overlay-dir {overlay_dir} has no PATCHED-BUILD.txt. "
+            "Sanctioned next step: point --overlay-dir at the extracted "
+            "llama-vulkan-patched.yml artifact, which always carries it."
+        )
+    others = [p for p in entries if p != manifest_txt]
+    if len(others) != 1:
+        raise ProvenanceError(
+            f"refusing: --overlay-dir {overlay_dir} must contain exactly one "
+            f"replacement file alongside PATCHED-BUILD.txt, found {len(others)}: "
+            f"{[p.name for p in others]}. Sanctioned next step: extract only "
+            "the workflow artifact's own files, nothing else."
+        )
+    fields = parse_patched_build_txt(manifest_txt.read_text())
+    required = ("base_tag", "base_sha", "patch", "dll_sha256", "dll_bytes", "built_by")
+    missing = [k for k in required if k not in fields]
+    if missing:
+        raise ProvenanceError(
+            f"refusing: PATCHED-BUILD.txt at {manifest_txt} is missing field(s) "
+            f"{missing}. Sanctioned next step: re-run the patched-build "
+            "workflow; a hand-edited PATCHED-BUILD.txt is not sanctioned."
+        )
+    return others[0], fields
+
+
+def _apply_overlay(
+    args: argparse.Namespace, allowlist: dict[str, Any], asset: str, members: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Validate --overlay-* args against the official zip `members` (mutated
+    in place to carry the replacement file's real hash/size) and return the
+    manifest `overlay` object, or None if no overlay was requested.
+    """
+    overlay_args = (args.overlay_dir, args.overlay_repo, args.overlay_run, args.patch)
+    if not any(overlay_args):
+        return None
+    if not all(overlay_args):
+        raise ProvenanceError(
+            "refusing: --overlay-dir, --overlay-repo, --overlay-run and "
+            "--patch must all be given together for an overlay runtime. "
+            "Sanctioned next step: supply all four, or none for a plain "
+            "add-runtime."
+        )
+
+    overlay_repos = allowlist.get("overlay_repos", [])
+    if args.overlay_repo not in overlay_repos:
+        raise ProvenanceError(
+            f"refusing: overlay repo '{args.overlay_repo}' is not in "
+            f"allowlist overlay_repos {overlay_repos}. Sanctioned next step: "
+            "add it to scripts/ops/provenance/allowlist.json after review."
+        )
+    try:
+        overlay_run_id = int(args.overlay_run)
+    except (TypeError, ValueError):
+        raise ProvenanceError(f"--overlay-run must be numeric, got {args.overlay_run!r}")
+
+    patch_path = Path(args.patch)
+    if not patch_path.is_file():
+        raise ProvenanceError(f"--patch path does not exist: {patch_path}")
+    patch_sha256 = sha256_file(patch_path)
+
+    replacement_path, fields = _read_overlay_dir(Path(args.overlay_dir))
+
+    if fields["base_tag"] != args.tag:
+        raise ProvenanceError(
+            f"refusing: PATCHED-BUILD.txt base_tag {fields['base_tag']!r} "
+            f"does not match --tag {args.tag!r}. Sanctioned next step: point "
+            "--overlay-dir at the artifact built for this tag."
+        )
+    if fields["patch"] != patch_path.name:
+        raise ProvenanceError(
+            f"refusing: PATCHED-BUILD.txt patch {fields['patch']!r} does not "
+            f"match --patch basename {patch_path.name!r}. Sanctioned next "
+            "step: pass the same patch the workflow was run with."
+        )
+
+    actual_sha256 = sha256_file(replacement_path)
+    actual_size = replacement_path.stat().st_size
+    try:
+        declared_bytes = int(fields["dll_bytes"])
+    except ValueError:
+        raise ProvenanceError(f"PATCHED-BUILD.txt dll_bytes is not an integer: {fields['dll_bytes']!r}")
+    if actual_sha256.lower() != fields["dll_sha256"].lower() or actual_size != declared_bytes:
+        raise ProvenanceError(
+            f"refusing: {replacement_path.name} does not match PATCHED-BUILD.txt "
+            f"(declared sha256={fields['dll_sha256']} bytes={declared_bytes}; "
+            f"actual sha256={actual_sha256} bytes={actual_size}). Sanctioned "
+            "next step: re-extract the workflow artifact; do not hand-edit "
+            "either file."
+        )
+
+    member_by_path = {m["path"]: m for m in members}
+    target_member = member_by_path.get(replacement_path.name)
+    if target_member is None:
+        basename_matches = [p for p in member_by_path if Path(p).name == replacement_path.name]
+        if len(basename_matches) == 1:
+            target_member = member_by_path[basename_matches[0]]
+        elif len(basename_matches) > 1:
+            raise ProvenanceError(
+                f"refusing: {replacement_path.name} matches more than one "
+                f"official zip member by basename ({basename_matches}); "
+                "ambiguous overlay target. Sanctioned next step: disambiguate "
+                "manually before recording this entry."
+            )
+    if target_member is None:
+        raise ProvenanceError(
+            f"refusing: overlay file {replacement_path.name!r} is not a "
+            f"member of the official {asset}. Sanctioned next step: an "
+            "overlay may only replace a file the official release already "
+            "ships."
+        )
+    target_member["sha256"] = actual_sha256
+    target_member["size"] = actual_size
+
+    artifact_name = args.overlay_artifact or f"ggml-vulkan-{args.tag}-patched"
+    verification = "offline-unverified"
+    head_sha: str | None = None
+
+    if not args.offline:
+        headers = build_gh_headers()
+        meta = fetch_gh_run_meta(args.gh_api_base, args.overlay_repo, overlay_run_id, headers)
+        if meta.get("conclusion") != "success":
+            raise ProvenanceError(
+                f"refusing: workflow run {args.overlay_repo}#{overlay_run_id} "
+                f"conclusion is {meta.get('conclusion')!r}, not 'success'. "
+                "Sanctioned next step: point at a run that finished green."
+            )
+        if meta.get("path") != OVERLAY_WORKFLOW_PATH:
+            raise ProvenanceError(
+                f"refusing: workflow run {args.overlay_repo}#{overlay_run_id} "
+                f"path is {meta.get('path')!r}, not {OVERLAY_WORKFLOW_PATH!r}. "
+                "Sanctioned next step: point --overlay-run at a run of the "
+                "sanctioned patched-build workflow."
+            )
+
+        head_sha = meta.get("head_sha")
+        if not head_sha or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise ProvenanceError(
+                f"refusing: workflow run {args.overlay_repo}#{overlay_run_id} has "
+                f"no well-formed head_sha ({head_sha!r}); refusing to record an "
+                "unverifiable base commit."
+            )
+        try:
+            fetch_gh_commit(args.gh_api_base, args.overlay_repo, head_sha, headers)
+        except ProvenanceError as exc:
+            raise ProvenanceError(
+                f"refusing: run {args.overlay_repo}#{overlay_run_id} head_sha "
+                f"{head_sha} is not a commit on {args.overlay_repo}: {exc}"
+            )
+
+        # Tie the LOCAL --overlay-dir file to this run's own output, not just
+        # to "some successful run of the right repo/workflow" -- list the
+        # run's artifacts, require the named one present and unexpired, then
+        # download and hash its contents against the local files.
+        artifacts_meta = fetch_gh_run_artifacts(args.gh_api_base, args.overlay_repo, overlay_run_id, headers)
+        artifact = next(
+            (a for a in artifacts_meta.get("artifacts", []) if a.get("name") == artifact_name), None
+        )
+        if artifact is None:
+            raise ProvenanceError(
+                f"refusing: run {args.overlay_repo}#{overlay_run_id} has no "
+                f"artifact named {artifact_name!r}. Sanctioned next step: pass "
+                "--overlay-artifact with the run's actual artifact name."
+            )
+        if artifact.get("expired"):
+            raise ProvenanceError(
+                f"refusing: artifact {artifact_name!r} on run "
+                f"{args.overlay_repo}#{overlay_run_id} has expired (GitHub "
+                "Actions artifacts expire). Sanctioned next step: re-run the "
+                "workflow for a fresh artifact, or pass --offline if the local "
+                "--overlay-dir DLL is otherwise trusted."
+            )
+        download_url = artifact.get("archive_download_url")
+        if not download_url:
+            raise ProvenanceError(
+                f"refusing: run {args.overlay_repo}#{overlay_run_id} artifact "
+                f"{artifact_name!r} has no archive_download_url."
+            )
+
+        # A real GitHub artifact redirect is always https; http is tolerated
+        # ONLY when --gh-api-base itself is a local test server (the offline
+        # test double), never against the real API.
+        gh_api_host = urllib.parse.urlsplit(args.gh_api_base).hostname or ""
+        allow_http_redirect = gh_api_host in ("127.0.0.1", "localhost", "::1")
+        with tempfile.TemporaryDirectory() as td:
+            artifact_zip = Path(td) / "artifact.zip"
+            download_gh_artifact_zip(download_url, artifact_zip, headers, allow_http_redirect=allow_http_redirect)
+            with zipfile.ZipFile(artifact_zip) as zf:
+                names = zf.namelist()
+                remote_dll_name = next((n for n in names if Path(n).name == replacement_path.name), None)
+                if remote_dll_name is None:
+                    raise ProvenanceError(
+                        f"refusing: artifact {artifact_name!r} does not contain "
+                        f"{replacement_path.name!r}."
+                    )
+                remote_dll_bytes = zf.read(remote_dll_name)
+                remote_txt_name = next((n for n in names if Path(n).name == "PATCHED-BUILD.txt"), None)
+                if remote_txt_name is None:
+                    raise ProvenanceError(
+                        f"refusing: artifact {artifact_name!r} does not contain "
+                        "PATCHED-BUILD.txt."
+                    )
+                remote_txt_bytes = zf.read(remote_txt_name)
+
+        remote_dll_sha = hashlib.sha256(remote_dll_bytes).hexdigest()
+        if remote_dll_sha.lower() != actual_sha256.lower() or len(remote_dll_bytes) != actual_size:
+            raise ProvenanceError(
+                f"refusing: artifact {artifact_name!r}'s {replacement_path.name} "
+                f"(sha256={remote_dll_sha} bytes={len(remote_dll_bytes)}) does not "
+                f"match the local --overlay-dir file (sha256={actual_sha256} "
+                f"bytes={actual_size}). Sanctioned next step: re-extract the "
+                "artifact from this run; do not hand-edit the local overlay dir."
+            )
+        local_txt_bytes = (Path(args.overlay_dir) / "PATCHED-BUILD.txt").read_bytes()
+        if hashlib.sha256(remote_txt_bytes).hexdigest().lower() != hashlib.sha256(local_txt_bytes).hexdigest().lower():
+            raise ProvenanceError(
+                f"refusing: artifact {artifact_name!r}'s PATCHED-BUILD.txt does "
+                "not match the local --overlay-dir copy byte-for-byte. "
+                "Sanctioned next step: re-extract the artifact from this run."
+            )
+        verification = "online-artifact-hash"
+
+    overlay_obj: dict[str, Any] = {
+        "repo": args.overlay_repo,
+        "run_id": overlay_run_id,
+        "artifact": artifact_name,
+        "file": replacement_path.name,
+        "sha256": actual_sha256,
+        "bytes": actual_size,
+        "base_tag": fields["base_tag"],
+        "base_sha": fields["base_sha"],
+        "patch_path": args.patch,
+        "patch_sha256": patch_sha256,
+        "verification": verification,
+    }
+    if head_sha:
+        overlay_obj["head_sha"] = head_sha
+    return overlay_obj
+
+
 def cmd_add_runtime(args: argparse.Namespace) -> int:
     allowlist = load_allowlist(args.allowlist)
     runtime_repos = allowlist.get("runtime_repos", [])
@@ -818,23 +1234,40 @@ def cmd_add_runtime(args: argparse.Namespace) -> int:
         zip_sha256, zip_size = download_to_path(url, zip_path, {})
 
     members = hash_zip_members(zip_path)
+    overlay_entry = _apply_overlay(args, allowlist, asset, members)
     files = [{"path": f"zip:{asset}", "sha256": zip_sha256, "size": zip_size}] + members
 
+    default_id = f"{args.repo.split('/')[-1]}@{args.tag}" + ("-patched" if overlay_entry else "")
+    notes = args.notes or ""
+    if overlay_entry and not notes:
+        notes = (
+            f"overlay runtime: official {asset} with {overlay_entry['file']} "
+            f"replaced per {overlay_entry['repo']}#{overlay_entry['run_id']} "
+            f"artifact {overlay_entry['artifact']}"
+        )
+
     entry = {
-        "id": args.id or f"{args.repo.split('/')[-1]}@{args.tag}",
+        "id": args.id or default_id,
         "kind": "runtime",
         "status": "verified",
         "source": {"host": "github", "repo": args.repo, "revision": args.tag, "asset": asset, "url": url},
         "format": "zip",
-        "trust_tier": "origin",
+        # A plain add-runtime records the official, GitHub-verified zip
+        # as-is ("origin"). An overlay entry has one member replaced by an
+        # artifact WE built from our own patch -- not what ggml-org shipped
+        # -- so it is recorded at the same trust tier a self-quantized model
+        # would be: verifiably derived, not upstream-verbatim.
+        "trust_tier": "self-quantized" if overlay_entry else "origin",
         "quantized_by": None,
         "remote_code_files": [],
         "remote_code_present": False,
         "files": files,
         "verified_on": ["mac"],
         "verified_at": utc_now_iso(),
-        "notes": args.notes or "",
+        "notes": notes,
     }
+    if overlay_entry:
+        entry["overlay"] = overlay_entry
 
     manifest = load_manifest(args.manifest)
     upsert_entry(manifest, entry)
@@ -1521,6 +1954,7 @@ def build_parser() -> argparse.ArgumentParser:
     net = argparse.ArgumentParser(add_help=False)
     net.add_argument("--hf-base", default=os.environ.get("PROVENANCE_HF_BASE", DEFAULT_HF_BASE))
     net.add_argument("--gh-base", default=os.environ.get("PROVENANCE_GH_BASE", DEFAULT_GH_BASE))
+    net.add_argument("--gh-api-base", default=os.environ.get("PROVENANCE_GH_API_BASE", DEFAULT_GH_API_BASE))
 
     allow = argparse.ArgumentParser(add_help=False)
     allow.add_argument("--allowlist", default=str(DEFAULT_ALLOWLIST_PATH))
@@ -1555,6 +1989,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--offline", action="store_true")
     sp.add_argument("--id")
     sp.add_argument("--notes", default="")
+    sp.add_argument(
+        "--overlay-dir", help="extracted llama-vulkan-patched.yml artifact dir (PATCHED-BUILD.txt + one replacement file)"
+    )
+    sp.add_argument("--overlay-repo", help="repo that built the overlay artifact; must be in allowlist overlay_repos")
+    sp.add_argument("--overlay-run", help="GitHub Actions run id that produced the overlay artifact")
+    sp.add_argument("--overlay-artifact", help="artifact name (default: ggml-vulkan-<tag>-patched)")
+    sp.add_argument("--patch", help="patch file applied to build the overlay (e.g. scripts/ops/patches/<file>.patch)")
     sp.set_defaults(func=cmd_add_runtime)
 
     sp = sub.add_parser(
