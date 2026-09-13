@@ -11,6 +11,16 @@
 # to qwen3-coder-next-unsloth-gguf@ce09c67b, drop --mmproj/--reasoning off/
 # --spec-type from the CODER line, ctx back to 32768.
 #
+# 2026-09-13: PROMOTED Qwen3-Coder-Next (UD-Q4_K_XL, text-only) on the PATCHED
+# b10867 runtime (llama.cpp@b10867-patched: official zip + our ggml-vulkan.dll,
+# RDR-016 overlay entry). Why: agentic battery 9/9 at median 0.90 min vs
+# Qwen3.8's 9/9 at 2.15 (Gemma 4 7/9); b9596 lacks the Gated-DeltaNet
+# normalization fix (#28068) this architecture needs. Sweep record: T2
+# coder-next-box-sweep-2026-09-13. Vision now routes to vision-mac only.
+# To revert to Qwen3.8: LL back to D:\llama-b9596, ENVSET="", CODER_MODEL /
+# CODER_MANIFEST_ID / MMPROJ_* back to the qwen3.8-27b values, restore
+# --reasoning off --spec-type draft-mtp --ctx-size 65536, drop -ub, band 24/40.
+#
 # TOPOLOGY (2026-06-12, vision-on-mac migration): the box runs ONE llama-server.
 # The dedicated vision model (Qwen2.5-VL-7B) and the 35B (Qwen3.6-35B-A3B) moved to
 # the Mac (MLX) — see scripts/ops/keepalive-mac.sh. This removed the coder-box+vision
@@ -43,7 +53,7 @@ SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
 # b10078 regression is understood (see bead 36p / the negotiation channel), b9596 is the
 # only build measured to use the carve here. Do NOT re-pin b10078 on the strength of tps
 # alone — tps was 47-50 in the broken states, HIGHER than b9596's 45-46.
-LL='D:\llama-b9596\llama-server.exe'
+LL='D:\llama-b10867-patched\llama-server.exe'   # 2026-09-13 (was D:\llama-b9596); see header
 # b10078 (2026-07-21, negotiation V8): fixes ggml-vulkan memory-type selection — the
 # whole model lands in the dedicated carve (48.4 GB) instead of spilling ~16 GB to
 # host-visible/GTT. RAM free 7.2 -> 22.3 GB (WoW co-residency), tps 41.9 -> 43.8.
@@ -77,8 +87,13 @@ VARIANT=""
 # UNRESOLVED; untested variables since then are the box's C: repair and the D: cable
 # swap + write-cache enable. Re-validate against Available MBytes and GPU dedicated
 # usage (NOT tps — tps stayed 47-50 throughout the bad states) before restoring it.
-ENVSET=""
-CODER_MODEL='D:\models\qwen3.8-27b\Qwen3.8-27B-Q6_K.gguf'
+# 2026-09-13: RE-ENABLED, and correct now. The 2026-07-26 removal above was on an
+# unpatched build, where #22930 made this var dead code on UMA and the collapse came
+# from the build itself. The patched b10867 makes it honoured on UMA; measured A/B
+# 2026-09-12: unset -> 0.74 GB dedicated (the #22930 signature), set -> 28.85 GB.
+# It is REQUIRED on this runtime, not a tuning option.
+ENVSET="GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1"
+CODER_MODEL='D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf'
 # Q6_K over Q8_0: +26% decode, no capability loss observed (shakeout 9/9 both).
 # CODER line flags (all load-bearing, 2026-08-16 window):
 #   --mmproj             vision/OCR head (Qwen3.8 is multimodal; supervisor
@@ -97,13 +112,13 @@ CODER_MODEL='D:\models\qwen3.8-27b\Qwen3.8-27B-Q6_K.gguf'
 # Manifest id of CODER_MODEL (models/MANIFEST.json). Pinning the id makes the gate
 # unambiguous when two entries share a basename+size (a re-quantized packager file);
 # empty = match by path (check-path fails closed on ambiguity).
-CODER_MANIFEST_ID="qwen3.8-27b-q6_k"
+CODER_MANIFEST_ID="qwen3-coder-next-unsloth-gguf@ce09c67b"
 # mmproj is a served artifact too — prov_gate() check-paths it exactly like the
 # model (RDR-016: everything llama-server loads is gated). Empty MMPROJ_MODEL
 # drops the flag and the check together (text-only serving).
-MMPROJ_MODEL='D:\models\qwen3.8-27b\mmproj-Qwen3.8-27B-F16.gguf'
-MMPROJ_MANIFEST_ID="qwen3.8-27b-mmproj-f16"
-CODER="$LL -m $CODER_MODEL${MMPROJ_MODEL:+ --mmproj $MMPROJ_MODEL} --reasoning off --spec-type draft-mtp --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 65536 --flash-attn 1 --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
+MMPROJ_MODEL=''   # Coder-Next is text-only
+MMPROJ_MANIFEST_ID=""
+CODER="$LL -m $CODER_MODEL${MMPROJ_MODEL:+ --mmproj $MMPROJ_MODEL} --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 262144 --ubatch-size 1024 --batch-size 4096 --flash-attn 1 --jinja --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 # Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
 OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
@@ -134,8 +149,9 @@ EXPECT_PAGEFILE_MB=131072          # fixed 128 GiB, NOT Windows-automatic.
 # The floor is what catches #22930 (that pathology read 0.64-0.67 GB dedicated
 # while answering normally). The ceiling catches a second large model having been
 # co-loaded (the 081/akf class). Widen these when the served model changes.
-GPU_DEDICATED_MIN_GB=24
-GPU_DEDICATED_MAX_GB=40
+# 2026-09-13 Coder-Next UD-Q4_K_XL, 262K ctx, lm auto: 53.35 GB dedicated, Available 53.6 GB.
+GPU_DEDICATED_MIN_GB=45
+GPU_DEDICATED_MAX_GB=60
 MAX_GPU_RETRIES=2                  # then STAND DOWN with a standing alert; see gpu_check().
 GPUCHK_EVERY=45                    # runtime residency re-check cadence, in 20s cycles (~15 min)
 PREFLIGHT_ENFORCE=${QWEN_PREFLIGHT_ENFORCE:-1}   # 0 = bypass, logged every launch.
