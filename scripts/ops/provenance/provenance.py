@@ -572,7 +572,20 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def download_gh_artifact_zip(url: str, dest_path: Path, headers: dict[str, str]) -> tuple[str, int]:
+def _redact_url_query(url: str) -> str:
+    """Strip the query string from a URL before it can appear in any log or
+    ProvenanceError message. A GitHub artifact redirect's Location carries a
+    time-limited SAS/signature token in its query string -- that token must
+    never be written to a log line or an exception message a caller might
+    print, store, or paste into a bug report.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def download_gh_artifact_zip(
+    url: str, dest_path: Path, headers: dict[str, str], *, allow_http_redirect: bool = False
+) -> tuple[str, int]:
     """Download a GitHub Actions artifact zip (the `archive_download_url`
     from the run-artifacts API).
 
@@ -586,8 +599,14 @@ def download_gh_artifact_zip(url: str, dest_path: Path, headers: dict[str, str])
     run 34707921300's artifact (RDR-016 bead 9so review remediation).
 
     Follows the redirect manually and re-issues the download to the
-    Location WITHOUT the GitHub auth header. Falls back to treating a
-    non-redirect 2xx response as the artifact body directly (the shape a
+    Location WITHOUT the GitHub auth header, and never surfaces the
+    Location's query string (which carries the pre-signed token) in any
+    error message -- `_redact_url_query` scrubs it first. The redirect
+    target must be `https` unless `allow_http_redirect` is set (the caller
+    passes this only when `--gh-api-base` itself points at a local test
+    server, so the offline test double -- which serves plain http -- still
+    works; a real GitHub redirect is always https). Falls back to treating
+    a non-redirect 2xx response as the artifact body directly (the shape a
     test double serves; the real API always redirects).
     """
     opener = urllib.request.build_opener(_NoRedirectHandler)
@@ -598,11 +617,26 @@ def download_gh_artifact_zip(url: str, dest_path: Path, headers: dict[str, str])
         if exc.code in (301, 302, 303, 307, 308):
             location = exc.headers.get("Location")
             if not location:
-                raise ProvenanceError(f"GET {url} redirected ({exc.code}) with no Location header")
-            return download_to_path(location, dest_path, {})
-        raise ProvenanceError(f"GET {url} failed: {exc}")
+                raise ProvenanceError(f"GET {_redact_url_query(url)} redirected ({exc.code}) with no Location header")
+            scheme = urllib.parse.urlsplit(location).scheme
+            if scheme != "https" and not allow_http_redirect:
+                raise ProvenanceError(
+                    f"refusing: artifact redirect target is not https "
+                    f"({_redact_url_query(location)}). Sanctioned next step: this is "
+                    "only permitted when --gh-api-base itself points at a local test "
+                    "server; a real GitHub redirect is always https."
+                )
+            try:
+                return download_to_path(location, dest_path, {})
+            except ProvenanceError:
+                # Re-raise WITHOUT download_to_path's own message, which embeds the
+                # full (SAS-token-bearing) URL verbatim.
+                raise ProvenanceError(
+                    f"artifact download failed from redirect target {_redact_url_query(location)}"
+                )
+        raise ProvenanceError(f"GET {_redact_url_query(url)} failed: {exc}")
     except urllib.error.URLError as exc:
-        raise ProvenanceError(f"GET {url} failed: {exc}")
+        raise ProvenanceError(f"GET {_redact_url_query(url)} failed: {exc}")
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     part_path = dest_path.with_name(dest_path.name + ".part")
@@ -1101,9 +1135,14 @@ def _apply_overlay(
                 f"{artifact_name!r} has no archive_download_url."
             )
 
+        # A real GitHub artifact redirect is always https; http is tolerated
+        # ONLY when --gh-api-base itself is a local test server (the offline
+        # test double), never against the real API.
+        gh_api_host = urllib.parse.urlsplit(args.gh_api_base).hostname or ""
+        allow_http_redirect = gh_api_host in ("127.0.0.1", "localhost", "::1")
         with tempfile.TemporaryDirectory() as td:
             artifact_zip = Path(td) / "artifact.zip"
-            download_gh_artifact_zip(download_url, artifact_zip, headers)
+            download_gh_artifact_zip(download_url, artifact_zip, headers, allow_http_redirect=allow_http_redirect)
             with zipfile.ZipFile(artifact_zip) as zf:
                 names = zf.namelist()
                 remote_dll_name = next((n for n in names if Path(n).name == replacement_path.name), None)

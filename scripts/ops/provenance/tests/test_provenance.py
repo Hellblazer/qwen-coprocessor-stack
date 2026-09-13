@@ -1740,6 +1740,106 @@ class AddRuntimeOverlayTests(ProvenanceTestCase):
 
 
 # --------------------------------------------------------------------------
+# download_gh_artifact_zip: redirect handling (RDR-016 bead 9so, delta review)
+# --------------------------------------------------------------------------
+
+
+class DownloadGhArtifactZipTests(ProvenanceTestCase):
+    """Unit-level tests against download_gh_artifact_zip directly (not
+    through the full add-runtime CLI) -- these exercise the redirect
+    mechanics in isolation: auth stripped on the cross-host hop, the
+    https-unless-local-test-server gate, and query-string redaction in
+    error messages.
+    """
+
+    def test_redirect_strips_auth_header_and_succeeds(self) -> None:
+        # The redirect TARGET 401s if it sees an Authorization header --
+        # this is what would happen for real if download_gh_artifact_zip
+        # reverted to plain urllib redirect following (urllib forwards
+        # Authorization across a cross-host redirect by default). A
+        # passing test here proves the header was NOT forwarded.
+        payload = _build_zip({"ggml-vulkan.dll": b"PAYLOAD-BYTES"})
+
+        def target(headers: dict) -> Response:
+            if any(k.lower() == "authorization" for k in headers):
+                return Response(401, {}, b"unauthorized: auth header leaked to redirect target")
+            return Response(200, {}, payload)
+
+        # header_routes, like routes, is keyed on self.path (path + query
+        # string) -- must match the Location's path+query exactly.
+        self.server.header_routes["/storage/artifact-blob?sig=SECRET-SAS-TOKEN"] = target
+        self.server.routes["/gh/artifact/redirect-ok"] = lambda: Response(
+            302, {"Location": f"{self.server.base_url}/storage/artifact-blob?sig=SECRET-SAS-TOKEN"}, b""
+        )
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "artifact.zip"
+            sha, size = prov.download_gh_artifact_zip(
+                f"{self.server.base_url}/gh/artifact/redirect-ok",
+                dest,
+                {"Authorization": "Bearer secret-gh-token"},
+                allow_http_redirect=True,
+            )
+        self.assertEqual(size, len(payload))
+        self.assertEqual(sha, hashlib.sha256(payload).hexdigest())
+
+    def test_refuses_non_https_redirect_target_by_default(self) -> None:
+        # The target route below WOULD succeed (valid 200 + bytes) if ever
+        # reached -- the https-scheme gate is the ONLY thing standing
+        # between this test and rc success, so deleting that gate flips
+        # this test to a false pass rather than staying a refusal.
+        self.server.routes["/storage/insecure-target"] = lambda: Response(200, {}, b"WOULD-SUCCEED-BYTES")
+        self.server.routes["/gh/artifact/redirect-insecure"] = lambda: Response(
+            302, {"Location": f"{self.server.base_url}/storage/insecure-target"}, b""
+        )
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "artifact.zip"
+            with self.assertRaises(prov.ProvenanceError):
+                prov.download_gh_artifact_zip(
+                    f"{self.server.base_url}/gh/artifact/redirect-insecure",
+                    dest,
+                    {},
+                    allow_http_redirect=False,
+                )
+            self.assertFalse(dest.exists(), "refused download must not leave a file behind")
+
+    def test_allows_http_redirect_when_flagged(self) -> None:
+        payload = b"OK-BYTES"
+        self.server.routes["/storage/allowed-http"] = lambda: Response(200, {}, payload)
+        self.server.routes["/gh/artifact/redirect-allowed"] = lambda: Response(
+            302, {"Location": f"{self.server.base_url}/storage/allowed-http"}, b""
+        )
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "artifact.zip"
+            sha, size = prov.download_gh_artifact_zip(
+                f"{self.server.base_url}/gh/artifact/redirect-allowed",
+                dest,
+                {},
+                allow_http_redirect=True,
+            )
+        self.assertEqual(size, len(payload))
+
+    def test_redirect_failure_message_does_not_leak_query_string(self) -> None:
+        # No route registered at the redirect target -> 404 -> download
+        # fails. The token in the target's own query string must never
+        # appear in the resulting error message.
+        self.server.routes["/gh/artifact/redirect-fail"] = lambda: Response(
+            302, {"Location": f"{self.server.base_url}/storage/missing?sig=SUPER-SECRET-SAS-TOKEN"}, b""
+        )
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "artifact.zip"
+            with self.assertRaises(prov.ProvenanceError) as ctx:
+                prov.download_gh_artifact_zip(
+                    f"{self.server.base_url}/gh/artifact/redirect-fail",
+                    dest,
+                    {},
+                    allow_http_redirect=True,
+                )
+        msg = str(ctx.exception)
+        self.assertNotIn("SUPER-SECRET-SAS-TOKEN", msg)
+        self.assertIn("/storage/missing", msg)
+
+
+# --------------------------------------------------------------------------
 # verify / import-listing / --check-path
 # --------------------------------------------------------------------------
 

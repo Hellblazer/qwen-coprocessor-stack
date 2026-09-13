@@ -252,17 +252,44 @@ except Exception as e:
   # check-path call in this gate, this is membership + SIZE only, not a
   # hash re-check -- a full byte-for-byte re-verification is
   # `verify --root`/`--listing` on demand, not the per-respawn gate.
-  local overlay_file overlay_path
+  # Fails CLOSED, not open: exit 0 + a filename means "this entry has an
+  # overlay, gate it"; exit 0 + empty output means "entry found, genuinely
+  # no overlay" (the common case -- b9596 etc.); any OTHER outcome (bad
+  # JSON, unreadable manifest, $rt not found even though the check-path
+  # above just verified it) is exit 1, and bash below treats a nonzero
+  # exit as a gate failure exactly like every other check in this
+  # function -- an `except Exception: pass` that let a lookup error look
+  # identical to "no overlay" would silently skip the DLL check instead.
+  local overlay_file overlay_rc
   overlay_file=$("$PYTHON" -c 'import json, sys
 try:
     m = json.load(open(sys.argv[1]))
+    entry = None
     for a in m.get("artifacts", []):
         if a.get("id") == sys.argv[2]:
-            print((a.get("overlay") or {}).get("file", ""))
+            entry = a
             break
-except Exception:
-    pass' "$REPO_DIR/models/MANIFEST.json" "$rt" 2>/dev/null)
+    if entry is None:
+        print("no manifest entry with id " + sys.argv[2], file=sys.stderr)
+        sys.exit(1)
+    overlay = entry.get("overlay")
+    if overlay:
+        f = overlay.get("file", "")
+        if not f:
+            print("overlay object present but has no file field", file=sys.stderr)
+            sys.exit(1)
+        print(f)
+    sys.exit(0)
+except Exception as e:
+    print(type(e).__name__ + ": " + str(e), file=sys.stderr)
+    sys.exit(1)' "$REPO_DIR/models/MANIFEST.json" "$rt" 2>/tmp/prov-gate.err)
+  overlay_rc=$?
+  if [ "$overlay_rc" -ne 0 ]; then
+    PROV_REASON="overlay lookup failed for $rt: $(tr -d '\n' </tmp/prov-gate.err)"
+    return 1
+  fi
   if [ -n "$overlay_file" ]; then
+    local overlay_path
     overlay_path="${LL%\\*}\\$overlay_file"
     len=$(boxlen "$overlay_path")
     if [ -z "$len" ]; then PROV_REASON="could not stat overlay file $overlay_path on box"; return 1; fi
