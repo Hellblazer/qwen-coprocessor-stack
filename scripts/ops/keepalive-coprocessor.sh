@@ -109,6 +109,17 @@ LAUNCH_T0=0
 # (adopt the serving pid at the next check instead of reclaiming — a keepalive
 # restart over a healthy server must not churn it).
 EXPECTED_BUILD=${LL#*llama-}; EXPECTED_BUILD=${EXPECTED_BUILD%%\\*}
+# BASE_BUILD: what buildok() actually compares against /props build_info.
+# EXPECTED_BUILD is the full runtime id used for the provenance lookup
+# (rt="llama.cpp@$EXPECTED_BUILD") and may carry a "-patched" suffix for an
+# overlay runtime directory (e.g. "b10867-patched", RDR-016 overlay
+# add-runtime) -- but upstream llama.cpp never bakes that suffix into its
+# own build_info string (an overlay swaps one DLL, not the build's self-
+# report), so the two must diverge for a patched build to pass. Set once
+# EXPECTED_BUILD is final (after the format guard below); "-patched" is the
+# only suffix an overlay id can carry (provenance.py's default-id
+# convention), so a plain "%-patched" strip is exact, not a fuzzy trim.
+BASE_BUILD=""
 EXPECTED_PID=0
 PIDCHECK_EVERY=15   # pid identity check cadence, in 20s cycles (~5 min): ssh isn't free
 # Reclaim damping (bead 68a): identity-triggered reclaims are capped. An
@@ -138,8 +149,8 @@ buildok() {
     return 0
   fi
   [ "$BUILDCHK_DARK" -eq 1 ] && { log "build check recovered"; BUILDCHK_DARK=0; }
-  [ -z "$EXPECTED_BUILD" ] && return 0
-  printf '%s' "$bi" | grep -qE "\"build_info\":\"$EXPECTED_BUILD(-|\")"
+  [ -z "$BASE_BUILD" ] && return 0
+  printf '%s' "$bi" | grep -qE "\"build_info\":\"$BASE_BUILD(-|\")"
 }
 ownerpid() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERPID_B64" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+ -?[0-9]+$' | head -1 | cut -d' ' -f1; }
 ownercmd() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERCMD_B64" 2>/dev/null | tr -d '\r' | grep 'llama-server' | head -1 | sed 's/"//g; s/[[:space:]]*$//'; }
@@ -309,7 +320,10 @@ case "$EXPECTED_BUILD" in
   b[0-9]*) ;;
   *) log "WARN: unparsable build tag from LL ('$EXPECTED_BUILD') — build guard disabled"; EXPECTED_BUILD="" ;;
 esac
-log "keepalive started (pid $$) — coder-box only (build guard: ${EXPECTED_BUILD:-off})"
+BASE_BUILD=${EXPECTED_BUILD%-patched}
+BUILDGUARD_NOTE=""
+[ -n "$BASE_BUILD" ] && [ "$BASE_BUILD" != "$EXPECTED_BUILD" ] && BUILDGUARD_NOTE=" (build_info compared against $BASE_BUILD)"
+log "keepalive started (pid $$) — coder-box only (build guard: ${EXPECTED_BUILD:-off})$BUILDGUARD_NOTE"
 CYC=0
 while true; do
   if ! up 1235; then

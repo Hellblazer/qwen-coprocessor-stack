@@ -18,5 +18,8 @@
   ],
   "runtime_repos": [
     "ggml-org/llama.cpp"
+  ],
+  "overlay_repos": [
+    "Hellblazer/qwen-coprocessor-stack"
   ]
 }

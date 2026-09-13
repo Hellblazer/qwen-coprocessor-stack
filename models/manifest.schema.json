@@ -77,7 +77,8 @@
           "type": "object",
           "additionalProperties": { "type": "array", "items": { "type": "string" } }
         },
-        "notes": { "type": "string" }
+        "notes": { "type": "string" },
+        "overlay": { "$ref": "#/definitions/overlay" }
       },
       "allOf": [
         {
@@ -151,6 +152,34 @@
         "path": { "type": "string", "minLength": 1 },
         "sha256": { "type": ["string", "null"] },
         "size": { "type": ["integer", "null"] }
+      }
+    },
+    "overlay": {
+      "type": "object",
+      "required": [
+        "repo",
+        "run_id",
+        "artifact",
+        "file",
+        "sha256",
+        "bytes",
+        "base_tag",
+        "base_sha",
+        "patch_path",
+        "patch_sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string", "minLength": 1 },
+        "run_id": { "type": "integer" },
+        "artifact": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        "bytes": { "type": "integer" },
+        "base_tag": { "type": "string", "minLength": 1 },
+        "base_sha": { "type": "string" },
+        "patch_path": { "type": "string", "minLength": 1 },
+        "patch_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
       }
     }
   }

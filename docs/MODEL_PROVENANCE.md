@@ -109,6 +109,51 @@ ssh qwentescence powershell ... Get-ProvenanceListing.ps1 -Root D:\llama-b10078 
 $P verify --id llama.cpp@b10078 --listing b10078.listing --host box
 ```
 
+### Overlay runtimes (a patched DLL on an official release)
+
+`add-runtime --overlay-dir <dir> --overlay-repo <repo> --overlay-run <run id>
+--patch <patch file>` records an official GitHub release zip with exactly one
+member replaced by a binary we built ourselves from a patch against that
+release's source, e.g. `ggml-vulkan.dll` built by
+`.github/workflows/llama-vulkan-patched.yml` from
+`scripts/ops/patches/vulkan-uma-honor-disable-host-visible-vidmem.patch`. The
+official zip is still hashed and its members recorded exactly as in a plain
+`add-runtime` (same `--repo`/`runtime_repos` allowlist gate); the one replaced
+member's `sha256`/`size` are overwritten with the overlay file's real hash, so
+`verify`/`check-path` need no code path of their own — the patched file
+verifies, the un-patched official file at that path does not. The entry
+carries an `overlay` object (`repo`, `run_id`, `artifact`, `file`, `sha256`,
+`bytes`, `base_tag`, `base_sha`, `patch_path`, `patch_sha256`) and its
+`trust_tier` is `self-quantized`, not `origin` — one file in it is ours, not
+upstream-verbatim.
+
+```bash
+$P add-runtime --tag b10867 --from-zip llama-b10867-bin-win-vulkan-x64.zip \
+   --overlay-dir <extracted ggml-vulkan-b10867-patched artifact> \
+   --overlay-repo Hellblazer/qwen-coprocessor-stack \
+   --overlay-run 34707921300 \
+   --patch scripts/ops/patches/vulkan-uma-honor-disable-host-visible-vidmem.patch \
+   --id llama.cpp@b10867-patched
+```
+
+Refuses, each naming the sanctioned next step: `--overlay-repo` not in
+allowlist `overlay_repos`; `--overlay-dir`/`--overlay-repo`/`--overlay-run`/
+`--patch` given only partially; no `PATCHED-BUILD.txt` in `--overlay-dir`, or
+anything but exactly one other file alongside it; the overlay file's real
+hash/size not matching `PATCHED-BUILD.txt`'s declared `dll_sha256`/
+`dll_bytes`; `PATCHED-BUILD.txt`'s `base_tag` not equal to `--tag`, or its
+`patch` not equal to `--patch`'s basename; the overlay file not a member of
+the official zip; `--patch` not found on disk. Without `--offline`, the
+workflow run named by `--overlay-repo`/`--overlay-run` is also checked via the
+GitHub API: `conclusion` must be `success` and its workflow `path` must be
+`.github/workflows/llama-vulkan-patched.yml`.
+
+The keepalive derives its build-identity guard's expected `/props`
+`build_info` from the base tag (a `-patched` suffix on the runtime directory
+name is stripped before the comparison) while the provenance lookup still
+uses the full directory tag — an overlay changes one DLL, not what the
+upstream build reports about itself.
+
 ### Files that were already on a host before this protocol (`adopt`)
 
 ```bash

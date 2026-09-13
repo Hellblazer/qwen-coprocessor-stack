@@ -780,6 +780,205 @@ def hash_zip_members(zip_path: Path) -> list[dict[str, Any]]:
     return members
 
 
+# --------------------------------------------------------------------------
+# add-runtime --overlay-* (patched-DLL overlay on an official release zip)
+# --------------------------------------------------------------------------
+
+OVERLAY_WORKFLOW_PATH = ".github/workflows/llama-vulkan-patched.yml"
+DEFAULT_GH_API_BASE = "https://api.github.com"
+
+
+def build_gh_headers() -> dict[str, str]:
+    headers = {
+        "User-Agent": "qwen-coprocessor-stack-provenance/1",
+        "Accept": "application/vnd.github+json",
+    }
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_gh_run_meta(gh_api_base: str, repo: str, run_id: int, headers: dict[str, str]) -> dict[str, Any]:
+    return _http_get_json(f"{gh_api_base}/repos/{repo}/actions/runs/{run_id}", headers)
+
+
+def parse_patched_build_txt(text: str) -> dict[str, str]:
+    """Parse a PATCHED-BUILD.txt written by llama-vulkan-patched.yml.
+
+    Tolerant `key: value` (or `key=value`) lines, one field per line; blank
+    lines and '#' comments are ignored. Not a general-purpose format -- just
+    enough structure to carry base_tag/base_sha/patch/dll_sha256/dll_bytes/
+    built_by out of the workflow artifact.
+    """
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^([A-Za-z0-9_]+)\s*[:=]\s*(.*)$", line)
+        if m:
+            out[m.group(1).strip()] = m.group(2).strip()
+    return out
+
+
+def _read_overlay_dir(overlay_dir: Path) -> tuple[Path, dict[str, str]]:
+    """Return (replacement_file_path, patched_build_fields) from an extracted
+    llama-vulkan-patched.yml artifact directory.
+
+    Refuses unless the directory holds exactly PATCHED-BUILD.txt plus one
+    other file (the declared replacement), and PATCHED-BUILD.txt carries all
+    required fields.
+    """
+    if not overlay_dir.is_dir():
+        raise ProvenanceError(f"--overlay-dir is not a directory: {overlay_dir}")
+    entries = sorted(p for p in overlay_dir.iterdir() if p.is_file())
+    manifest_txt = overlay_dir / "PATCHED-BUILD.txt"
+    if manifest_txt not in entries:
+        raise ProvenanceError(
+            f"refusing: --overlay-dir {overlay_dir} has no PATCHED-BUILD.txt. "
+            "Sanctioned next step: point --overlay-dir at the extracted "
+            "llama-vulkan-patched.yml artifact, which always carries it."
+        )
+    others = [p for p in entries if p != manifest_txt]
+    if len(others) != 1:
+        raise ProvenanceError(
+            f"refusing: --overlay-dir {overlay_dir} must contain exactly one "
+            f"replacement file alongside PATCHED-BUILD.txt, found {len(others)}: "
+            f"{[p.name for p in others]}. Sanctioned next step: extract only "
+            "the workflow artifact's own files, nothing else."
+        )
+    fields = parse_patched_build_txt(manifest_txt.read_text())
+    required = ("base_tag", "base_sha", "patch", "dll_sha256", "dll_bytes", "built_by")
+    missing = [k for k in required if k not in fields]
+    if missing:
+        raise ProvenanceError(
+            f"refusing: PATCHED-BUILD.txt at {manifest_txt} is missing field(s) "
+            f"{missing}. Sanctioned next step: re-run the patched-build "
+            "workflow; a hand-edited PATCHED-BUILD.txt is not sanctioned."
+        )
+    return others[0], fields
+
+
+def _apply_overlay(
+    args: argparse.Namespace, allowlist: dict[str, Any], asset: str, members: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Validate --overlay-* args against the official zip `members` (mutated
+    in place to carry the replacement file's real hash/size) and return the
+    manifest `overlay` object, or None if no overlay was requested.
+    """
+    overlay_args = (args.overlay_dir, args.overlay_repo, args.overlay_run, args.patch)
+    if not any(overlay_args):
+        return None
+    if not all(overlay_args):
+        raise ProvenanceError(
+            "refusing: --overlay-dir, --overlay-repo, --overlay-run and "
+            "--patch must all be given together for an overlay runtime. "
+            "Sanctioned next step: supply all four, or none for a plain "
+            "add-runtime."
+        )
+
+    overlay_repos = allowlist.get("overlay_repos", [])
+    if args.overlay_repo not in overlay_repos:
+        raise ProvenanceError(
+            f"refusing: overlay repo '{args.overlay_repo}' is not in "
+            f"allowlist overlay_repos {overlay_repos}. Sanctioned next step: "
+            "add it to scripts/ops/provenance/allowlist.json after review."
+        )
+    try:
+        overlay_run_id = int(args.overlay_run)
+    except (TypeError, ValueError):
+        raise ProvenanceError(f"--overlay-run must be numeric, got {args.overlay_run!r}")
+
+    patch_path = Path(args.patch)
+    if not patch_path.is_file():
+        raise ProvenanceError(f"--patch path does not exist: {patch_path}")
+    patch_sha256 = sha256_file(patch_path)
+
+    replacement_path, fields = _read_overlay_dir(Path(args.overlay_dir))
+
+    if fields["base_tag"] != args.tag:
+        raise ProvenanceError(
+            f"refusing: PATCHED-BUILD.txt base_tag {fields['base_tag']!r} "
+            f"does not match --tag {args.tag!r}. Sanctioned next step: point "
+            "--overlay-dir at the artifact built for this tag."
+        )
+    if fields["patch"] != patch_path.name:
+        raise ProvenanceError(
+            f"refusing: PATCHED-BUILD.txt patch {fields['patch']!r} does not "
+            f"match --patch basename {patch_path.name!r}. Sanctioned next "
+            "step: pass the same patch the workflow was run with."
+        )
+
+    actual_sha256 = sha256_file(replacement_path)
+    actual_size = replacement_path.stat().st_size
+    try:
+        declared_bytes = int(fields["dll_bytes"])
+    except ValueError:
+        raise ProvenanceError(f"PATCHED-BUILD.txt dll_bytes is not an integer: {fields['dll_bytes']!r}")
+    if actual_sha256.lower() != fields["dll_sha256"].lower() or actual_size != declared_bytes:
+        raise ProvenanceError(
+            f"refusing: {replacement_path.name} does not match PATCHED-BUILD.txt "
+            f"(declared sha256={fields['dll_sha256']} bytes={declared_bytes}; "
+            f"actual sha256={actual_sha256} bytes={actual_size}). Sanctioned "
+            "next step: re-extract the workflow artifact; do not hand-edit "
+            "either file."
+        )
+
+    member_by_path = {m["path"]: m for m in members}
+    target_member = member_by_path.get(replacement_path.name)
+    if target_member is None:
+        basename_matches = [p for p in member_by_path if Path(p).name == replacement_path.name]
+        if len(basename_matches) == 1:
+            target_member = member_by_path[basename_matches[0]]
+        elif len(basename_matches) > 1:
+            raise ProvenanceError(
+                f"refusing: {replacement_path.name} matches more than one "
+                f"official zip member by basename ({basename_matches}); "
+                "ambiguous overlay target. Sanctioned next step: disambiguate "
+                "manually before recording this entry."
+            )
+    if target_member is None:
+        raise ProvenanceError(
+            f"refusing: overlay file {replacement_path.name!r} is not a "
+            f"member of the official {asset}. Sanctioned next step: an "
+            "overlay may only replace a file the official release already "
+            "ships."
+        )
+    target_member["sha256"] = actual_sha256
+    target_member["size"] = actual_size
+
+    if not args.offline:
+        headers = build_gh_headers()
+        meta = fetch_gh_run_meta(args.gh_api_base, args.overlay_repo, overlay_run_id, headers)
+        if meta.get("conclusion") != "success":
+            raise ProvenanceError(
+                f"refusing: workflow run {args.overlay_repo}#{overlay_run_id} "
+                f"conclusion is {meta.get('conclusion')!r}, not 'success'. "
+                "Sanctioned next step: point at a run that finished green."
+            )
+        if meta.get("path") != OVERLAY_WORKFLOW_PATH:
+            raise ProvenanceError(
+                f"refusing: workflow run {args.overlay_repo}#{overlay_run_id} "
+                f"path is {meta.get('path')!r}, not {OVERLAY_WORKFLOW_PATH!r}. "
+                "Sanctioned next step: point --overlay-run at a run of the "
+                "sanctioned patched-build workflow."
+            )
+
+    return {
+        "repo": args.overlay_repo,
+        "run_id": overlay_run_id,
+        "artifact": args.overlay_artifact or f"ggml-vulkan-{args.tag}-patched",
+        "file": replacement_path.name,
+        "sha256": actual_sha256,
+        "bytes": actual_size,
+        "base_tag": fields["base_tag"],
+        "base_sha": fields["base_sha"],
+        "patch_path": args.patch,
+        "patch_sha256": patch_sha256,
+    }
+
+
 def cmd_add_runtime(args: argparse.Namespace) -> int:
     allowlist = load_allowlist(args.allowlist)
     runtime_repos = allowlist.get("runtime_repos", [])
@@ -818,23 +1017,40 @@ def cmd_add_runtime(args: argparse.Namespace) -> int:
         zip_sha256, zip_size = download_to_path(url, zip_path, {})
 
     members = hash_zip_members(zip_path)
+    overlay_entry = _apply_overlay(args, allowlist, asset, members)
     files = [{"path": f"zip:{asset}", "sha256": zip_sha256, "size": zip_size}] + members
 
+    default_id = f"{args.repo.split('/')[-1]}@{args.tag}" + ("-patched" if overlay_entry else "")
+    notes = args.notes or ""
+    if overlay_entry and not notes:
+        notes = (
+            f"overlay runtime: official {asset} with {overlay_entry['file']} "
+            f"replaced per {overlay_entry['repo']}#{overlay_entry['run_id']} "
+            f"artifact {overlay_entry['artifact']}"
+        )
+
     entry = {
-        "id": args.id or f"{args.repo.split('/')[-1]}@{args.tag}",
+        "id": args.id or default_id,
         "kind": "runtime",
         "status": "verified",
         "source": {"host": "github", "repo": args.repo, "revision": args.tag, "asset": asset, "url": url},
         "format": "zip",
-        "trust_tier": "origin",
+        # A plain add-runtime records the official, GitHub-verified zip
+        # as-is ("origin"). An overlay entry has one member replaced by an
+        # artifact WE built from our own patch -- not what ggml-org shipped
+        # -- so it is recorded at the same trust tier a self-quantized model
+        # would be: verifiably derived, not upstream-verbatim.
+        "trust_tier": "self-quantized" if overlay_entry else "origin",
         "quantized_by": None,
         "remote_code_files": [],
         "remote_code_present": False,
         "files": files,
         "verified_on": ["mac"],
         "verified_at": utc_now_iso(),
-        "notes": args.notes or "",
+        "notes": notes,
     }
+    if overlay_entry:
+        entry["overlay"] = overlay_entry
 
     manifest = load_manifest(args.manifest)
     upsert_entry(manifest, entry)
@@ -1521,6 +1737,7 @@ def build_parser() -> argparse.ArgumentParser:
     net = argparse.ArgumentParser(add_help=False)
     net.add_argument("--hf-base", default=os.environ.get("PROVENANCE_HF_BASE", DEFAULT_HF_BASE))
     net.add_argument("--gh-base", default=os.environ.get("PROVENANCE_GH_BASE", DEFAULT_GH_BASE))
+    net.add_argument("--gh-api-base", default=os.environ.get("PROVENANCE_GH_API_BASE", DEFAULT_GH_API_BASE))
 
     allow = argparse.ArgumentParser(add_help=False)
     allow.add_argument("--allowlist", default=str(DEFAULT_ALLOWLIST_PATH))
@@ -1555,6 +1772,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--offline", action="store_true")
     sp.add_argument("--id")
     sp.add_argument("--notes", default="")
+    sp.add_argument(
+        "--overlay-dir", help="extracted llama-vulkan-patched.yml artifact dir (PATCHED-BUILD.txt + one replacement file)"
+    )
+    sp.add_argument("--overlay-repo", help="repo that built the overlay artifact; must be in allowlist overlay_repos")
+    sp.add_argument("--overlay-run", help="GitHub Actions run id that produced the overlay artifact")
+    sp.add_argument("--overlay-artifact", help="artifact name (default: ggml-vulkan-<tag>-patched)")
+    sp.add_argument("--patch", help="patch file applied to build the overlay (e.g. scripts/ops/patches/<file>.patch)")
     sp.set_defaults(func=cmd_add_runtime)
 
     sp = sub.add_parser(

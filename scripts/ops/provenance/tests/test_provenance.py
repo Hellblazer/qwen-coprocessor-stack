@@ -1231,6 +1231,322 @@ class AddRuntimeTests(ProvenanceTestCase):
 
 
 # --------------------------------------------------------------------------
+# add-runtime --overlay-* (patched-DLL overlay on an official release zip)
+# --------------------------------------------------------------------------
+
+
+class AddRuntimeOverlayTests(ProvenanceTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.overlay_dll_bytes = b"OFFICIAL-VULKAN-DLL-BYTES"
+        cls.overlay_other_bytes = b"SERVER-EXE-BYTES"
+        cls.overlay_members = {
+            "ggml-vulkan.dll": cls.overlay_dll_bytes,
+            "llama-server.exe": cls.overlay_other_bytes,
+        }
+        cls.overlay_zip_bytes = _build_zip(cls.overlay_members)
+        cls.overlay_asset = "llama-boverlay-bin-win-vulkan-x64.zip"
+        cls.patched_dll_bytes = b"PATCHED-VULKAN-DLL-BYTES-DIFFERENT-LENGTH"
+
+    def _write_patch(self, td: Path) -> Path:
+        patch_path = td / "vulkan-uma-honor-disable-host-visible-vidmem.patch"
+        patch_path.write_bytes(b"--- a/ggml-vulkan.cpp\n+++ b/ggml-vulkan.cpp\n")
+        return patch_path
+
+    def _write_overlay_dir(
+        self,
+        td: Path,
+        *,
+        dll_bytes: bytes,
+        dll_filename: str = "ggml-vulkan.dll",
+        field_overrides: dict | None = None,
+        omit_fields: list[str] | None = None,
+        extra_file: bool = False,
+        skip_manifest_txt: bool = False,
+    ) -> Path:
+        overlay_dir = td / "overlay"
+        overlay_dir.mkdir()
+        (overlay_dir / dll_filename).write_bytes(dll_bytes)
+        fields = {
+            "base_tag": "boverlay",
+            "base_sha": "deadbeef" * 5,
+            "patch": "vulkan-uma-honor-disable-host-visible-vidmem.patch",
+            "dll_sha256": hashlib.sha256(dll_bytes).hexdigest(),
+            "dll_bytes": str(len(dll_bytes)),
+            "built_by": "ci",
+        }
+        if field_overrides:
+            fields.update(field_overrides)
+        if omit_fields:
+            for k in omit_fields:
+                fields.pop(k, None)
+        if not skip_manifest_txt:
+            text = "\n".join(f"{k}: {v}" for k, v in fields.items())
+            (overlay_dir / "PATCHED-BUILD.txt").write_text(text)
+        if extra_file:
+            (overlay_dir / "extra.bin").write_bytes(b"unexpected")
+        return overlay_dir
+
+    def _run_overlay(
+        self,
+        manifest_path: str,
+        local_zip: Path,
+        overlay_dir: Path,
+        patch_path: Path,
+        *,
+        overlay_repo: str = "Hellblazer/qwen-coprocessor-stack",
+        overlay_run: str = "34707921300",
+        extra_args: list[str] | None = None,
+    ) -> int:
+        argv = [
+            "add-runtime",
+            "--tag",
+            "boverlay",
+            "--asset",
+            self.overlay_asset,
+            "--from-zip",
+            str(local_zip),
+            "--offline",
+            "--manifest",
+            manifest_path,
+            "--dest",
+            self.make_dest_dir(),
+            "--gh-base",
+            self.server.base_url,
+            "--overlay-dir",
+            str(overlay_dir),
+            "--overlay-repo",
+            overlay_repo,
+            "--overlay-run",
+            overlay_run,
+            "--patch",
+            str(patch_path),
+        ]
+        if extra_args:
+            argv += extra_args
+        return self.run_main(argv)
+
+    def test_overlay_success_swaps_hash_and_records_overlay_object(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 0)
+        entry = prov.load_manifest(manifest_path)["artifacts"][0]
+        self.assertEqual(entry["id"], "llama.cpp@boverlay-patched")
+        self.assertEqual(entry["trust_tier"], "self-quantized")
+        by_path = {f["path"]: f for f in entry["files"]}
+        self.assertEqual(by_path["ggml-vulkan.dll"]["sha256"], hashlib.sha256(self.patched_dll_bytes).hexdigest())
+        self.assertEqual(by_path["ggml-vulkan.dll"]["size"], len(self.patched_dll_bytes))
+        self.assertEqual(by_path["llama-server.exe"]["sha256"], hashlib.sha256(self.overlay_other_bytes).hexdigest())
+        overlay = entry["overlay"]
+        self.assertEqual(overlay["repo"], "Hellblazer/qwen-coprocessor-stack")
+        self.assertEqual(overlay["run_id"], 34707921300)
+        self.assertEqual(overlay["artifact"], "ggml-vulkan-boverlay-patched")
+        self.assertEqual(overlay["file"], "ggml-vulkan.dll")
+        self.assertEqual(overlay["sha256"], hashlib.sha256(self.patched_dll_bytes).hexdigest())
+        self.assertEqual(overlay["base_tag"], "boverlay")
+
+    def test_overlay_entry_validates_against_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 0)
+        rc = self.run_main(["validate", "--manifest", manifest_path, "--schema", str(prov.DEFAULT_SCHEMA_PATH)])
+        self.assertEqual(rc, 0)
+
+    def test_overlay_refuses_unlisted_overlay_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(
+                manifest_path, local_zip, overlay_dir, patch_path, overlay_repo="not-allowed/qwen-coprocessor-stack"
+            )
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_incomplete_overlay_args(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes)
+            manifest_path = self.make_manifest_path()
+            rc = self.run_main(
+                [
+                    "add-runtime",
+                    "--tag",
+                    "boverlay",
+                    "--asset",
+                    self.overlay_asset,
+                    "--from-zip",
+                    str(local_zip),
+                    "--offline",
+                    "--manifest",
+                    manifest_path,
+                    "--dest",
+                    self.make_dest_dir(),
+                    "--gh-base",
+                    self.server.base_url,
+                    "--overlay-dir",
+                    str(overlay_dir),
+                    # --overlay-repo / --overlay-run / --patch deliberately omitted
+                ]
+            )
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_missing_patched_build_txt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes, skip_manifest_txt=True)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_extra_unexpected_file_in_overlay_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes, extra_file=True)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_dll_hash_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(
+                td, dll_bytes=self.patched_dll_bytes, field_overrides={"dll_sha256": "0" * 64}
+            )
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_dll_bytes_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(
+                td, dll_bytes=self.patched_dll_bytes, field_overrides={"dll_bytes": "1"}
+            )
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_base_tag_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(
+                td, dll_bytes=self.patched_dll_bytes, field_overrides={"base_tag": "bWRONG"}
+            )
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_patch_name_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(
+                td, dll_bytes=self.patched_dll_bytes, field_overrides={"patch": "some-other.patch"}
+            )
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_file_not_official_zip_member(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(
+                td, dll_bytes=self.patched_dll_bytes, dll_filename="not-a-member.dll"
+            )
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_refuses_missing_patch_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, td / "does-not-exist.patch")
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_overlay_verify_patched_dll_ok_official_dll_mismatches(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            local_zip = td / "local.zip"
+            local_zip.write_bytes(self.overlay_zip_bytes)
+            patch_path = self._write_patch(td)
+            overlay_dir = self._write_overlay_dir(td, dll_bytes=self.patched_dll_bytes)
+            manifest_path = self.make_manifest_path()
+            rc = self._run_overlay(manifest_path, local_zip, overlay_dir, patch_path)
+            self.assertEqual(rc, 0)
+            entry_id = prov.load_manifest(manifest_path)["artifacts"][0]["id"]
+
+            served_dir = td / "served-patched"
+            served_dir.mkdir()
+            (served_dir / "ggml-vulkan.dll").write_bytes(self.patched_dll_bytes)
+            (served_dir / "llama-server.exe").write_bytes(self.overlay_other_bytes)
+            rc = self.run_main(
+                ["verify", "--manifest", manifest_path, "--id", entry_id, "--root", str(served_dir)]
+            )
+            self.assertEqual(rc, 0)
+
+            official_dir = td / "served-official"
+            official_dir.mkdir()
+            (official_dir / "ggml-vulkan.dll").write_bytes(self.overlay_dll_bytes)
+            (official_dir / "llama-server.exe").write_bytes(self.overlay_other_bytes)
+            rc = self.run_main(
+                ["verify", "--manifest", manifest_path, "--id", entry_id, "--root", str(official_dir)]
+            )
+            self.assertEqual(rc, 2)
+
+
+# --------------------------------------------------------------------------
 # verify / import-listing / --check-path
 # --------------------------------------------------------------------------
 
