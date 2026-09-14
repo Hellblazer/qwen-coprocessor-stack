@@ -10,6 +10,8 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import {
+  countDeniedWrites,
+  isDispatchEnabled,
   makeSupervisorQwenSpawnEffects,
   qwenDispatchInputShape,
   QwenDispatchError,
@@ -248,6 +250,36 @@ describe("runQwenDispatch", () => {
   });
 });
 
+describe("per-session opt-in gate (QWEN_DISPATCH_ENABLE)", () => {
+  it("isDispatchEnabled parses 1/true/yes (trimmed, case-insensitive); unset/0/false → off", () => {
+    for (const v of ["1", "true", "TRUE", " yes "]) expect(isDispatchEnabled({ QWEN_DISPATCH_ENABLE: v })).toBe(true);
+    for (const v of [undefined, "", "0", "false", "no"]) {
+      expect(isDispatchEnabled(v === undefined ? {} : { QWEN_DISPATCH_ENABLE: v })).toBe(false);
+    }
+  });
+
+  it("runQwenDispatch fails dispatch_not_enabled BEFORE any provider lookup when the gate is off", async () => {
+    const loadProviders = vi.fn(() => []);
+    const resolveDispatch = vi.fn();
+    await expect(
+      runQwenDispatch(
+        { prompt: "x", worktree: "/wt", base_commit: "b" },
+        { enabled: () => false, loadProviders, resolveDispatch },
+      ),
+    ).rejects.toMatchObject({ name: "QwenDispatchError", code: "dispatch_not_enabled" });
+    expect(loadProviders).not.toHaveBeenCalled();
+    expect(resolveDispatch).not.toHaveBeenCalled();
+  });
+
+  it("an absent gate (unit wiring) and an on gate both proceed to provider selection", async () => {
+    const loadProviders = vi.fn(() => []);
+    for (const deps of [{ loadProviders, resolveDispatch: vi.fn() }, { enabled: () => true, loadProviders, resolveDispatch: vi.fn() }]) {
+      await expect(runQwenDispatch({ prompt: "x", worktree: "/wt", base_commit: "b" }, deps)).rejects.toMatchObject({ code: "no_provider" });
+    }
+    expect(loadProviders).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("makeSupervisorQwenSpawnEffects", () => {
   const TASK: AgentTask = {
     prompt: "do",
@@ -267,8 +299,114 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     expect(id).toBe("t-9");
     expect(qwen_spawn).toHaveBeenCalledWith({
       task: "do",
-      opts: { cwd: "/wt", max_output_tokens: 8192 },
+      opts: { cwd: "/wt", max_output_tokens: 8192, write_authority: true },
     });
+  });
+
+  // ── bead n8c: write authority + refused-write accounting ──
+
+  it("spawn grants write_authority by DEFAULT — dispatch owns the worktree (n8c)", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t-1", chosen_backend: "box" });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn, qwen_poll: vi.fn() }, async () => "");
+    await effects.spawn(TASK, qwenProvider);
+    expect(qwen_spawn.mock.calls[0]![0].opts.write_authority).toBe(true);
+  });
+
+  it("spawn honours an explicit writeAuthority:false (read-only value run)", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t-1", chosen_backend: "box" });
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn, qwen_poll: vi.fn() },
+      async () => "",
+      { writeAuthority: false },
+    );
+    await effects.spawn(TASK, qwenProvider);
+    expect(qwen_spawn.mock.calls[0]![0].opts.write_authority).toBe(false);
+  });
+
+  it("poll walks the event stream by cursor and accumulates write denials across polls", async () => {
+    const denied = (id: string, tool: string) => ({
+      id,
+      type: "permission_denied",
+      ts: 0,
+      summary: `write_authority not granted for ${tool}`,
+      data: { tool_name: tool, input: {} },
+    });
+    const qwen_poll = vi
+      .fn()
+      .mockResolvedValueOnce({
+        state: "running",
+        recent_events: [denied("1", "edit"), { id: "2", type: "tool_call", ts: 0, summary: "read_file" }],
+        more_events_available: false,
+        latest_event_id: "2",
+        turns_completed: 0,
+      })
+      .mockResolvedValueOnce({
+        state: "complete",
+        recent_events: [denied("3", "write_file"), denied("4", "run_shell_command")],
+        more_events_available: false,
+        latest_event_id: "4",
+        turns_completed: 1,
+      });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    const s1 = await effects.poll("t");
+    const s2 = await effects.poll("t");
+    expect(s1.deniedWrites).toBe(1);
+    expect(s2.deniedWrites).toBe(3);
+    // Cursor threaded: first call from "0", second from the last id seen.
+    expect(qwen_poll.mock.calls[0]![0].opts.since).toBe("0");
+    expect(qwen_poll.mock.calls[1]![0].opts.since).toBe("2");
+  });
+
+  it("poll drains a page backlog (more_events_available) within one dispatcher poll", async () => {
+    const denied = (id: string) => ({
+      id,
+      type: "permission_denied",
+      ts: 0,
+      summary: "write_authority not granted for edit",
+      data: { tool_name: "edit", input: {} },
+    });
+    const qwen_poll = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "running", recent_events: [denied("1")], more_events_available: true, latest_event_id: "1" })
+      .mockResolvedValueOnce({ state: "running", recent_events: [denied("2")], more_events_available: true, latest_event_id: "2" })
+      .mockResolvedValueOnce({ state: "running", recent_events: [denied("3")], more_events_available: false, latest_event_id: "3" });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
+    const snap = await effects.poll("t");
+    expect(qwen_poll).toHaveBeenCalledTimes(3);
+    expect(snap.deniedWrites).toBe(3);
+    expect(qwen_poll.mock.calls[2]![0].opts.since).toBe("2");
+  });
+
+  it("countDeniedWrites ignores non-write denials (ask_user_question) and non-denial events", () => {
+    expect(
+      countDeniedWrites([
+        { id: "1", type: "permission_denied", ts: 0, summary: "x", data: { tool_name: "ask_user_question" } },
+        { id: "2", type: "permission_denied", ts: 0, summary: "x", data: { tool_name: "edit" } },
+        { id: "3", type: "permission_denied", ts: 0, summary: "x" },
+        { id: "4", type: "tool_result", ts: 0, summary: "x", data: { tool_name: "edit" } },
+      ]),
+    ).toBe(1);
+    expect(countDeniedWrites(undefined)).toBe(0);
+  });
+
+  it("end-to-end: every write refused + empty patch → outcome error, not completed (n8c)", async () => {
+    const denied = { id: "1", type: "permission_denied", ts: 0, summary: "x", data: { tool_name: "edit" } };
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "complete",
+      recent_events: [denied],
+      more_events_available: false,
+      latest_event_id: "1",
+      turns_completed: 1,
+    });
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn().mockResolvedValue({ task_id: "t", chosen_backend: "b" }), qwen_poll },
+      async () => "",
+    );
+    const dispatch = makeQwenSpawnDispatch(effects, { baseCommit: "base" });
+    const r = await dispatch(TASK, qwenProvider);
+    expect(r.outcome).toBe("error");
+    expect(r.artifacts).toEqual([{ kind: "patch", diff: "", base: "base" }]);
+    expect(r.turns).toBe(1);
   });
 
   it("spawn throws on a supervisor error result", async () => {
@@ -301,8 +439,8 @@ describe("makeSupervisorQwenSpawnEffects", () => {
         turns_completed: 4, // success path now carries the real count, not 0
       });
     const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
-    expect(await effects.poll("t")).toEqual({ state: "running", turnsUsed: 0 });
-    expect(await effects.poll("t")).toEqual({ state: "complete", turnsUsed: 4 });
+    expect(await effects.poll("t")).toEqual({ state: "running", turnsUsed: 0, deniedWrites: 0 });
+    expect(await effects.poll("t")).toEqual({ state: "complete", turnsUsed: 4, deniedWrites: 0 });
   });
 
   it("poll maps last_message into the snapshot (RDR-010 finalMessage source)", async () => {
@@ -318,6 +456,7 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     expect(await effects.poll("t")).toEqual({
       state: "complete",
       turnsUsed: 2,
+      deniedWrites: 0,
       lastMessage: '{"plan":"x"}',
     });
   });
@@ -359,7 +498,7 @@ describe("makeSupervisorQwenSpawnEffects", () => {
       last_known: { turns_completed: 6 },
     });
     const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll }, async () => "");
-    expect(await effects.poll("t")).toEqual({ state: "error", turnsUsed: 6 });
+    expect(await effects.poll("t")).toEqual({ state: "error", turnsUsed: 6, deniedWrites: 0 });
   });
 
   // End-to-end TRIPWIRE for the retired "turns=0 on success" caveat (R-review):

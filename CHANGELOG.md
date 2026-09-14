@@ -14,6 +14,33 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`qwen_dispatch` is opt-in per session.** The tool refuses with the new
+  error code `dispatch_not_enabled` unless the supervisor serving the session
+  was started with `QWEN_DISPATCH_ENABLE=1`. Each Claude Code session spawns
+  its own supervisor and that process inherits the launching shell's
+  environment, so `QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[...]' claude`
+  scopes dispatch (and its provider) to one session; `agent_providers` in the
+  shared config.json can no longer enable dispatch for every session on the
+  machine. The gate is checked before provider lookup. Fixture
+  `qwen-dispatch-shapes.json` error codes gain `dispatch_not_enabled`.
+
+### Fixed
+
+- **`qwen_dispatch` never granted write authority** (bead
+  qwen-coprocessor-stack-n8c). The qwen-local dispatcher spawned its session
+  with `write_authority` unset, so every edit came back `permission_denied` and a
+  patch harvest could never produce a patch. Dispatch now grants write authority
+  by default (it owns the worktree); a new optional `write_authority: false`
+  input keeps a read-only run possible (e.g. `harvest: "value"` planners).
+- **A fully refused run was reported `outcome: "completed"` with an empty
+  patch.** The poll adapter now walks the session's event stream by cursor and
+  counts write-tool `permission_denied` events; a `completed` run with refused
+  writes and only empty `patch` artifacts is reported `error`. Value-only
+  harvests are exempt. Fixture: `write_authority` added to
+  `qwen-dispatch-shapes.json` optional keys (additive).
+
 ## [0.11.14] - 2026-06-28
 
 Tightens the RDR-014 `codeIntel` guidance so a coprocessor drives agent-lsp

@@ -13,6 +13,7 @@ import {
   assertAgentCli,
   makeClaudeCliDispatch,
   makeQwenSpawnDispatch,
+  refusedWithoutPatch,
 } from "../src/dispatch.js";
 import { patchArtifact } from "../src/types.js";
 import type { AgentProvider, AgentTask, Artifact, RunContext } from "../src/types.js";
@@ -325,6 +326,62 @@ describe("makeQwenSpawnDispatch", () => {
     }, OPTS);
     const r = await dispatch(TASK, qwenProvider);
     expect(r.outcome).toBe("timeout");
+  });
+
+  // ── bead n8c: refused writes are not a completed run ──
+
+  it("denied writes + empty patch → outcome error (was a silent 'completed' with diff '')", async () => {
+    const poll = vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 1, cost: 0, deniedWrites: 5 });
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: vi.fn().mockResolvedValue("t"), poll, harvest: patchHarvest(""), sleep: vi.fn(), now: () => 0 },
+      OPTS,
+    );
+    const r = await dispatch(TASK, qwenProvider);
+    expect(r.outcome).toBe("error");
+    expect(r.turns).toBe(1);
+  });
+
+  it("denied writes but a NON-empty patch stays completed (partial refusal is not a zero)", async () => {
+    const poll = vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 1, cost: 0, deniedWrites: 1 });
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: vi.fn().mockResolvedValue("t"), poll, harvest: patchHarvest("diff"), sleep: vi.fn(), now: () => 0 },
+      OPTS,
+    );
+    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("completed");
+  });
+
+  it("empty patch with NO denials stays completed (the agent chose not to edit)", async () => {
+    const poll = vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 1, cost: 0, deniedWrites: 0 });
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: vi.fn().mockResolvedValue("t"), poll, harvest: patchHarvest(""), sleep: vi.fn(), now: () => 0 },
+      OPTS,
+    );
+    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("completed");
+  });
+
+  it("value-only harvest (no patch artifact) is never reclassified by denials", async () => {
+    const poll = vi.fn().mockResolvedValue({ state: "complete", turnsUsed: 1, cost: 0, deniedWrites: 2, lastMessage: '{"a":1}' });
+    const harvest = vi.fn(async (): Promise<Artifact[]> => [{ kind: "value", value: { a: 1 } }]);
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: vi.fn().mockResolvedValue("t"), poll, harvest, sleep: vi.fn(), now: () => 0 },
+      OPTS,
+    );
+    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("completed");
+  });
+
+  it("the rule does not touch timeout / turn_limit / error outcomes", async () => {
+    const poll = vi.fn().mockResolvedValue({ state: "idle", turnsUsed: 50, cost: 0, deniedWrites: 3 });
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: vi.fn().mockResolvedValue("t"), poll, harvest: patchHarvest(""), sleep: vi.fn(), now: () => 0 },
+      OPTS,
+    );
+    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("turn_limit");
+  });
+
+  it("refusedWithoutPatch: whitespace-only diffs count as empty", () => {
+    expect(refusedWithoutPatch({ deniedWrites: 1 }, [{ kind: "patch", diff: "\n", base: "b" }])).toBe(true);
+    expect(refusedWithoutPatch({}, [{ kind: "patch", diff: "", base: "b" }])).toBe(false);
+    expect(refusedWithoutPatch({ deniedWrites: 1 }, [])).toBe(false);
   });
 
   it("rejects a model-endpoint provider before spawning", async () => {

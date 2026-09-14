@@ -45,6 +45,7 @@ import {
 import { createDefaultDispatcherRegistry } from "./dispatch-registry.js";
 import {
   gitExtractPatch,
+  isDispatchEnabled,
   makeSupervisorQwenSpawnEffects,
   qwenDispatchInputShape,
   QwenDispatchError,
@@ -1553,7 +1554,7 @@ async function main(): Promise<void> {
   // per-call because base_commit is per-call (see dispatch-registry.ts).
   mcpServer.tool(
     "qwen_dispatch",
-    "Agentic dispatch (RDR-008/009/010): run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
+    "Agentic dispatch (RDR-008/009/010): OPT-IN PER SESSION — the supervisor must have been started with QWEN_DISPATCH_ENABLE=1 or this returns error code dispatch_not_enabled. Run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
     qwenDispatchInputShape,
     async (args) => {
       // Mirror the spawn-initiating tools' shutdown envelope (consistent error
@@ -1582,7 +1583,12 @@ async function main(): Promise<void> {
           qwen_stop: handlers.qwen_stop,
         },
         gitExtractPatch,
-        { harvest: selectHarvester(args.harvest ?? "patch", gitExtractPatch) },
+        {
+          harvest: selectHarvester(args.harvest ?? "patch", gitExtractPatch),
+          // Bead n8c: dispatch owns the worktree, so the agent gets write
+          // authority unless the caller opts out (read-only value runs).
+          writeAuthority: args.write_authority ?? true,
+        },
       );
       // Worktree strategy selection (RDR-008 dps): `repo` → executor-managed
       // (shared bare mirror + per-instance worktree under the config dir, cleaned
@@ -1592,6 +1598,7 @@ async function main(): Promise<void> {
       const wtWorkRoot = join(getConfigDir(), "worktrees", "work");
       try {
         const result = await runQwenDispatch(args, {
+          enabled: isDispatchEnabled,
           loadProviders: loadAgentProviders,
           resolveDispatch: (provider, baseCommit) =>
             createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit }).resolve(provider),

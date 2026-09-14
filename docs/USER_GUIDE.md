@@ -409,12 +409,19 @@ The stack is the supervisor; your app wires its dispatch through it. Two pattern
    large-context extraction, skip the supervisor and pool entirely: POST
    OpenAI-compat to the backend's `/v1` from your own HTTP client. Lowest latency;
    you give up pooling and KV-affinity, which a stateless oneshot does not need.
-2. **Agentic path — call `qwen_dispatch`.** For a one-shot agentic task that
+2. **Agentic path — call `qwen_dispatch`.** Opt-in **per session**: start
+   Claude Code with `QWEN_DISPATCH_ENABLE=1` in the environment (and, to keep
+   the provider session-local too, `QWEN_AGENT_PROVIDERS='[...]'`); the
+   session's own supervisor inherits that env, other sessions see
+   `dispatch_not_enabled`. For a one-shot agentic task that
    edits a repo, call the `qwen_dispatch` MCP operator with a `prompt` and either
    a caller-supplied `worktree` (absolute path) or a `repo` slug (the executor
    materializes a throwaway worktree), plus the `base_commit` to diff against. You
    get back a typed `Artifact[]` (`patch` / `value`) you fold into your own
-   ledger. The wire shape is published and conformance-tested — see
+   ledger. The agent has write authority in that worktree by default
+   (`write_authority: false` for a read-only `value` run); a run whose writes
+   were refused and whose patch is empty comes back `outcome: "error"`, not
+   `completed`. The wire shape is published and conformance-tested — see
    [`docs/contracts/qwen-dispatch-operator-contract.md`](contracts/qwen-dispatch-operator-contract.md)
    and the [Architecture](ARCHITECTURE.md#the-dispatch-contract-stack).
 

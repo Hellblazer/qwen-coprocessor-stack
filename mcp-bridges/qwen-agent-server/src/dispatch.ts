@@ -244,6 +244,11 @@ export interface QwenPollSnapshot {
   turnsUsed?: number;
   cost?: number;
   lastMessage?: string;
+  /** Cumulative count of WRITE-tool `permission_denied` events the session has
+   *  emitted so far (bead n8c). The poll adapter accumulates it across polls;
+   *  the dispatcher uses it to refuse to call a run whose every write was
+   *  refused `completed`. Absent when the poll source carries no events. */
+  deniedWrites?: number;
 }
 
 /** Injected effects for the qwen_spawn dispatcher. The host owns the supervisor
@@ -270,6 +275,19 @@ export interface QwenSpawnEffects {
  *  or failed (`error`). `running` keeps the loop polling. */
 function isTerminal(state: SessionState): boolean {
   return state === "complete" || state === "idle" || state === "error";
+}
+
+/** True when the session emitted at least one write-tool `permission_denied`
+ *  AND the harvest carries patch artifacts that are all empty — the signature
+ *  of a run that tried to edit, was refused every time, and has nothing to show
+ *  (bead n8c). No patch artifact at all (a value-only harvest) → false. */
+export function refusedWithoutPatch(
+  snapshot: Pick<QwenPollSnapshot, "deniedWrites">,
+  artifacts: readonly Artifact[],
+): boolean {
+  if ((snapshot.deniedWrites ?? 0) === 0) return false;
+  const patches = artifacts.filter((a) => a.kind === "patch");
+  return patches.length > 0 && patches.every((a) => a.diff.trim() === "");
 }
 
 /**
@@ -309,7 +327,7 @@ export function makeQwenSpawnDispatch(
       void effects.stop(taskId).catch(() => {});
     }
 
-    const outcome: AgentOutcome = timedOut
+    let outcome: AgentOutcome = timedOut
       ? "timeout"
       : classifyOutcome(last.state === "error" ? 1 : 0, {
           // Conditional spread, not `turnsUsed: last.turnsUsed`: under
@@ -321,6 +339,13 @@ export function makeQwenSpawnDispatch(
     // Thread the leaf's terminal structured return (RDR-010) so a value
     // harvester can surface it; the git-diff harvester ignores it.
     const artifacts = await effects.harvest(runContextFor(task, opts, last.lastMessage));
+    // Bead n8c: a run whose writes were refused and that produced no patch is
+    // NOT `completed`, whatever the session state says. The agent tried to
+    // edit, every edit was denied (permission_denied events), and the harvest
+    // is empty — reporting `completed` with an empty diff is a silent zero.
+    // Scoped to patch-bearing harvests: a value-only run (no patch artifact)
+    // may legitimately be read-only and still complete.
+    if (outcome === "completed" && refusedWithoutPatch(last, artifacts)) outcome = "error";
     return { artifacts, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
   };
 }
