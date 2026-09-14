@@ -76,6 +76,7 @@ describe("loadAgentProviders", () => {
           strengths: ["agenticLoop"],
           costClass: "free-local",
           latencyMult: 1.5,
+          backend: "coder-box",
         },
       ],
     });
@@ -83,6 +84,19 @@ describe("loadAgentProviders", () => {
     expect(p.strengths).toEqual(["agenticLoop"]);
     expect(p.costClass).toBe("free-local");
     expect(p.latencyMult).toBe(1.5);
+    expect(p.backend).toBe("coder-box");
+  });
+
+  it("leaves backend unset when omitted and drops a blank pin (11r)", () => {
+    writeConfig({
+      agent_providers: [
+        { id: "unpinned", agentKind: "qwen-local" },
+        { id: "blank", agentKind: "qwen-local", backend: "  " },
+      ],
+    });
+    const [unpinned, blank] = loadAgentProviders();
+    expect(unpinned).not.toHaveProperty("backend");
+    expect(blank).not.toHaveProperty("backend");
   });
 
   it("skips entries missing id or agentKind (logged, not thrown)", () => {
