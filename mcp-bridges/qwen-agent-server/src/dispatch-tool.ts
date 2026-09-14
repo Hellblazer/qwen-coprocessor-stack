@@ -47,6 +47,9 @@ import type {
 const execFileP = promisify(execFile);
 const log = createLogger("qwen-dispatch");
 
+/** Provider ids already warned `dispatch_backend_unpinned` (once per process). */
+const warnedUnpinned = new Set<string>();
+
 /**
  * Test-file pathspecs stripped from the source-only patch — a verbatim port of
  * `run_arm.TEST_PATTERNS` (scripts/coding-eval/run_arm.py:88) so the TS host and
@@ -246,6 +249,12 @@ export interface QwenDispatchDeps {
    * tests that exercise the orchestration without the gate).
    */
   enabled?: () => boolean;
+  /**
+   * The ids in the supervisor's backend pool. When present, a provider whose
+   * `backend` pin names an id outside the pool fails with `backend_unavailable`
+   * before any spawn (bead 11r). Absent → the pin is not pre-checked.
+   */
+  backendIds?: () => string[];
 }
 
 /**
@@ -266,6 +275,8 @@ export interface QwenDispatchDeps {
  *    per-session opt-in (`QWEN_DISPATCH_ENABLE=1`); checked before provider
  *    lookup, so a globally declared provider can never enable dispatch on
  *    its own.
+ *  - `backend_unavailable` — the selected provider's `backend` pin names an id
+ *    that is not in the backend pool (bead 11r).
  */
 export const DISPATCH_ERROR_CODES = [
   "dispatch_not_enabled",
@@ -273,6 +284,7 @@ export const DISPATCH_ERROR_CODES = [
   "missing_agent_kind",
   "unregistered_kind",
   "invalid_worktree_spec",
+  "backend_unavailable",
 ] as const;
 export type QwenDispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];
 
@@ -286,7 +298,7 @@ export type QwenDispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];
  * `~/.qwen-coprocessor-stack/config.json` (which every session reads) can turn
  * dispatch on for sessions that did not ask. Usage:
  *
- *     QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local"}]' claude
+ *     QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local","backend":"coder-box"}]' claude
  */
 export const DISPATCH_ENABLE_ENV = "QWEN_DISPATCH_ENABLE";
 
@@ -358,6 +370,22 @@ export async function runQwenDispatch(
       `qwen_dispatch: provider "${provider.id}" declares no agentKind; ` +
         `add agentKind to its config.agent_providers entry.`,
     );
+  }
+
+  // Bead 11r: a pin naming a backend the pool doesn't hold would otherwise
+  // surface as a raw "no backend available" exception from qwen_spawn, outside
+  // this typed taxonomy. Health is deliberately not checked: chooseBackend's
+  // pin bypasses the health filter too.
+  if (provider.backend && deps.backendIds !== undefined) {
+    const ids = deps.backendIds();
+    if (!ids.includes(provider.backend)) {
+      throw new QwenDispatchError(
+        "backend_unavailable",
+        `qwen_dispatch: provider "${provider.id}" pins backend "${provider.backend}", ` +
+          `which is not in the backend pool [${ids.join(", ")}]. ` +
+          `Fix the provider's "backend" or add that backend.`,
+      );
+    }
   }
 
   // Exactly one worktree spec (RDR-008 dps): caller-supplied `worktree` XOR
@@ -525,7 +553,7 @@ export function makeSupervisorQwenSpawnEffects(
   let since = "0";
   let deniedWrites = 0;
   return {
-    spawn: async (task) => {
+    spawn: async (task, provider) => {
       // `spawnOpts`, not `opts`: avoid shadowing the outer effects-options
       // parameter (`opts.harvest`/`opts.clock`) within this closure (R2 review).
       const spawnOpts: Partial<SpawnOpts> = {
@@ -533,6 +561,20 @@ export function makeSupervisorQwenSpawnEffects(
         write_authority: opts.writeAuthority ?? true,
       };
       if (task.minTokens > 0) spawnOpts.max_output_tokens = task.minTokens;
+      // Bead 11r: without a pin the spawn takes the shared weighted round-robin
+      // over every healthy text backend, so a `qwen-local` dispatch can land on
+      // a paid remote backend and still report cost 0.
+      // Truthiness, matching chooseBackend's own `if (opts.backend)`: a blank
+      // pin would be forwarded yet ignored there, silently round-robining.
+      if (provider.backend) {
+        spawnOpts.backend = provider.backend;
+      } else if (!warnedUnpinned.has(provider.id)) {
+        warnedUnpinned.add(provider.id);
+        log.warn(
+          { event_type: "dispatch_backend_unpinned", provider_id: provider.id },
+          "agent provider declares no backend; dispatch spawns round-robin across every healthy text backend",
+        );
+      }
       const r = await handlers.qwen_spawn({ task: task.prompt, opts: spawnOpts });
       if ("error" in r) {
         throw new Error(`qwen_dispatch spawn failed (${r.error.code}): ${r.error.message}`);

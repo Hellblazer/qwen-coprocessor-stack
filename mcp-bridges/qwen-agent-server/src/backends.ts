@@ -98,6 +98,8 @@ export interface AgentCliProviderConfig {
   excludes?: TaskKind[];
   costClass?: AgentProvider["costClass"];
   latencyMult?: number;
+  /** Pin this provider's spawns to one `backends[].id` (bead 11r). */
+  backend?: string;
 }
 
 interface ConfigCache {
@@ -339,6 +341,11 @@ function normalizeAgentProvider(raw: AgentCliProviderConfig): AgentProvider | nu
     ...(raw.strengths !== undefined ? { strengths: raw.strengths } : {}),
     ...(raw.costClass !== undefined ? { costClass: raw.costClass } : {}),
     ...(raw.latencyMult !== undefined ? { latencyMult: raw.latencyMult } : {}),
+    // A blank pin is dropped, not forwarded: `chooseBackend` treats a falsy
+    // `opts.backend` as unpinned anyway, so keeping it would only misreport.
+    ...(typeof raw.backend === "string" && raw.backend.trim() !== ""
+      ? { backend: raw.backend.trim() }
+      : {}),
   };
 }
 

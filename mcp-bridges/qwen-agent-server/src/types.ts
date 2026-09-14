@@ -733,6 +733,11 @@ export interface AgentProvider {
   /** Relative decode latency vs the Claude baseline (1.0). Advisory. */
   latencyMult?: number;
   costClass?: CostClass;
+  /** For `kind:"agent-cli"` providers: the `backends[].id` this provider's
+   *  spawns are pinned to, forwarded as `SpawnOpts.backend` (bead 11r). Absent
+   *  = unpinned: the spawn takes the shared weighted round-robin over every
+   *  healthy text backend, which can include a paid remote one. */
+  backend?: string;
   // ── endpoint-only fields (kind:"model-endpoint"), carried from Backend ──
   url?: string;
   model?: string;

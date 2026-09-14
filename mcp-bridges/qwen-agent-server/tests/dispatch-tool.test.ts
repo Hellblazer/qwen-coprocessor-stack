@@ -21,6 +21,19 @@ import {
 import { makeQwenSpawnDispatch, type Dispatch } from "../src/dispatch.js";
 import type { AgentProvider, AgentResult, AgentTask } from "../src/types.js";
 
+// Capture the module-level logger (bead 11r WARN assertions). Mirrors
+// codeintel.test.ts / session.test.ts.
+const logCapture = vi.hoisted(() => ({ lines: [] as unknown[][] }));
+vi.mock("../src/log.js", () => {
+  const make = () => {
+    const rec = (...args: unknown[]) => {
+      logCapture.lines.push(args);
+    };
+    return { info: rec, warn: rec, error: rec, debug: rec, trace: rec, fatal: rec, child: () => make() };
+  };
+  return { createLogger: () => make() };
+});
+
 describe("qwenDispatchInputShape — input validation", () => {
   const schema = z.object(qwenDispatchInputShape);
   const base = { prompt: "fix it", base_commit: "abc123" };
@@ -280,6 +293,39 @@ describe("per-session opt-in gate (QWEN_DISPATCH_ENABLE)", () => {
   });
 });
 
+describe("runQwenDispatch — backend pin pre-check (11r)", () => {
+  const input: QwenDispatchInput = { prompt: "p", base_commit: "abc123", worktree: "/wt", provider_id: "pinned" };
+  const sentinel = new Error("resolveDispatch reached");
+
+  it("fails with backend_unavailable when the pin is not in the pool, before resolving a dispatcher", async () => {
+    const resolveDispatch = vi.fn(() => {
+      throw sentinel;
+    });
+    await expect(
+      runQwenDispatch(input, {
+        loadProviders: () => [{ ...qwenProvider, id: "pinned", backend: "gone-box" }],
+        resolveDispatch,
+        backendIds: () => ["coder-box", "glm-openrouter"],
+      }),
+    ).rejects.toMatchObject({ name: "QwenDispatchError", code: "backend_unavailable" });
+    expect(resolveDispatch).not.toHaveBeenCalled();
+  });
+
+  it("passes the pre-check when the pin is in the pool", async () => {
+    await expect(
+      runQwenDispatch(input, {
+        loadProviders: () => [{ ...qwenProvider, id: "pinned", backend: "coder-box" }],
+        resolveDispatch: () => {
+          throw sentinel;
+        },
+        backendIds: () => ["coder-box", "glm-openrouter"],
+      }),
+      // runQwenDispatch wraps a resolver throw in a QwenDispatchError but keeps
+      // the message, so reaching it proves the pre-check passed.
+    ).rejects.toThrow(/resolveDispatch reached/);
+  });
+});
+
 describe("makeSupervisorQwenSpawnEffects", () => {
   const TASK: AgentTask = {
     prompt: "do",
@@ -321,6 +367,37 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     );
     await effects.spawn(TASK, qwenProvider);
     expect(qwen_spawn.mock.calls[0]![0].opts.write_authority).toBe(false);
+  });
+
+  // ── bead 11r: provider backend pin ──
+
+  it("spawn pins opts.backend to the provider's declared backend (11r)", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t-1", chosen_backend: "coder-box" });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn, qwen_poll: vi.fn() }, async () => "");
+    await effects.spawn(TASK, { ...qwenProvider, backend: "coder-box" });
+    expect(qwen_spawn.mock.calls[0]![0].opts.backend).toBe("coder-box");
+  });
+
+  it("spawn leaves opts.backend unset for an unpinned provider (round-robin)", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t-1", chosen_backend: "box" });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn, qwen_poll: vi.fn() }, async () => "");
+    await effects.spawn(TASK, qwenProvider);
+    expect(qwen_spawn.mock.calls[0]![0].opts).not.toHaveProperty("backend");
+  });
+
+  it("WARNs dispatch_backend_unpinned once per unpinned provider, never for a pinned one", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t-1", chosen_backend: "box" });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn, qwen_poll: vi.fn() }, async () => "");
+    const unpinnedWarns = (id: string) =>
+      logCapture.lines.filter((args) => {
+        const o = args[0] as { event_type?: string; provider_id?: string } | undefined;
+        return o?.event_type === "dispatch_backend_unpinned" && o.provider_id === id;
+      }).length;
+    await effects.spawn(TASK, { ...qwenProvider, id: "warn-probe" });
+    await effects.spawn(TASK, { ...qwenProvider, id: "warn-probe" });
+    await effects.spawn(TASK, { ...qwenProvider, id: "warn-pinned", backend: "coder-box" });
+    expect(unpinnedWarns("warn-probe")).toBe(1);
+    expect(unpinnedWarns("warn-pinned")).toBe(0);
   });
 
   it("poll walks the event stream by cursor and accumulates write denials across polls", async () => {

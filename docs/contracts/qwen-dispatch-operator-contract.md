@@ -99,7 +99,8 @@ A `qwen_dispatch` run is one agentic run, so its result **is** an `AgentResult`
 - `turns` — the real completed-turn count, including on a qwen-local **success**
   run (`PollResult.turns_completed` is the always-present live counter — bead
   **qwen-coprocessor-stack-j2r**).
-- `cost` — `0` for free-local `qwen-local`.
+- `cost` — always `0`. Dispatch has no per-backend price source, so a run on a
+  paid remote backend is under-reported whether or not the provider is pinned.
 
 ### Errors
 
@@ -112,6 +113,7 @@ Structured envelope `{ "error": { "code": <code>, "message": <string> } }`:
 | `missing_agent_kind` | the selected provider declares no `agentKind` | add `agentKind` to its config |
 | `unregistered_kind` | the provider's `agentKind` has no registered dispatcher | register a dispatcher for that kind |
 | `invalid_worktree_spec` | not exactly one of `worktree` / `repo` supplied | supply exactly one |
+| `backend_unavailable` | the selected provider's `backend` pin names an id not in the backend pool | fix the provider's `backend`, or add that backend |
 | `shutting_down` | server is shutting down | retry later |
 
 `missing_agent_kind` is deliberately distinct from `unregistered_kind` so a
@@ -162,7 +164,7 @@ and registers a **dispatcher** for its `agentKind`:
    before provider lookup, so a provider in the shared config.json never turns
    dispatch on for a session that did not ask:
    ```sh
-   QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local"}]' claude
+   QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local","backend":"coder-box"}]' claude
    ```
    Without `QWEN_DISPATCH_ENABLE` the tool returns `dispatch_not_enabled`.
    Declaring the provider in the same env keeps the whole experiment scoped to
@@ -170,10 +172,18 @@ and registers a **dispatcher** for its `agentKind`:
 1. **Declare the provider** in `agent_providers` (config.json or
    `QWEN_AGENT_PROVIDERS`):
    ```json
-   { "agent_providers": [ { "id": "qwen-coder-mac", "agentKind": "qwen-local" } ] }
+   { "agent_providers": [ { "id": "qwen-coder-mac", "agentKind": "qwen-local", "backend": "coder-mac" } ] }
    ```
    agent-cli providers are **not** model-endpoint backends; they carry no
-   `url`/`model` and never enter the `backends` registry.
+   `url`/`model` and never enter the `backends` registry. `backend` pins the
+   provider's spawns to one `backends[].id`. Leave it out and each dispatch
+   takes the shared weighted round-robin over every healthy text backend, so a
+   pool that also holds a paid remote backend (OpenRouter) can serve a
+   `qwen-local` dispatch; the supervisor WARNs `dispatch_backend_unpinned` once
+   per provider when that happens. A pin naming an id that is not in the pool
+   fails with `backend_unavailable` before anything is spawned. To use two
+   backends from one session, declare two providers and choose with
+   `provider_id`.
 2. **Register the dispatcher** for the `agentKind`. The host builds a registry
    mapping `DispatcherKind → Dispatch` and registers `qwen-local` →
    `makeQwenSpawnDispatch(effects)`. Adding a new executor kind is a one-line

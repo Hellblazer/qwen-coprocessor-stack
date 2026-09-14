@@ -38,11 +38,11 @@
       "shape": "AgentResult (RDR-007, generalized by RDR-009; agent-shapes.json) — reused verbatim. A qwen_dispatch run is one agentic run; its result IS an AgentResult. RDR-009: the response now carries `artifacts: Artifact[]` (was `patch: string`); a qwen-local run emits a single {kind:'patch'} artifact via the git-diff harvester.",
       "artifacts": "Artifact[] (agent-shapes.json `artifact`). For qwen_dispatch (a coding run) this is one {kind:'patch'} artifact: SOURCE-ONLY diff (test paths stripped; contamination stays host-internal, NOT a field — RDR-007 P4b) with the `base` it was diffed against.",
       "turns": "Real completed-turn count on qwen-local success (j2r: PollResult.turns_completed is always-present).",
-      "cost": "0 for free-local qwen-local."
+      "cost": "Always 0: dispatch has no per-backend price source, so a run on a paid remote backend is under-reported whether or not the provider pins a backend."
     }
   },
   "error": {
-    "codes": ["dispatch_not_enabled", "no_provider", "missing_agent_kind", "unregistered_kind", "invalid_worktree_spec", "shutting_down"],
+    "codes": ["dispatch_not_enabled", "no_provider", "missing_agent_kind", "unregistered_kind", "invalid_worktree_spec", "backend_unavailable", "shutting_down"],
     "envelope": {
       "error": {
         "code": "no_provider",
@@ -55,6 +55,7 @@
       "missing_agent_kind": "The selected provider declares no agentKind — a config fix (add agentKind), distinct from unregistered_kind so the caller is not misdirected to register a dispatcher.",
       "unregistered_kind": "The provider's agentKind has no registered dispatcher.",
       "invalid_worktree_spec": "The request did not supply exactly one of worktree (caller-supplied) or repo (executor-managed) — neither or both.",
+      "backend_unavailable": "Bead 11r (additive). The selected provider's `backend` pin names an id that is not in the supervisor's backend pool. Checked before any spawn.",
       "shutting_down": "Server is shutting down; cannot dispatch (mirrors the spawn-initiating tools' envelope)."
     }
   },

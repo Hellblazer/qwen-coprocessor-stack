@@ -1600,6 +1600,7 @@ async function main(): Promise<void> {
         const result = await runQwenDispatch(args, {
           enabled: isDispatchEnabled,
           loadProviders: loadAgentProviders,
+          backendIds: () => pool.backends.map((b) => b.id),
           resolveDispatch: (provider, baseCommit) =>
             createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit }).resolve(provider),
           resolveWorktree: (input) => {
