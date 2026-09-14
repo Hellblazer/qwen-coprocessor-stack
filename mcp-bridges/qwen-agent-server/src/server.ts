@@ -1582,7 +1582,12 @@ async function main(): Promise<void> {
           qwen_stop: handlers.qwen_stop,
         },
         gitExtractPatch,
-        { harvest: selectHarvester(args.harvest ?? "patch", gitExtractPatch) },
+        {
+          harvest: selectHarvester(args.harvest ?? "patch", gitExtractPatch),
+          // Bead n8c: dispatch owns the worktree, so the agent gets write
+          // authority unless the caller opts out (read-only value runs).
+          writeAuthority: args.write_authority ?? true,
+        },
       );
       // Worktree strategy selection (RDR-008 dps): `repo` → executor-managed
       // (shared bare mirror + per-instance worktree under the config dir, cleaned

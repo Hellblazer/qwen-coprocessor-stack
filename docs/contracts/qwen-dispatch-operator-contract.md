@@ -89,6 +89,13 @@ A `qwen_dispatch` run is one agentic run, so its result **is** an `AgentResult`
   is whatever the worktree held at the cutoff (possibly partial). **The worktree
   state is indeterminate.** A retry must run against a **fresh** worktree at
   `base_commit`, not the timed-out one — worktree lifecycle is the caller's (see below).
+- `outcome: "error"` on a **refused-write run** (bead n8c): if the session
+  emitted write-tool `permission_denied` events and every `patch` artifact is
+  empty, the run is `error`, never `completed` — the agent tried to edit and got
+  nothing through. Value-only harvests (no `patch` artifact) are exempt. The
+  dispatched agent holds write authority in its worktree by default
+  (`write_authority`, optional, default `true`), so this path is reached only
+  when a caller opts out or the inner permission gate refuses for another reason.
 - `turns` — the real completed-turn count, including on a qwen-local **success**
   run (`PollResult.turns_completed` is the always-present live counter — bead
   **qwen-coprocessor-stack-j2r**).
@@ -126,7 +133,9 @@ the agent finished its single self-contained task. There is **no resume path**.
 - A single bounded agentic run → `AgentResult` (terminal outcome, source-only patch).
 - Deterministic outcome classification identical to the RDR-007 spine
   (`classify-outcome`): `rc≠0`→`error`; `turns≥max`→`turn_limit`; `idle`/`complete`
-  → `completed`; wall-clock cutoff → `timeout`.
+  → `completed`; wall-clock cutoff → `timeout`. One executor-side refinement on
+  top (n8c): a `completed` classification with refused writes and an empty patch
+  is reported as `error`.
 
 ### What the executor REQUIRES from the caller (engine)
 

@@ -27,6 +27,7 @@ import { selectAgentProvider } from "./backends.js";
 import { createLogger } from "./log.js";
 import { callerSuppliedWorktree, type WorktreeStrategy } from "./worktree.js";
 import { valueHarvester } from "./dispatch.js";
+import { WRITE_TOOLS } from "./permissions.js";
 import type { Dispatch, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
 import { DISPATCHER_KINDS } from "./types.js";
 import type {
@@ -35,6 +36,7 @@ import type {
   AgentTask,
   Artifact,
   DispatcherKind,
+  Event,
   Harvest,
   PollOpts,
   PollResult,
@@ -196,6 +198,12 @@ export const qwenDispatchInputShape = {
     .optional()
     .describe(
       'What to harvest from the run (RDR-010; default "patch"). "patch" = the source git-diff (coding runs). "value" = the leaf\'s structured finalMessage as a {kind:"value"} artifact (non-code leaves, e.g. a planner returning JSON). "both" = git-diff + value.',
+    ),
+  write_authority: z
+    .boolean()
+    .optional()
+    .describe(
+      "Grant the dispatched agent write authority in its worktree (default TRUE — dispatch owns the worktree and a patch harvest presupposes edits). Set false for a read-only run (e.g. harvest 'value' from a planner). A run whose writes are refused and that yields an empty patch is reported outcome 'error', never 'completed'.",
     ),
 } as const;
 
@@ -391,6 +399,29 @@ export async function runQwenDispatch(
 
 // ── supervisor adapter (production wiring) ──────────────────────────────────
 
+/** Events requested per poll call; the session ring buffer holds 256, so this
+ *  plus the drain loop below keeps up with any realistic burst. */
+const POLL_MAX_EVENTS = 64;
+/** Extra cursor-advancing poll calls per dispatcher poll when the session
+ *  reports more events behind the cursor. Bounded so a runaway session can
+ *  never turn one poll into an unbounded loop. */
+const POLL_DRAIN_ROUNDS = 8;
+
+/** Count the write-tool `permission_denied` events in one poll page (bead n8c).
+ *  `ask_user_question` also lands as `permission_denied` (permissions.ts,
+ *  defense-in-depth) but is not a write refusal — filtered by `data.tool_name`
+ *  against the same WRITE_TOOLS set the permission callback uses. */
+export function countDeniedWrites(events: readonly Event[] | undefined): number {
+  if (events === undefined) return 0;
+  let n = 0;
+  for (const ev of events) {
+    if (ev.type !== "permission_denied") continue;
+    const tool = (ev.data as { tool_name?: unknown } | undefined)?.tool_name;
+    if (typeof tool === "string" && WRITE_TOOLS.has(tool)) n++;
+  }
+  return n;
+}
+
 /** Minimal view of the supervisor's spawn/poll handlers the dispatcher needs.
  *  Declared locally (not imported from server.ts) to keep this module free of
  *  an import cycle — server.ts imports this module, not the reverse. */
@@ -432,17 +463,30 @@ export function makeSupervisorQwenSpawnEffects(
   opts: {
     clock?: { now: () => number; sleep: (ms: number) => Promise<void> };
     harvest?: Harvest;
+    /** Grant the spawned session write authority (default TRUE — bead n8c).
+     *  Dispatch owns the worktree it hands the agent, so a patch harvest with
+     *  writes denied can never produce a patch; the pre-n8c adapter left this
+     *  unset (= false) and every edit came back `permission_denied`. */
+    writeAuthority?: boolean;
   } = {},
 ): QwenSpawnEffects {
   const clock = opts.clock ?? {
     now: () => Date.now(),
     sleep: (ms: number) => new Promise((res) => setTimeout(res, ms)),
   };
+  // Event-cursor state for the poll adapter (bead n8c): walk the session's
+  // event stream exactly once via `since` so write denials are counted, not
+  // re-read (a cursorless poll returns the ring-buffer TAIL every call).
+  let since = "0";
+  let deniedWrites = 0;
   return {
     spawn: async (task) => {
       // `spawnOpts`, not `opts`: avoid shadowing the outer effects-options
       // parameter (`opts.harvest`/`opts.clock`) within this closure (R2 review).
-      const spawnOpts: Partial<SpawnOpts> = { cwd: task.worktree };
+      const spawnOpts: Partial<SpawnOpts> = {
+        cwd: task.worktree,
+        write_authority: opts.writeAuthority ?? true,
+      };
       if (task.minTokens > 0) spawnOpts.max_output_tokens = task.minTokens;
       const r = await handlers.qwen_spawn({ task: task.prompt, opts: spawnOpts });
       if ("error" in r) {
@@ -451,7 +495,7 @@ export function makeSupervisorQwenSpawnEffects(
       return r.task_id;
     },
     poll: async (taskId) => {
-      const r = await handlers.qwen_poll({ task_id: taskId, opts: {} });
+      let r = await handlers.qwen_poll({ task_id: taskId, opts: { since, max_events: POLL_MAX_EVENTS } });
       // Session evicted from the pool (LRU/reap) — an INFRASTRUCTURE failure,
       // not a dispatch outcome. Throw so it propagates as an untyped error the
       // tool rethrows, instead of masquerading as a clean `outcome:"error"`
@@ -459,7 +503,16 @@ export function makeSupervisorQwenSpawnEffects(
       if ("error" in r && r.error?.code === "task_id_not_found") {
         throw new Error(`qwen_dispatch poll: session ${taskId} evicted (${r.error.message})`);
       }
-      const snap: QwenPollSnapshot = { state: r.state };
+      // Drain the event stream behind the cursor (bounded) so a burst of
+      // denials between two polls is not lost to the per-call cap.
+      deniedWrites += countDeniedWrites(r.recent_events);
+      since = r.latest_event_id ?? since;
+      for (let i = 0; i < POLL_DRAIN_ROUNDS && r.more_events_available === true; i++) {
+        r = await handlers.qwen_poll({ task_id: taskId, opts: { since, max_events: POLL_MAX_EVENTS } });
+        deniedWrites += countDeniedWrites(r.recent_events);
+        since = r.latest_event_id ?? since;
+      }
+      const snap: QwenPollSnapshot = { state: r.state, deniedWrites };
       // Prefer the always-present live counter (j2r); fall back to last_known
       // (error-path only) for a pre-j2r supervisor.
       const turns = r.turns_completed ?? r.last_known?.turns_completed;

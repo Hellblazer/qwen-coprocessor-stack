@@ -414,7 +414,10 @@ The stack is the supervisor; your app wires its dispatch through it. Two pattern
    a caller-supplied `worktree` (absolute path) or a `repo` slug (the executor
    materializes a throwaway worktree), plus the `base_commit` to diff against. You
    get back a typed `Artifact[]` (`patch` / `value`) you fold into your own
-   ledger. The wire shape is published and conformance-tested — see
+   ledger. The agent has write authority in that worktree by default
+   (`write_authority: false` for a read-only `value` run); a run whose writes
+   were refused and whose patch is empty comes back `outcome: "error"`, not
+   `completed`. The wire shape is published and conformance-tested — see
    [`docs/contracts/qwen-dispatch-operator-contract.md`](contracts/qwen-dispatch-operator-contract.md)
    and the [Architecture](ARCHITECTURE.md#the-dispatch-contract-stack).
 
