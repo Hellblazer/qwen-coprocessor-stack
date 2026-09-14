@@ -11,6 +11,7 @@ import { z } from "zod";
 
 import {
   countDeniedWrites,
+  isDispatchEnabled,
   makeSupervisorQwenSpawnEffects,
   qwenDispatchInputShape,
   QwenDispatchError,
@@ -246,6 +247,36 @@ describe("runQwenDispatch", () => {
     ).rejects.toMatchObject({ code: "missing_agent_kind" });
     // Never reaches the registry — it's a config error, not a registration gap.
     expect(resolveDispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("per-session opt-in gate (QWEN_DISPATCH_ENABLE)", () => {
+  it("isDispatchEnabled parses 1/true/yes (trimmed, case-insensitive); unset/0/false → off", () => {
+    for (const v of ["1", "true", "TRUE", " yes "]) expect(isDispatchEnabled({ QWEN_DISPATCH_ENABLE: v })).toBe(true);
+    for (const v of [undefined, "", "0", "false", "no"]) {
+      expect(isDispatchEnabled(v === undefined ? {} : { QWEN_DISPATCH_ENABLE: v })).toBe(false);
+    }
+  });
+
+  it("runQwenDispatch fails dispatch_not_enabled BEFORE any provider lookup when the gate is off", async () => {
+    const loadProviders = vi.fn(() => []);
+    const resolveDispatch = vi.fn();
+    await expect(
+      runQwenDispatch(
+        { prompt: "x", worktree: "/wt", base_commit: "b" },
+        { enabled: () => false, loadProviders, resolveDispatch },
+      ),
+    ).rejects.toMatchObject({ name: "QwenDispatchError", code: "dispatch_not_enabled" });
+    expect(loadProviders).not.toHaveBeenCalled();
+    expect(resolveDispatch).not.toHaveBeenCalled();
+  });
+
+  it("an absent gate (unit wiring) and an on gate both proceed to provider selection", async () => {
+    const loadProviders = vi.fn(() => []);
+    for (const deps of [{ loadProviders, resolveDispatch: vi.fn() }, { enabled: () => true, loadProviders, resolveDispatch: vi.fn() }]) {
+      await expect(runQwenDispatch({ prompt: "x", worktree: "/wt", base_commit: "b" }, deps)).rejects.toMatchObject({ code: "no_provider" });
+    }
+    expect(loadProviders).toHaveBeenCalledTimes(2);
   });
 });
 

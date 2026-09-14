@@ -239,6 +239,13 @@ export interface QwenDispatchDeps {
    * lifecycle for whichever strategy is chosen.
    */
   resolveWorktree?: (input: QwenDispatchInput) => WorktreeStrategy;
+  /**
+   * The per-session opt-in gate (see {@link isDispatchEnabled}). Production
+   * wiring passes `isDispatchEnabled`; a `false` result fails the call with
+   * `dispatch_not_enabled` BEFORE any provider lookup. Absent → enabled (unit
+   * tests that exercise the orchestration without the gate).
+   */
+  enabled?: () => boolean;
 }
 
 /**
@@ -255,14 +262,42 @@ export interface QwenDispatchDeps {
  *    dispatcher.
  *  - `invalid_worktree_spec` — the request did not supply exactly one of
  *    `worktree` (caller-supplied) or `repo` (executor-managed).
+ *  - `dispatch_not_enabled` — this supervisor was not started with the
+ *    per-session opt-in (`QWEN_DISPATCH_ENABLE=1`); checked before provider
+ *    lookup, so a globally declared provider can never enable dispatch on
+ *    its own.
  */
 export const DISPATCH_ERROR_CODES = [
+  "dispatch_not_enabled",
   "no_provider",
   "missing_agent_kind",
   "unregistered_kind",
   "invalid_worktree_spec",
 ] as const;
 export type QwenDispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];
+
+/**
+ * Per-session opt-in gate (bead n8c follow-up). Each Claude Code session spawns
+ * its own supervisor and that process inherits the launching shell's
+ * environment (verified: PWD/TERM_PROGRAM of the shell show up on the live
+ * plugin supervisor), so an env var exported before `claude` starts reaches
+ * exactly one session. `qwen_dispatch` refuses to run unless this var is set
+ * truthy — the FLOOR is opt-in per session; nothing in the shared
+ * `~/.qwen-coprocessor-stack/config.json` (which every session reads) can turn
+ * dispatch on for sessions that did not ask. Usage:
+ *
+ *     QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local"}]' claude
+ */
+export const DISPATCH_ENABLE_ENV = "QWEN_DISPATCH_ENABLE";
+
+/** True when `env[DISPATCH_ENABLE_ENV]` is `1`/`true`/`yes` (case-insensitive,
+ *  trimmed). Unset, empty, `0`, `false` → false. */
+export function isDispatchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env[DISPATCH_ENABLE_ENV];
+  if (v === undefined) return false;
+  const t = v.trim().toLowerCase();
+  return t === "1" || t === "true" || t === "yes";
+}
 
 /** Structured error surfaced to the caller when dispatch can't proceed. */
 export class QwenDispatchError extends Error {
@@ -286,6 +321,16 @@ export async function runQwenDispatch(
   input: QwenDispatchInput,
   deps: QwenDispatchDeps,
 ): Promise<AgentResult> {
+  // Per-session opt-in floor: refuse before touching providers, so a provider
+  // declared in the shared config file cannot enable dispatch by itself.
+  if (deps.enabled !== undefined && !deps.enabled()) {
+    throw new QwenDispatchError(
+      "dispatch_not_enabled",
+      `qwen_dispatch is opt-in per session: start this session's supervisor with ` +
+        `${DISPATCH_ENABLE_ENV}=1 (e.g. \`${DISPATCH_ENABLE_ENV}=1 QWEN_AGENT_PROVIDERS='[...]' claude\`). ` +
+        `Providers in the shared config.json do not enable it.`,
+    );
+  }
   const providers = deps.loadProviders();
   // Single selection spine (shared with selectAgentProvider so behaviour can't
   // diverge): pin by id, else the default/declared agentKind family.

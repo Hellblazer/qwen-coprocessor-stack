@@ -42,7 +42,7 @@
     }
   },
   "error": {
-    "codes": ["no_provider", "missing_agent_kind", "unregistered_kind", "invalid_worktree_spec", "shutting_down"],
+    "codes": ["dispatch_not_enabled", "no_provider", "missing_agent_kind", "unregistered_kind", "invalid_worktree_spec", "shutting_down"],
     "envelope": {
       "error": {
         "code": "no_provider",
@@ -50,6 +50,7 @@
       }
     },
     "notes": {
+      "dispatch_not_enabled": "The supervisor serving this session was not started with QWEN_DISPATCH_ENABLE=1. Dispatch is opt-in PER SESSION (each Claude Code session runs its own supervisor, which inherits the launching shell's env); the shared config.json cannot enable it. Checked before provider lookup.",
       "no_provider": "No declared agent-cli provider matches the selector (provider_id pin or agent_kind family).",
       "missing_agent_kind": "The selected provider declares no agentKind — a config fix (add agentKind), distinct from unregistered_kind so the caller is not misdirected to register a dispatcher.",
       "unregistered_kind": "The provider's agentKind has no registered dispatcher.",

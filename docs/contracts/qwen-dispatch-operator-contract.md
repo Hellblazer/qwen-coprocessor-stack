@@ -107,6 +107,7 @@ Structured envelope `{ "error": { "code": <code>, "message": <string> } }`:
 
 | code | meaning | caller fix |
 |------|---------|-----------|
+| `dispatch_not_enabled` | this session's supervisor was not started with `QWEN_DISPATCH_ENABLE=1` | start the session with the opt-in (below); the shared config cannot enable it |
 | `no_provider` | no declared agent-cli provider matches the selector | declare one in `agent_providers` |
 | `missing_agent_kind` | the selected provider declares no `agentKind` | add `agentKind` to its config |
 | `unregistered_kind` | the provider's `agentKind` has no registered dispatcher | register a dispatcher for that kind |
@@ -155,6 +156,17 @@ the agent finished its single self-contained task. There is **no resume path**.
 To make `qwen_dispatch` selectable, the host declares an **agent-cli provider**
 and registers a **dispatcher** for its `agentKind`:
 
+0. **Opt the session in.** `qwen_dispatch` is gated **per session**: each
+   Claude Code session runs its own supervisor, and that process inherits the
+   environment of the shell that launched Claude Code. The gate is checked
+   before provider lookup, so a provider in the shared config.json never turns
+   dispatch on for a session that did not ask:
+   ```sh
+   QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local"}]' claude
+   ```
+   Without `QWEN_DISPATCH_ENABLE` the tool returns `dispatch_not_enabled`.
+   Declaring the provider in the same env keeps the whole experiment scoped to
+   that one session.
 1. **Declare the provider** in `agent_providers` (config.json or
    `QWEN_AGENT_PROVIDERS`):
    ```json

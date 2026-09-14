@@ -14,6 +14,18 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`qwen_dispatch` is opt-in per session.** The tool refuses with the new
+  error code `dispatch_not_enabled` unless the supervisor serving the session
+  was started with `QWEN_DISPATCH_ENABLE=1`. Each Claude Code session spawns
+  its own supervisor and that process inherits the launching shell's
+  environment, so `QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[...]' claude`
+  scopes dispatch (and its provider) to one session; `agent_providers` in the
+  shared config.json can no longer enable dispatch for every session on the
+  machine. The gate is checked before provider lookup. Fixture
+  `qwen-dispatch-shapes.json` error codes gain `dispatch_not_enabled`.
+
 ### Fixed
 
 - **`qwen_dispatch` never granted write authority** (bead
