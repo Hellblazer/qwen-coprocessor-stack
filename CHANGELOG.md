@@ -14,6 +14,39 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.16] - 2026-09-14
+
+Pins `qwen_dispatch` to the backend its provider names, so a `qwen-local`
+dispatch can no longer land on a paid remote backend by round-robin (bead
+qwen-coprocessor-stack-11r).
+
+### Added
+
+- **`agent_providers[].backend`** (optional): pins the provider's dispatch
+  spawns to one `backends[].id`, forwarded as the spawn's `backend`. Blank
+  values are dropped at load. Recipe:
+  `QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local","backend":"coder-box"}]' claude`.
+  To use two backends from one session, declare two providers and choose with
+  `provider_id`.
+- **`backend_unavailable`** error code: a pin naming an id that is not in the
+  backend pool fails before anything is spawned. Fixture
+  `qwen-dispatch-shapes.json` error codes gain it (additive).
+
+### Fixed
+
+- **Dispatch spawns were never backend-pinned.** The qwen-local dispatcher
+  spawned without a backend, so the shared weighted round-robin chose among
+  every healthy text backend; with coder-box and glm-openrouter both
+  remote/heavy/weight 1, every other dispatch ran on OpenRouter. An unpinned
+  provider now logs `dispatch_backend_unpinned` once per provider.
+- **An invalid pin escaped the error envelope** as a raw `no backend available`
+  exception from the spawn path; it is now the typed `backend_unavailable`.
+
+### Notes
+
+- Dispatch still reports `cost: 0` for every backend; it has no per-backend
+  price source.
+
 ## [0.11.15] - 2026-09-14
 
 Makes `qwen_dispatch` usable and honest, and scopes it to sessions that ask
