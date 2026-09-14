@@ -14,6 +14,13 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.15] - 2026-09-14
+
+Makes `qwen_dispatch` usable and honest, and scopes it to sessions that ask
+for it (bead qwen-coprocessor-stack-n8c). Also the first published build since
+0.11.13: 0.11.14 was bumped on `main` but never tagged, so this release carries
+its `codeIntel` guidance change as well.
+
 ### Changed
 
 - **`qwen_dispatch` is opt-in per session.** The tool refuses with the new
