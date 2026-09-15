@@ -102,6 +102,20 @@ class LoadTaskSpecTests(TempDirCase):
         self.assertGreater(task.max_tool_calls, 0)
         self.assertGreater(task.timeout_ms, 0)
 
+    def test_loads_real_fixture_with_relative_tasks_dir(self) -> None:
+        # Regression test: when --tasks-dir is a relative path, load_task_spec
+        # must resolve it to an absolute path for use in verify commands.
+        original_cwd = os.getcwd()
+        self.addCleanup(os.chdir, original_cwd)
+        os.chdir(self.tmp)
+
+        rel = Path(os.path.relpath(REAL_TASKS_DIR / "002-implement-tdd" / "task.json"))
+        self.assertFalse(rel.is_absolute())
+
+        task = rb.load_task_spec(rel)
+        self.assertTrue(task.task_dir.is_absolute())
+        self.assertEqual(task.task_dir, (REAL_TASKS_DIR / "002-implement-tdd").resolve())
+
     def test_missing_required_field_raises(self) -> None:
         task_dir = self.tmp / "broken"
         task_dir.mkdir()
@@ -813,6 +827,33 @@ class CLITests(TempDirCase):
         self.assertEqual(code, 0, stderr.getvalue())
         doc = json.loads(out.read_text())
         self.assertEqual(doc["broken_fixtures"], [])
+
+    def test_gold_check_mode_exit_0_with_relative_tasks_dir(self) -> None:
+        # Regression test for bead qwen-coprocessor-stack-jz9: when --tasks-dir
+        # is a relative path, fixtures 002 and 003 should NOT be BROKEN.
+        # Previously, load_task_spec() kept task_dir relative, causing verify.py
+        # to not be found (subprocess cwd != task dir), resulting in exit 2.
+        original_cwd = os.getcwd()
+        self.addCleanup(os.chdir, original_cwd)
+        os.chdir(self.tmp)
+
+        rel_tasks = os.path.relpath(REAL_TASKS_DIR)
+        self.assertTrue(os.path.isabs(REAL_TASKS_DIR))
+        self.assertFalse(os.path.isabs(rel_tasks))  # must be relative
+
+        out = self.tmp / "out.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = rb.main(
+                ["--tasks-dir", rel_tasks, "--work-root", str(self.tmp / "work"), "--gold-check", "--out", str(out)]
+            )
+        self.assertEqual(code, 0, f"gold-check should pass with relative tasks-dir; stderr: {stderr.getvalue()}")
+        doc = json.loads(out.read_text())
+        self.assertEqual(doc["broken_fixtures"], [], "no fixtures should be broken with relative tasks-dir")
+
+        # Verify each entry in gold_check has passed=true
+        for entry in doc["gold_check"]:
+            self.assertTrue(entry.get("passed"), f"gold_check entry for {entry.get('task')} should have passed=true")
 
     def test_gold_check_mode_exit_1_on_broken_fixture(self) -> None:
         write_synthetic_fixture(self.tmp / "tasks", buggy_value="1", solution_value="1", name="broken")

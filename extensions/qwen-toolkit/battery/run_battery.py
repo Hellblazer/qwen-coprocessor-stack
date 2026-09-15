@@ -126,7 +126,7 @@ class TaskSpec:
 
 def load_task_spec(task_json_path: Path) -> TaskSpec:
     data = json.loads(task_json_path.read_text())
-    task_dir = task_json_path.parent
+    task_dir = task_json_path.resolve().parent
 
     for required in ("name", "prompt", "setup", "verify", "max_tool_calls", "timeout_ms"):
         if required not in data:
@@ -221,7 +221,7 @@ def _resolve_verify_command(task: TaskSpec) -> list[str]:
     take the tree to check as an explicit argument (by convention, ".",
     which resolves correctly against the subprocess's own cwd).
     """
-    task_dir = str(task.task_dir)
+    task_dir = str(task.task_dir.resolve())
     return [part.replace("{task_dir}", task_dir) for part in task.verify.command]
 
 
