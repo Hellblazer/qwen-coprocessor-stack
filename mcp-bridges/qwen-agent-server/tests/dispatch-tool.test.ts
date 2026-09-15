@@ -600,3 +600,47 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     expect(result.turns).toBe(4); // NOT 0 — the caveat is genuinely retired
   });
 });
+
+describe("makeSupervisorQwenSpawnEffects stop effect (qad)", () => {
+  const stopErrors = (taskId: string) =>
+    logCapture.lines.filter((args) => {
+      const o = args[0] as { event_type?: string; task_id?: string } | undefined;
+      return o?.event_type === "dispatch_stop_error" && o.task_id === taskId;
+    }).length;
+
+  it("forwards the task id to qwen_stop and logs nothing on success", async () => {
+    const qwen_stop = vi.fn().mockResolvedValue({ ack: true });
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn(), qwen_stop },
+      async () => "",
+    );
+    await effects.stop!("t-ok");
+    expect(qwen_stop).toHaveBeenCalledWith({ task_id: "t-ok" });
+    expect(stopErrors("t-ok")).toBe(0);
+  });
+
+  it("logs dispatch_stop_error and rethrows when qwen_stop throws", async () => {
+    const qwen_stop = vi.fn().mockRejectedValue(new Error("pool gone"));
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn(), qwen_stop },
+      async () => "",
+    );
+    await expect(effects.stop!("t-err")).rejects.toThrow("pool gone");
+    expect(stopErrors("t-err")).toBe(1);
+  });
+
+  it("ack:false (session already gone) is not logged as an error", async () => {
+    const qwen_stop = vi.fn().mockResolvedValue({ ack: false });
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn(), qwen_stop },
+      async () => "",
+    );
+    await effects.stop!("t-gone");
+    expect(stopErrors("t-gone")).toBe(0);
+  });
+
+  it("has no stop effect when the host wires no qwen_stop", () => {
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll: vi.fn() }, async () => "");
+    expect(effects.stop).toBeUndefined();
+  });
+});

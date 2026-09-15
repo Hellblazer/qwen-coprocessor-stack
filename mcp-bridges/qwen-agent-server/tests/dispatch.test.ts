@@ -299,18 +299,103 @@ describe("makeQwenSpawnDispatch", () => {
     expect(stop).toHaveBeenCalledWith("task-xyz");
   });
 
-  it("does NOT call stop on a clean terminal exit", async () => {
+  // ── bead qad: the dispatch removes its session on every exit path ──
+
+  it("stops the session AFTER the harvest on a clean terminal exit (qad)", async () => {
+    const order: string[] = [];
+    const stop = vi.fn(async () => {
+      order.push("stop");
+    });
+    const harvest = vi.fn(async () => {
+      order.push("harvest");
+      return [{ kind: "patch" as const, diff: "p", base: BASE }];
+    });
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "task-done",
+      poll: async () => ({ state: "idle", turnsUsed: 1 }),
+      harvest,
+      sleep: async () => {},
+      now: () => 0,
+      stop,
+    }, OPTS);
+    const r = await dispatch(TASK, qwenProvider);
+    expect(r.outcome).toBe("completed");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledWith("task-done");
+    expect(order).toEqual(["harvest", "stop"]);
+  });
+
+  it("stops exactly once on timeout (early stop, no second stop in finally)", async () => {
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValue(TASK.timeout + 1);
     const stop = vi.fn().mockResolvedValue(undefined);
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "t",
+      poll: async () => ({ state: "running" }),
+      harvest: patchHarvest("partial"),
+      sleep: async () => {},
+      now,
+      stop,
+    }, OPTS);
+    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("timeout");
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the session when poll throws, and the error still propagates", async () => {
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "task-evicted",
+      poll: async () => {
+        throw new Error("qwen_dispatch poll: session evicted");
+      },
+      harvest: patchHarvest(""),
+      sleep: async () => {},
+      now: () => 0,
+      stop,
+    }, OPTS);
+    await expect(dispatch(TASK, qwenProvider)).rejects.toThrow(/evicted/);
+    expect(stop).toHaveBeenCalledWith("task-evicted");
+  });
+
+  it("stops the session when the harvest throws, and the error still propagates", async () => {
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "t",
+      poll: async () => ({ state: "complete" }),
+      harvest: async () => {
+        throw new Error("git diff failed");
+      },
+      sleep: async () => {},
+      now: () => 0,
+      stop,
+    }, OPTS);
+    await expect(dispatch(TASK, qwenProvider)).rejects.toThrow(/git diff failed/);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("a throwing stop does not mask a clean terminal result", async () => {
+    const stop = vi.fn().mockRejectedValue(new Error("stop failed"));
+    const dispatch = makeQwenSpawnDispatch({
+      spawn: async () => "t",
+      poll: async () => ({ state: "complete", turnsUsed: 2 }),
+      harvest: patchHarvest("p"),
+      sleep: async () => {},
+      now: () => 0,
+      stop,
+    }, OPTS);
+    const r = await dispatch(TASK, qwenProvider);
+    expect(r.outcome).toBe("completed");
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("no stop effect wired: a clean exit still returns normally", async () => {
     const dispatch = makeQwenSpawnDispatch({
       spawn: async () => "t",
       poll: async () => ({ state: "complete" }),
       harvest: patchHarvest(""),
       sleep: async () => {},
       now: () => 0,
-      stop,
     }, OPTS);
-    await dispatch(TASK, qwenProvider);
-    expect(stop).not.toHaveBeenCalled();
+    expect((await dispatch(TASK, qwenProvider)).outcome).toBe("completed");
   });
 
   it("a throwing stop effect does not mask the timeout result", async () => {

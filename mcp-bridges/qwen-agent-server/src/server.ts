@@ -1578,8 +1578,8 @@ async function main(): Promise<void> {
         {
           qwen_spawn: handlers.qwen_spawn,
           qwen_poll: handlers.qwen_poll,
-          // Reap a timed-out dispatch session promptly instead of leaving it
-          // running until the periodic reaper sweep.
+          // The dispatch removes its session on every exit path (bead qad)
+          // instead of leaving it idle/running until the periodic reaper sweep.
           qwen_stop: handlers.qwen_stop,
         },
         gitExtractPatch,
