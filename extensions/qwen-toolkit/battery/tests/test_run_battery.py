@@ -856,6 +856,111 @@ class CLITests(TempDirCase):
         self.assertEqual(code, 2)
 
 
+class ProgressOutputTests(TempDirCase):
+    """Progress output to stderr during run_battery dispatch."""
+
+    def test_progress_lines_for_four_dispatches_two_arms_two_repeats(self) -> None:
+        # Two arms x two repeats over one passing synthetic task
+        write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42", name="t")
+        tasks = rb.discover_tasks(self.tmp)
+
+        def dispatch_fn(task, tree, arm):
+            shutil.copy2(task.task_dir / "solution" / "counter.py", tree / "counter.py")
+            return rb.DispatchOutcome(ok=True, elapsed_ms=100, tool_calls=3, error=None)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            doc = rb.run_battery(tasks, ["toolkit", "control"], 2, self.tmp / "work", dispatch_fn)
+
+        stderr_text = stderr.getvalue()
+        lines = [line for line in stderr_text.splitlines() if line.startswith("[battery] ")]
+        self.assertEqual(len(lines), 4, f"Expected 4 progress lines, got {len(lines)}: {stderr_text}")
+
+        # Exact lines, in loop order (task -> arm -> rep); elapsed_ms and
+        # tool_calls are copied from the stub's DispatchOutcome.
+        self.assertEqual(
+            lines,
+            [
+                "[battery] 1/4 t/toolkit/rep1 PASS elapsed_ms=100 tool_calls=3",
+                "[battery] 2/4 t/toolkit/rep2 PASS elapsed_ms=100 tool_calls=3",
+                "[battery] 3/4 t/control/rep1 PASS elapsed_ms=100 tool_calls=3",
+                "[battery] 4/4 t/control/rep2 PASS elapsed_ms=100 tool_calls=3",
+            ],
+        )
+
+        # Verify stdout is untouched (run_battery returns doc, doesn't print)
+        stdout_text = stdout.getvalue()
+        self.assertEqual(stdout_text, "", "run_battery returns doc, doesn't print to stdout")
+        # Check doc contents directly
+        self.assertEqual(len(doc["rows"]), 4)
+        self.assertEqual(doc["summary"]["toolkit"]["n"], 2)
+        self.assertEqual(doc["summary"]["control"]["n"], 2)
+        # Verify all rows show PASS
+        for row in doc["rows"]:
+            self.assertTrue(row["passed"])
+
+    def test_health_check_abort_emits_abort_line_after_first_dispatch(self) -> None:
+        # Health check fails before the second dispatch
+        write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42", name="t")
+        tasks = rb.discover_tasks(self.tmp)
+        health_calls = []
+
+        def dispatch_fn(task, tree, arm):
+            shutil.copy2(task.task_dir / "solution" / "counter.py", tree / "counter.py")
+            return rb.DispatchOutcome(ok=True, elapsed_ms=100, tool_calls=3, error=None)
+
+        def health_check():
+            health_calls.append(1)
+            # Fail on second check (after first dispatch)
+            return len(health_calls) < 2
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            doc = rb.run_battery(tasks, ["toolkit"], 2, self.tmp / "work", dispatch_fn, health_check_fn=health_check)
+
+        stderr_text = stderr.getvalue()
+        lines = [line for line in stderr_text.splitlines() if line.startswith("[battery] ")]
+
+        # One row line plus one ABORTED line
+        self.assertEqual(len(lines), 2, f"Expected 2 lines (1 row + 1 abort), got {len(lines)}: {stderr_text}")
+
+        # First line should be the row
+        self.assertIn("/rep1 ", lines[0], f"first line should be rep1: {lines[0]}")
+        self.assertIn(" PASS ", lines[0], f"first line should show PASS: {lines[0]}")
+
+        # Second line should be ABORTED
+        self.assertIn("ABORTED:", lines[1], f"second line should be ABORTED: {lines[1]}")
+        self.assertIn("health check failed before t/toolkit/rep2", lines[1])
+
+        # Verify doc shows aborted
+        self.assertEqual(len(doc["rows"]), 1)
+        self.assertIn("aborted_reason", doc)
+
+    def test_error_field_included_in_progress_line_when_dispatch_has_error(self) -> None:
+        # Dispatch returns an error, verify it appears in the progress line
+        write_synthetic_fixture(self.tmp, buggy_value="1", solution_value="42", name="t")
+        tasks = rb.discover_tasks(self.tmp)
+
+        def dispatch_fn(task, tree, arm):
+            return rb.DispatchOutcome(ok=False, elapsed_ms=100, tool_calls=3, error="connection refused")
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            doc = rb.run_battery(tasks, ["toolkit"], 1, self.tmp / "work", dispatch_fn)
+
+        stderr_text = stderr.getvalue()
+        lines = [line for line in stderr_text.splitlines() if line.startswith("[battery] ")]
+        self.assertEqual(len(lines), 1)
+
+        # Error should be included in the line
+        self.assertIn(" error=connection refused", lines[0])
+
+        # Verify doc shows FAIL
+        self.assertEqual(len(doc["rows"]), 1)
+        self.assertFalse(doc["rows"][0]["passed"])
+        self.assertEqual(doc["rows"][0]["error"], "connection refused")
+
+
 class WorkRootCleanupTests(TempDirCase):
     """bead 3su.12 review (Important): the default tempfile.mkdtemp() work
     root was never cleaned up -- every real run leaked materialized trees

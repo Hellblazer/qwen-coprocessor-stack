@@ -694,8 +694,12 @@ def run_battery(
     gold_results = [gold_check_task(t, work_root) for t in tasks]
     broken = {g.task for g in gold_results if not g.passed}
 
+    # Compute total dispatch count once before loops (planned, not actual)
+    total = (len(tasks) - len(broken)) * len(arms) * repeats
+
     rows: list[RunRow] = []
     aborted_reason: str | None = None
+    completed: int = 0
 
     for task in tasks:
         if aborted_reason is not None:
@@ -711,8 +715,17 @@ def run_battery(
             for rep in range(1, repeats + 1):
                 if health_check_fn is not None and not health_check_fn():
                     aborted_reason = f"health check failed before {task.name}/{arm}/rep{rep} -- run stopped"
+                    print(f"[battery] ABORTED: {aborted_reason}", file=sys.stderr, flush=True)
                     break
-                rows.append(run_one(task, arm, rep, work_root, dispatch_fn))
+                row = run_one(task, arm, rep, work_root, dispatch_fn)
+                rows.append(row)
+                completed += 1
+                # Progress line to stderr only
+                status = "PASS" if row.passed else "FAIL"
+                line = f"[battery] {completed}/{total} {row.task}/{row.arm}/rep{row.repetition} {status} elapsed_ms={row.elapsed_ms} tool_calls={row.tool_calls}"
+                if row.error is not None:
+                    line += f" error={row.error}"
+                print(line, file=sys.stderr, flush=True)
 
     doc: dict = {
         "gold_check": [gold_check_to_dict(g) for g in gold_results],
