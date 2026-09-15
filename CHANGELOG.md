@@ -14,6 +14,33 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.11.17] - 2026-09-15
+
+`qwen_dispatch` now removes its own session when it finishes, so parallel
+dispatches no longer leave idle sessions in the pool (bead
+qwen-coprocessor-stack-qad). Also adds the project-scoped `qwen-relay`
+Claude Code agent (bead qwen-coprocessor-stack-tse).
+
+### Fixed
+
+- **Dispatch sessions lingered after a normal exit.** The dispatcher stopped
+  its session only on wall-clock timeout; after a normal finish the session
+  sat `idle` in the pool, holding its qwen-code child, until the reaper swept
+  it. It now stops the session on every exit path: before the harvest on a
+  timeout (as before), otherwise after the harvest, including when polling or
+  the harvest throws. A failing stop never masks the run's result or error, and
+  is logged as `dispatch_stop_error`.
+
+### Added
+
+- **`qwen-relay` agent** (`.claude/agents/qwen-relay.md`, repo only; not part
+  of the plugin): a haiku subagent that runs one coding task on the local Qwen
+  coprocessor through `qwen_dispatch` in a worktree the caller provides, and
+  returns the patch with outcome, scope and optional test checks. The caller
+  creates and removes the worktree and applies the patch; the relay runs only
+  read-only git. Needs a session started with `QWEN_DISPATCH_ENABLE=1` and a
+  backend-pinned provider.
+
 ## [0.11.16] - 2026-09-14
 
 Pins `qwen_dispatch` to the backend its provider names, so a `qwen-local`
