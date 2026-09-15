@@ -432,6 +432,47 @@ The stack is the supervisor; your app wires its dispatch through it. Two pattern
 
 ---
 
+## Recipe: record a dispatched task (dogfood protocol)
+
+The battery measures the toolkit on fixed tasks; this records how Qwen
+dispatches do on real work, so the evidence does not evaporate.
+
+1. **Label.** Any bead whose work was done by a Qwen dispatch (`qwen_dispatch`
+   directly, or through the `qwen-relay` agent) gets the label:
+   `bd label add <id> qwen-dogfood`. Slice the records with
+   `bd list --label qwen-dogfood`.
+2. **Outcome write-back.** At completion, the orchestrating Claude session (not
+   Qwen, and not the relay) appends exactly one line with
+   `bd note <id> "<line>"`, in this format:
+
+   ```text
+   qwen-dogfood: family=<debug|implement-tdd|docs-explain|other> outcome=<accepted-as-is|accepted-with-edits|rejected> toolkit=<version|none> backend=<backend id> wall=<minutes> turns=<n|?> wrong=<what went wrong>
+   ```
+
+   `wrong=` is the last field and runs to the end of the line. It is mandatory
+   and must describe the edits or the failure when the outcome is
+   `accepted-with-edits` or `rejected`; `wrong=none` is allowed only with
+   `accepted-as-is`. An `accepted-with-edits` line that does not say what was
+   edited is not a record. `turns` comes from the `qwen_dispatch` result; write
+   `?` when the relay did not report it.
+3. **Toolkit revision.** `toolkit=` is the `version` field of the qwen-toolkit
+   manifest (`qwen-extension.json`) that the dispatch actually loaded, or
+   `none`. Do not assume it from main: run `qwen extensions list` from the
+   dispatch's worktree and check that `qwen-toolkit` is listed and enabled.
+   Enablement is path-scoped in `~/.qwen/extensions/extension-enablement.json`,
+   and a link install loads whatever its linked checkout contains.
+4. **Feedback loop.** When the same cause shows up in `wrong=` on two or more
+   records, fix it in the toolkit's QWEN.md contract (or its agents). Any change
+   to QWEN.md or the agents is a toolkit revision: bump `version` in
+   `extensions/qwen-toolkit/qwen-extension.json` in the same commit, and re-run
+   the battery (`extensions/qwen-toolkit/battery/`, see its README) before
+   relying on the new revision. No silent contract edits.
+
+This is deliberately manual; automate only once enough records exist to show
+the manual step is the bottleneck.
+
+---
+
 ## Troubleshooting
 
 Start with `/qwen-stack:status` — it shows process state, build freshness,
