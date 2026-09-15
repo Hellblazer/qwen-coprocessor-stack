@@ -1,0 +1,99 @@
+{
+  "broken_fixtures": [],
+  "gold_check": [
+    {
+      "buggy_correctly_fails": true,
+      "buggy_exit_code": 1,
+      "gold_correctly_passes": true,
+      "gold_exit_code": 0,
+      "passed": true,
+      "task": "001-interval-debug"
+    }
+  ],
+  "rows": [
+    {
+      "arm": "toolkit",
+      "dispatch_ok": true,
+      "elapsed_ms": 221803,
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "task": "001-interval-debug",
+      "tool_calls": 6,
+      "verify_exit_code": 0
+    },
+    {
+      "arm": "toolkit",
+      "dispatch_ok": true,
+      "elapsed_ms": 171061,
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "task": "001-interval-debug",
+      "tool_calls": 6,
+      "verify_exit_code": 0
+    },
+    {
+      "arm": "toolkit",
+      "dispatch_ok": true,
+      "elapsed_ms": 210276,
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "task": "001-interval-debug",
+      "tool_calls": 8,
+      "verify_exit_code": 0
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 189102,
+      "error": null,
+      "passed": true,
+      "repetition": 1,
+      "task": "001-interval-debug",
+      "tool_calls": 6,
+      "verify_exit_code": 0
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 176104,
+      "error": null,
+      "passed": true,
+      "repetition": 2,
+      "task": "001-interval-debug",
+      "tool_calls": 8,
+      "verify_exit_code": 0
+    },
+    {
+      "arm": "control",
+      "dispatch_ok": true,
+      "elapsed_ms": 173067,
+      "error": null,
+      "passed": true,
+      "repetition": 3,
+      "task": "001-interval-debug",
+      "tool_calls": 6,
+      "verify_exit_code": 0
+    }
+  ],
+  "summary": {
+    "control": {
+      "dispatch_ok": 3,
+      "median_elapsed_ms": 176104.0,
+      "median_tool_calls": 6.0,
+      "n": 3,
+      "pass_rate": 1.0,
+      "passed": 3
+    },
+    "toolkit": {
+      "dispatch_ok": 3,
+      "median_elapsed_ms": 210276.0,
+      "median_tool_calls": 6.0,
+      "n": 3,
+      "pass_rate": 1.0,
+      "passed": 3
+    }
+  }
+}
