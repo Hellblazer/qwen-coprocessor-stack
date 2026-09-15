@@ -505,9 +505,10 @@ export interface SupervisorSpawnPoll {
   qwen_poll: (
     args: { task_id: string; opts?: PollOpts },
   ) => Promise<PollResult | (Omit<PollResult, "error"> & { error: { code: string; message: string } })>;
-  /** Stop/remove a session. Used to reap a timed-out dispatch session promptly
-   *  rather than leaving it `running` until the periodic sweep. Optional so the
-   *  adapter degrades gracefully if a host wires only spawn/poll. */
+  /** Stop/remove a session. The dispatch calls it on every exit path (bead qad)
+   *  so its session never lingers `idle`/`running` until the periodic sweep.
+   *  Optional so the adapter degrades gracefully if a host wires only
+   *  spawn/poll. */
   qwen_stop?: (args: { task_id: string }) => Promise<{ ack: boolean }>;
 }
 
@@ -619,9 +620,28 @@ export function makeSupervisorQwenSpawnEffects(
     sleep: clock.sleep,
     now: clock.now,
     // Reap a timed-out session promptly (fire-and-forget in the dispatcher).
-    // Only wired when the host supplied a qwen_stop handler.
+    // Only wired when the host supplied a qwen_stop handler. A stop that throws
+    // is logged here and rethrown: dispatch's stopOnce swallows it so it never
+    // masks the run's result, but a session left in the pool stays visible
+    // (bead qad). `ack: false` means the session was already gone, not a leak.
     ...(handlers.qwen_stop !== undefined
-      ? { stop: async (taskId: string) => { await handlers.qwen_stop!({ task_id: taskId }); } }
+      ? {
+          stop: async (taskId: string) => {
+            try {
+              await handlers.qwen_stop!({ task_id: taskId });
+            } catch (err) {
+              log.warn(
+                {
+                  event_type: "dispatch_stop_error",
+                  task_id: taskId,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+                "qwen_dispatch could not stop its session; it stays in the pool until the reaper",
+              );
+              throw err;
+            }
+          },
+        }
       : {}),
   };
 }

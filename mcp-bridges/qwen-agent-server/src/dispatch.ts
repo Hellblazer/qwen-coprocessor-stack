@@ -263,10 +263,12 @@ export interface QwenSpawnEffects {
   sleep: (ms: number) => Promise<void>;
   /** Monotonic clock in ms. Injected for deterministic deadline tests. */
   now: () => number;
-  /** Optional: stop/remove the session. Called fire-and-forget on a wall-clock
-   *  timeout so the spawned session does not sit `running` in the pool until the
-   *  periodic reaper sweep. Omitted in tests that don't exercise the path; a
-   *  terminal-state exit needs no stop (the session already finished). */
+  /** Optional: stop/remove the session. The dispatch owns its session and calls
+   *  this once on every exit path (bead qad): before the harvest on a wall-clock
+   *  timeout (fire-and-forget, the agent may still be editing), otherwise after
+   *  the harvest, awaited. A terminal session left in the pool would sit `idle`
+   *  until the reaper sweep. Errors are swallowed. Omitted in tests that don't
+   *  exercise the path. */
   stop?: (taskId: string) => Promise<void>;
 }
 
@@ -305,47 +307,70 @@ export function makeQwenSpawnDispatch(
   return async (task, provider) => {
     assertAgentCli(provider);
     const taskId = await effects.spawn(task, provider);
-    const start = effects.now();
 
-    let last: QwenPollSnapshot = { state: "running" };
-    let timedOut = false;
-    for (;;) {
-      last = await effects.poll(taskId);
-      if (isTerminal(last.state)) break;
-      if (effects.now() - start >= task.timeout) {
-        timedOut = true;
-        break;
+    // Bead qad: a one-shot dispatch owns its session, so it removes it on EVERY
+    // exit path. A terminal session left in the pool sits `idle` (holding its
+    // qwen-code child) until the reaper sweeps it, and callers cannot clean up
+    // themselves: qwen_sessions carries no owner to tell one dispatch's session
+    // from another's. Best-effort: a failing stop is swallowed so it never masks
+    // the run's result or error. `stopped` is set before the await, so the
+    // timeout path's early stop and the `finally` stop never both fire.
+    let stopped = false;
+    const stopOnce = async (): Promise<void> => {
+      if (stopped || effects.stop === undefined) return;
+      stopped = true;
+      try {
+        await effects.stop(taskId);
+      } catch {
+        // cleanup only
       }
-      await effects.sleep(pollIntervalMs);
-    }
+    };
 
-    // On timeout the session is still `running` in the pool; stop it so it does
-    // not linger until the periodic reaper. Fire-and-forget (swallow errors):
-    // cleanup is best-effort and must not mask the timeout result. A terminal
-    // exit needs no stop — the session already reached a terminal state.
-    if (timedOut && effects.stop !== undefined) {
-      void effects.stop(taskId).catch(() => {});
-    }
+    try {
+      // Inside the try: nothing between spawn and here may throw, or the
+      // session would leak with no stop.
+      const start = effects.now();
+      let last: QwenPollSnapshot = { state: "running" };
+      let timedOut = false;
+      for (;;) {
+        last = await effects.poll(taskId);
+        if (isTerminal(last.state)) break;
+        if (effects.now() - start >= task.timeout) {
+          timedOut = true;
+          break;
+        }
+        await effects.sleep(pollIntervalMs);
+      }
 
-    let outcome: AgentOutcome = timedOut
-      ? "timeout"
-      : classifyOutcome(last.state === "error" ? 1 : 0, {
-          // Conditional spread, not `turnsUsed: last.turnsUsed`: under
-          // exactOptionalPropertyTypes an optional prop may be omitted but not
-          // explicitly assigned `undefined` (TS2379).
-          maxTurns: task.maxTurns,
-          ...(last.turnsUsed !== undefined ? { turnsUsed: last.turnsUsed } : {}),
-        });
-    // Thread the leaf's terminal structured return (RDR-010) so a value
-    // harvester can surface it; the git-diff harvester ignores it.
-    const artifacts = await effects.harvest(runContextFor(task, opts, last.lastMessage));
-    // Bead n8c: a run whose writes were refused and that produced no patch is
-    // NOT `completed`, whatever the session state says. The agent tried to
-    // edit, every edit was denied (permission_denied events), and the harvest
-    // is empty — reporting `completed` with an empty diff is a silent zero.
-    // Scoped to patch-bearing harvests: a value-only run (no patch artifact)
-    // may legitimately be read-only and still complete.
-    if (outcome === "completed" && refusedWithoutPatch(last, artifacts)) outcome = "error";
-    return { artifacts, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
+      // On timeout the agent may still be editing: stop it BEFORE the harvest
+      // diffs the worktree's partial edits. Fire-and-forget, as before; a
+      // terminal exit is stopped after the harvest, in `finally`.
+      if (timedOut) void stopOnce();
+
+      let outcome: AgentOutcome = timedOut
+        ? "timeout"
+        : classifyOutcome(last.state === "error" ? 1 : 0, {
+            // Conditional spread, not `turnsUsed: last.turnsUsed`: under
+            // exactOptionalPropertyTypes an optional prop may be omitted but not
+            // explicitly assigned `undefined` (TS2379).
+            maxTurns: task.maxTurns,
+            ...(last.turnsUsed !== undefined ? { turnsUsed: last.turnsUsed } : {}),
+          });
+      // Thread the leaf's terminal structured return (RDR-010) so a value
+      // harvester can surface it; the git-diff harvester ignores it.
+      const artifacts = await effects.harvest(runContextFor(task, opts, last.lastMessage));
+      // Bead n8c: a run whose writes were refused and that produced no patch is
+      // NOT `completed`, whatever the session state says. The agent tried to
+      // edit, every edit was denied (permission_denied events), and the harvest
+      // is empty — reporting `completed` with an empty diff is a silent zero.
+      // Scoped to patch-bearing harvests: a value-only run (no patch artifact)
+      // may legitimately be read-only and still complete.
+      if (outcome === "completed" && refusedWithoutPatch(last, artifacts)) outcome = "error";
+      return { artifacts, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
+    } finally {
+      // After the harvest, so removing the session cannot disturb it; awaited,
+      // so a caller that removes the worktree next never races a live session.
+      await stopOnce();
+    }
   };
 }
