@@ -358,7 +358,7 @@ export async function runQwenDispatch(
       "no_provider",
       `qwen_dispatch: no agent-cli provider matches ${sel}. ` +
         `Declared: [${providers.map((p) => p.id).join(", ")}]. ` +
-        `Add one to config.agent_providers (or QWEN_AGENT_PROVIDERS).`,
+        `Add one via QWEN_AGENT_PROVIDERS with a backend pin (e.g. QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local","backend":"coder-box"}]').`,
     );
   }
 
@@ -368,7 +368,7 @@ export async function runQwenDispatch(
     throw new QwenDispatchError(
       "missing_agent_kind",
       `qwen_dispatch: provider "${provider.id}" declares no agentKind; ` +
-        `add agentKind to its config.agent_providers entry.`,
+        `add agentKind to its QWEN_AGENT_PROVIDERS entry.`,
     );
   }
 

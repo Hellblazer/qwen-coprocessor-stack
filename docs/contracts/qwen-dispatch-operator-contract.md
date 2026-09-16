@@ -109,8 +109,8 @@ Structured envelope `{ "error": { "code": <code>, "message": <string> } }`:
 | code | meaning | caller fix |
 |------|---------|-----------|
 | `dispatch_not_enabled` | this session's supervisor was not started with `QWEN_DISPATCH_ENABLE=1` | start the session with the opt-in (below); the shared config cannot enable it |
-| `no_provider` | no declared agent-cli provider matches the selector | declare one in `agent_providers` |
-| `missing_agent_kind` | the selected provider declares no `agentKind` | add `agentKind` to its config |
+| `no_provider` | no declared agent-cli provider matches the selector | declare one via `QWEN_AGENT_PROVIDERS` with a `backend` pin (per-session env var) |
+| `missing_agent_kind` | the selected provider declares no `agentKind` | add `agentKind` to its `QWEN_AGENT_PROVIDERS` entry |
 | `unregistered_kind` | the provider's `agentKind` has no registered dispatcher | register a dispatcher for that kind |
 | `invalid_worktree_spec` | not exactly one of `worktree` / `repo` supplied | supply exactly one |
 | `backend_unavailable` | the selected provider's `backend` pin names an id not in the backend pool | fix the provider's `backend`, or add that backend |
@@ -169,10 +169,10 @@ and registers a **dispatcher** for its `agentKind`:
    Without `QWEN_DISPATCH_ENABLE` the tool returns `dispatch_not_enabled`.
    Declaring the provider in the same env keeps the whole experiment scoped to
    that one session.
-1. **Declare the provider** in `agent_providers` (config.json or
-   `QWEN_AGENT_PROVIDERS`):
-   ```json
-   { "agent_providers": [ { "id": "qwen-coder-mac", "agentKind": "qwen-local", "backend": "coder-mac" } ] }
+1. **Declare the provider** in `QWEN_AGENT_PROVIDERS` in the same launch env,
+   never in the shared `config.json` (every session's supervisor reads that file):
+   ```sh
+   QWEN_AGENT_PROVIDERS='[{"id":"qwen-coder-mac","agentKind":"qwen-local","backend":"coder-mac"}]'
    ```
    agent-cli providers are **not** model-endpoint backends; they carry no
    `url`/`model` and never enter the `backends` registry. `backend` pins the
