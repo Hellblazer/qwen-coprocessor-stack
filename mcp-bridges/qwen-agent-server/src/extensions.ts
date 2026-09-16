@@ -245,9 +245,11 @@ export function parseInstalledExtensionsRich(stdout: string): ExtensionInfo[] {
       // List-item lines start with two spaces of indent; field lines start with one.
       const isListItem = /^ {2,}\S/.test(line) && !/^\s*\w[\w\s]*?:/.test(trimmed);
       if (isListItem && currentList !== null) {
-        // Strip the leading slash for commands ("/foo" → "foo") to match
-        // how the supervisor's resolveExtensions expects them.
-        const item = trimmed.replace(/^\//, "");
+        // Strip the leading slash for commands ("/foo" → "foo") only.
+        // Context files may be absolute paths and must keep their leading slash.
+        const item = currentList === info.commands
+          ? trimmed.replace(/^\//, "")
+          : trimmed;
         if (item) currentList.push(item);
         continue;
       }
