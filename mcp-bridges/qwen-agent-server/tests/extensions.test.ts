@@ -388,6 +388,28 @@ describe("parseInstalledExtensionsRich", () => {
     expect(result[0]!.name).toBe("alpha");
     expect(result[0]!.path).toBe("/tmp/alpha");
   });
+
+  it("keeps leading slash in context_files but strips from commands", () => {
+    const stdout = [
+      "✓ tool-with-absolute-paths (1.0.0)",
+      " Path: /Users/test/.qwen/extensions/tool",
+      " Context files:",
+      "  /Volumes/SanHell/git/x/extensions/qwen-toolkit/QWEN.md",
+      "  /private/tmp/other.txt",
+      " Commands:",
+      "  /build",
+      "  /test",
+    ].join("\n");
+
+    const result = parseInstalledExtensionsRich(stdout);
+    expect(result).toHaveLength(1);
+    const ext = result[0]!;
+    expect(ext.context_files).toEqual([
+      "/Volumes/SanHell/git/x/extensions/qwen-toolkit/QWEN.md",
+      "/private/tmp/other.txt",
+    ]);
+    expect(ext.commands).toEqual(["build", "test"]);
+  });
 });
 
 describe("listInstalledExtensions", () => {
