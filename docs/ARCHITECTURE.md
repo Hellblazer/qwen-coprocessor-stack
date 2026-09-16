@@ -268,6 +268,56 @@ flowchart TB
 
 ---
 
+## codeIntel LSP ownership
+
+When `codeIntel: true` is set on a spawn, the supervisor synthesizes an
+`agent-lsp` stdio entry into `opts.mcpServers` and forwards it to the inner
+qwen-code agent via the SDK control protocol. The supervisor **does not own**
+the agent-lsp process tree or any language-server children; lifecycle is
+entirely owned by `agent-lsp` itself. This is the RDR-013 teardown contract,
+which RDR-015 reaffirmed: no supervisor or keepalive code was added for LSP
+lifecycle management.
+
+- **Bright line**: The supervisor forwards the `agent-lsp` `mcpServers` entry and
+  nothing more. It never touches the agent-lsp process tree — neither at spawn
+  time nor at session teardown. The supervisor's abort path (`session.stop()`
+  → `_abortController.abort()` + `sdkIter.return()`) terminates only the SDK
+  client, not the agent-lsp child or its children.
+
+- **TypeScript/Go ownership**: For TypeScript and Go, `agent-lsp` runs a
+  persistent per-(root, language) daemon-broker registered under
+  `~/.cache/agent-lsp/daemons/`. The broker survives supervisor teardown and
+  gives warm cross-spawn reuse. It self-reaps after approximately 30 minutes of
+  idle (RDR-015 Finding 1); a warm tsserver costs ~88 MB per root (Finding 2).
+  The registry lives on the coprocessor host that runs `uvx agent-lsp`.
+
+- **In-process jdtls model**: jdtls runs as a child of each spawn's `uvx
+  agent-lsp`, a single shared instance across that spawn's Java roots, and dies
+  at session teardown. It is **never** registered in the daemon registry
+  (`~/.cache/agent-lsp/daemons/` stays empty for Java), so there is no jdtls
+  broker and no resident jdtls to cap. RDR-015 Finding 4 explicitly rejects a
+  "jdtls broker" framing; jdtls is in-process per spawn only.
+
+- **No registry-based cap**: The originally planned registry-based `daemon-stop`
+  FIFO cap on resident brokers was retracted (Finding 4: for jdtls the registry
+  is always empty, and TS/Go brokers are too cheap to cap). The only Java RAM
+  pressure is the concurrent in-process jdtls set during overlapping codeIntel
+  spawns (~0.8 to 2 GB each, Finding 3), bounded and self-cleaning (dies at
+  teardown). A spawn-concurrency cap would be a supervisor-side mechanism that
+  crosses the RDR-013 bright line, so it is deferred to a future decision
+  record, gated on measured need. Until then, operators bound parallel Java use
+  by hand (the USER_GUIDE carries the sizing rule).
+
+```mermaid
+flowchart TB
+  SUP["supervisor"]
+  SUP --> SPAWN["spawn (uvx agent-lsp)"]
+  SPAWN --> BROKER["TS/Go daemon-broker<br/>(agent-lsp owned,<br/>survives teardown)"]
+  SPAWN --> JDTLS["jdtls<br/>(in-process,<br/>dies at teardown)"]
+```
+
+---
+
 ## The dispatch contract stack
 
 A downstream system (the canonical one is
@@ -387,7 +437,8 @@ LaunchAgent, and the setup paths for both hosts.
 ## Where to go deeper
 
 - **Decision records** — [`docs/rdr/`](rdr/). RDR-001 is the primary design doc;
-  007–011 are the dispatch-contract stack.
+  013–015 cover MCP forwarding and codeIntel LSP ownership; 007–011 are the
+  dispatch-contract stack.
 - **Published contracts** — [`docs/contracts/`](contracts/). The executor
   contract, the producer contract, and the golden fixtures.
 - **Downstream integration** — [`docs/integrations/`](integrations/). The nexus
