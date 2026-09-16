@@ -432,6 +432,56 @@ The stack is the supervisor; your app wires its dispatch through it. Two pattern
 
 ---
 
+## Recipe: give one session its own extension loadout
+
+`QWEN_DEFAULT_EXTENSIONS` on the launching shell is the per-session knob. The
+supervisor inherits that shell's environment (the same mechanism
+`QWEN_DISPATCH_ENABLE` uses), and `qwen_dispatch` passes no extension opts of its
+own, so a dispatch spawn loads whatever that session's default resolves to:
+
+```bash
+QWEN_DISPATCH_ENABLE=1 \
+  QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local","backend":"coder-box"}]' \
+  QWEN_DEFAULT_EXTENSIONS='qwen-toolkit' \
+  claude
+```
+
+It is an **exact set**, not an addition: a session naming only `qwen-toolkit`
+gets that and nothing else, `nx` included. Names are validated against the
+supervisor's installed-extensions cache, so an unknown name fails the spawn with
+`spawn_error`; after installing or removing an extension mid-session, call
+`qwen_reload_extensions`.
+
+**Install it default-off.** An installed extension is enabled by default, so
+installing one makes every session that sets nothing load it — including other
+people's sessions on the same machine. To keep it available but off by default,
+disable it for all paths after linking:
+
+```jsonc
+// ~/.qwen/extensions/extension-enablement.json
+{ "qwen-toolkit": { "overrides": ["!/**"] } }
+```
+
+Entries there are cwd-scoped exceptions on a default-enabled extension: a plain
+glob is an enable rule (redundant with the default), a `!`-prefixed glob
+disables. `qwen extensions disable <name> --scope user` writes only
+`!$HOME/*`, which leaves every directory outside your home dir still enabled —
+write `!/**` yourself for a machine-wide default-off. `qwen extensions link`
+writes the redundant enable rule on its own, and prompts for consent with no
+`--consent` flag (`install` has one).
+
+A session that names the extension explicitly still gets it: an explicit
+extension list overrides the disable rule. Measured 2026-09-15 with qwen-toolkit
+installed under `!/**` — a spawn with no extension opts did not see the toolkit's
+coding contract, and a spawn naming it via `opts.extensions.only` did. Measured
+again 2026-09-16 through the env var itself: a session launched with
+`QWEN_DEFAULT_EXTENSIONS='qwen-toolkit'` and nothing else saw the contract with
+no per-call opts, and its spawns had no `nx` tools (the exact-set rule above).
+That is what lets a dogfood run record a real `toolkit=<version>` instead of
+`none`.
+
+---
+
 ## Recipe: record a dispatched task (dogfood protocol)
 
 The battery measures the toolkit on fixed tasks; this records how Qwen
