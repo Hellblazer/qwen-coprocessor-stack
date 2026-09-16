@@ -473,9 +473,12 @@ writes the redundant enable rule on its own, and prompts for consent with no
 A session that names the extension explicitly still gets it: an explicit
 extension list overrides the disable rule. Measured 2026-09-15 with qwen-toolkit
 installed under `!/**` — a spawn with no extension opts did not see the toolkit's
-coding contract, and a spawn naming it (via `opts.extensions.only`, which renders
-the same CLI flag the env var produces) did. That is what lets a dogfood run
-record a real `toolkit=<version>` instead of `none`.
+coding contract, and a spawn naming it via `opts.extensions.only` did. Measured
+again 2026-09-16 through the env var itself: a session launched with
+`QWEN_DEFAULT_EXTENSIONS='qwen-toolkit'` and nothing else saw the contract with
+no per-call opts, and its spawns had no `nx` tools (the exact-set rule above).
+That is what lets a dogfood run record a real `toolkit=<version>` instead of
+`none`.
 
 ---
 
