@@ -122,6 +122,7 @@ import {
   buildSpawnOptsFromRaw,
   stripCodeFences,
   matchUpstreamCliError,
+  toWireResult,
 } from "../src/server.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -787,6 +788,52 @@ describe("MCP tool handlers", () => {
       expect(
         matchUpstreamCliError("The user reported '[API Error: x]' in the log."),
       ).toBeUndefined();
+    });
+  });
+
+  // ── toWireResult (bead kan) ─────────────────────────────────
+  //
+  // Verify the MCP wire boundary helper correctly sets isError on error envelopes.
+  describe("toWireResult", () => {
+    it("returns plain success without isError key", () => {
+      const success = { task_id: "t1", chosen_backend: "local-27b" };
+      const result = toWireResult(success);
+      expect(result).toEqual({
+        content: [{ type: "text" as const, text: JSON.stringify(success) }],
+      });
+      expect("isError" in result).toBe(false);
+    });
+
+    it("returns error envelope with isError: true", () => {
+      const error = { error: { code: "backend_offline", message: "backend is down" } };
+      const result = toWireResult(error);
+      expect(result).toEqual({
+        content: [{ type: "text" as const, text: JSON.stringify(error) }],
+        isError: true,
+      });
+    });
+
+    it("does NOT set isError when error is one of multiple keys (poll result)", () => {
+      // qwen_poll can return a result with error field alongside other fields
+      const pollResult = {
+        task_id: "t1",
+        state: "error",
+        error: { code: "backend_offline", message: "backend is down" },
+      };
+      const result = toWireResult(pollResult);
+      expect(result).toEqual({
+        content: [{ type: "text" as const, text: JSON.stringify(pollResult) }],
+      });
+      expect("isError" in result).toBe(false);
+    });
+
+    it("does NOT set isError when error value is not an object", () => {
+      const notEnvelope = { error: "string is not an error envelope" };
+      const result = toWireResult(notEnvelope);
+      expect(result).toEqual({
+        content: [{ type: "text" as const, text: JSON.stringify(notEnvelope) }],
+      });
+      expect("isError" in result).toBe(false);
     });
   });
 
