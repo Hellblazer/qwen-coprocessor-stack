@@ -459,8 +459,11 @@ dispatches do on real work, so the evidence does not evaporate.
    manifest (`qwen-extension.json`) that the dispatch actually loaded, or
    `none`. Do not assume it from main: run `qwen extensions list` from the
    dispatch's worktree and check that `qwen-toolkit` is listed and enabled.
-   Enablement is path-scoped in `~/.qwen/extensions/extension-enablement.json`,
-   and a link install loads whatever its linked checkout contains.
+   `~/.qwen/extensions/extension-enablement.json` records enablement, but do not
+   infer scope from it: measured 2026-09-15, an entry naming a single path prefix
+   still reported the extension enabled from every directory tried. A link
+   install loads whatever its linked checkout contains, so a link left pointing
+   at the wrong checkout yields no toolkit at all, silently.
 4. **Feedback loop.** When the same cause shows up in `wrong=` on two or more
    records, fix it in the toolkit's QWEN.md contract (or its agents). Any change
    to QWEN.md or the agents is a toolkit revision: bump `version` in
