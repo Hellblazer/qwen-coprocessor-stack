@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -403,10 +404,51 @@ def build_hf_headers() -> dict[str, str]:
     return headers
 
 
+# Transient upstream statuses worth a bounded retry. 429 is the one that
+# actually bites: HF throttles anonymous calls from GitHub-hosted runners'
+# shared IPs, and `drift --all` fires a dozen metadata GETs in a burst
+# (PR #107, 2026-09-18: two consecutive CI runs red on the same entry while
+# the same command passed locally). Honour Retry-After when present, else
+# back off 1/2/4 s; give up after _MAX_ATTEMPTS so a real outage still fails.
+_RETRY_STATUSES = {429, 502, 503, 504}
+_MAX_ATTEMPTS = 4
+_RETRY_AFTER_CAP_S = 30.0
+_sleep = time.sleep  # module-level so tests can stub the wait
+
+
+def _retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float:
+    ra = exc.headers.get("Retry-After") if exc.headers is not None else None
+    if ra:
+        try:
+            return min(float(ra), _RETRY_AFTER_CAP_S)
+        except ValueError:
+            pass
+    return float(2**attempt)
+
+
+def _urlopen_retry(req: urllib.request.Request):
+    """urlopen with a bounded retry on transient statuses. Raises the last
+    HTTPError/URLError unchanged once attempts are exhausted so callers keep
+    their existing error wrapping."""
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return urllib.request.urlopen(req)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _RETRY_STATUSES or attempt == _MAX_ATTEMPTS - 1:
+                raise
+            delay = _retry_delay(exc, attempt)
+            LOG.warning(
+                "GET %s -> HTTP %s; retry %d/%d in %.0fs",
+                req.full_url, exc.code, attempt + 1, _MAX_ATTEMPTS - 1, delay,
+            )
+            _sleep(delay)
+    raise AssertionError("unreachable")
+
+
 def _http_get_json(url: str, headers: dict[str, str]) -> Any:
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with _urlopen_retry(req) as resp:
             return json.loads(resp.read())
     except urllib.error.URLError as exc:
         raise ProvenanceError(f"GET {url} failed: {exc}. Sanctioned next step: verify repo id / revision / network.")
@@ -443,7 +485,7 @@ def _fetch_paginated_list(url: str, headers: dict[str, str]) -> list[dict[str, A
     while next_url:
         req = urllib.request.Request(next_url, headers=headers)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with _urlopen_retry(req) as resp:
                 page = json.loads(resp.read())
                 entries.extend(page)
                 link = resp.headers.get("Link")
@@ -541,7 +583,7 @@ def download_to_path(url: str, dest_path: Path, headers: dict[str, str], chunk_s
     size = 0
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as resp:
+        with _urlopen_retry(req) as resp:
             with open(part_path, "wb") as f:
                 while True:
                     chunk = resp.read(chunk_size)

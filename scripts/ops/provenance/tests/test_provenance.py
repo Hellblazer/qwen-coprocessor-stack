@@ -2999,3 +2999,69 @@ class ListAndHfMetaTests(ProvenanceTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TransientHttpRetryTests(unittest.TestCase):
+    """HF throttles anonymous metadata GETs from shared CI runner IPs (429).
+    The helper must retry a bounded number of times, honour Retry-After, and
+    still fail closed on a persistent error."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = FakeServer()
+        cls.server.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.stop()
+
+    def setUp(self) -> None:
+        self._sleep_calls: list[float] = []
+        self._orig_sleep = prov._sleep
+        prov._sleep = self._sleep_calls.append
+
+    def tearDown(self) -> None:
+        prov._sleep = self._orig_sleep
+
+    def test_429_then_200_succeeds_and_honours_retry_after(self) -> None:
+        hits = {"n": 0}
+
+        def handler() -> Response:
+            hits["n"] += 1
+            if hits["n"] <= 2:
+                return Response(429, {"Retry-After": "3"}, b"slow down")
+            return Response(200, {}, b'{"ok": true}')
+
+        self.server.routes["/retry/flaky"] = handler
+        out = prov._http_get_json(f"{self.server.base_url}/retry/flaky", {})
+        self.assertEqual(out, {"ok": True})
+        self.assertEqual(hits["n"], 3)
+        self.assertEqual(self._sleep_calls, [3.0, 3.0])
+
+    def test_persistent_429_fails_closed_after_max_attempts(self) -> None:
+        hits = {"n": 0}
+
+        def handler() -> Response:
+            hits["n"] += 1
+            return Response(429, {}, b"nope")
+
+        self.server.routes["/retry/always"] = handler
+        with self.assertRaises(prov.ProvenanceError) as ctx:
+            prov._http_get_json(f"{self.server.base_url}/retry/always", {})
+        self.assertIn("429", str(ctx.exception))
+        self.assertEqual(hits["n"], prov._MAX_ATTEMPTS)
+        # exponential fallback when no Retry-After: 1, 2, 4
+        self.assertEqual(self._sleep_calls, [1.0, 2.0, 4.0])
+
+    def test_non_transient_status_is_not_retried(self) -> None:
+        hits = {"n": 0}
+
+        def handler() -> Response:
+            hits["n"] += 1
+            return Response(404, {}, b"missing")
+
+        self.server.routes["/retry/missing"] = handler
+        with self.assertRaises(prov.ProvenanceError):
+            prov._http_get_json(f"{self.server.base_url}/retry/missing", {})
+        self.assertEqual(hits["n"], 1)
+        self.assertEqual(self._sleep_calls, [])
