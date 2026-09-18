@@ -418,6 +418,40 @@ export function applyCodeIntel(opts: Partial<SpawnOpts>): Partial<SpawnOpts> {
 // Separated from MCP server wiring so tests can call handlers directly
 // without binding a real transport.
 
+// ── toWireResult helper for MCP wire boundary (bead kan) ────────
+/**
+ * Check if a result is the in-band error envelope for MCP wire output.
+ * The error envelope is { error: { code: string, message: string } } with
+ * error being the ONLY own key.
+ */
+function isErrorEnvelope(result: unknown): boolean {
+  if (result === null || typeof result !== "object") {
+    return false;
+  }
+  const keys = Object.keys(result);
+  if (keys.length !== 1 || keys[0] !== "error") {
+    return false;
+  }
+  const errorVal = (result as Record<string, unknown>)["error"];
+  if (errorVal === null || typeof errorVal !== "object") {
+    return false;
+  }
+  return typeof (errorVal as Record<string, unknown>)["code"] === "string";
+}
+
+/**
+ * Prepare a result for the MCP wire.
+ * Returns { content: [{ type: "text", text: JSON.stringify(result) }] }.
+ * When result is the in-band error envelope, sets isError: true on the MCP result.
+ */
+export function toWireResult(result: unknown): { content: Array<{ type: "text"; text: string }>; isError?: true } {
+  const text = JSON.stringify(result);
+  if (isErrorEnvelope(result)) {
+    return { content: [{ type: "text" as const, text }], isError: true };
+  }
+  return { content: [{ type: "text" as const, text }] };
+}
+
 export type ToolHandlers = {
   qwen_spawn: (args: { task: string; opts?: Partial<SpawnOpts> }) => Promise<SpawnResult | { error: { code: string; message: string } }>;
   qwen_poll: (args: { task_id: string; opts?: PollOpts }) => Promise<PollResult | NotFoundPollResult>;
@@ -1422,9 +1456,7 @@ async function main(): Promise<void> {
     async (args) => {
       const spawnOpts = applyCodeIntel(buildSpawnOptsFromRaw(args.opts));
       const result = await handlers.qwen_spawn({ task: args.task, opts: spawnOpts });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1446,9 +1478,7 @@ async function main(): Promise<void> {
         task_id: args.task_id,
         opts: pollOpts,
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1461,9 +1491,7 @@ async function main(): Promise<void> {
     },
     async (args) => {
       const result = await handlers.qwen_send(args);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1475,9 +1503,7 @@ async function main(): Promise<void> {
     },
     async (args) => {
       const result = await handlers.qwen_stop(args);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1487,9 +1513,7 @@ async function main(): Promise<void> {
     {},
     async (_args) => {
       const result = await handlers.qwen_backends({});
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1499,9 +1523,7 @@ async function main(): Promise<void> {
     {},
     async (_args) => {
       const result = await handlers.qwen_extensions({});
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1511,9 +1533,7 @@ async function main(): Promise<void> {
     {},
     async (_args) => {
       const result = await handlers.qwen_sessions({});
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1539,9 +1559,7 @@ async function main(): Promise<void> {
         { task: args.task, opts: oneshotOpts },
         progress,
       );
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1560,16 +1578,9 @@ async function main(): Promise<void> {
       // Mirror the spawn-initiating tools' shutdown envelope (consistent error
       // surface; qwen_dispatch spawns a session under the hood).
       if (handlers.isShuttingDown()) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                error: { code: "shutting_down", message: "server is shutting down; cannot dispatch" },
-              }),
-            },
-          ],
-        };
+        return toWireResult({
+          error: { code: "shutting_down", message: "server is shutting down; cannot dispatch" },
+        });
       }
       // RDR-010 P2: select the harvester from the `harvest` input (default
       // "patch" — coding runs unchanged). Resolved here at the tool layer and
@@ -1627,17 +1638,10 @@ async function main(): Promise<void> {
             return callerSuppliedWorktree(input.worktree);
           },
         });
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        return toWireResult(result);
       } catch (err) {
         if (err instanceof QwenDispatchError) {
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({ error: { code: err.code, message: err.message } }),
-              },
-            ],
-          };
+          return toWireResult({ error: { code: err.code, message: err.message } });
         }
         throw err;
       }
@@ -1692,9 +1696,7 @@ async function main(): Promise<void> {
         },
         progress,
       );
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1722,9 +1724,7 @@ async function main(): Promise<void> {
         task: args.task,
         ...(args.opts !== undefined ? { opts: args.opts as ChatOpts & { backend?: string; role?: string; continuation_id?: string } } : {}),
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1751,9 +1751,7 @@ async function main(): Promise<void> {
         texts: args.texts,
         ...(args.opts !== undefined ? { opts: args.opts as EmbedOpts & { backend?: string } } : {}),
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1776,9 +1774,7 @@ async function main(): Promise<void> {
         documents: args.documents,
         ...(args.opts !== undefined ? { opts: args.opts as RerankOpts & { backend?: string } } : {}),
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1799,9 +1795,7 @@ async function main(): Promise<void> {
         content: args.content,
         ...(args.opts !== undefined ? { opts: args.opts as TokenizeOpts & { backend?: string } } : {}),
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result) }],
-      };
+      return toWireResult(result);
     },
   );
 
@@ -1817,9 +1811,7 @@ async function main(): Promise<void> {
       {},
       async (_args) => {
         const result = await reloadHandler({});
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(result) }],
-        };
+        return toWireResult(result);
       },
     );
     log.info("qwen_reload_extensions tool registered");
