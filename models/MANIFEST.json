@@ -3049,6 +3049,121 @@
           "size": 3365572528
         }
       ]
+    },
+    {
+      "id": "ternary-bonsai-27b-q2g64-prism-ml-gguf@86e89f34",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "prism-ml/Ternary-Bonsai-27B-gguf",
+        "revision": "86e89f34c93201c3dfd5e5880fedb0022fc7e34d",
+        "url": "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/86e89f34c93201c3dfd5e5880fedb0022fc7e34d/"
+      },
+      "format": "gguf",
+      "trust_tier": "origin",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "Ternary-Bonsai-27B-Q2_g64.gguf",
+          "sha256": "59a45d1ecef702b14531b06d22949f33b25c1897da31a8c0b298e01e4d9138eb",
+          "size": 7585330240,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "safe"
+          }
+        }
+      ],
+      "verified_on": [
+        "mac",
+        "box"
+      ],
+      "verified_at": "2026-09-18T02:29:19Z",
+      "notes": "as-of: fetched at revision '86e89f34c93201c3dfd5e5880fedb0022fc7e34d' (resolved to 86e89f34c93201c3dfd5e5880fedb0022fc7e34d); Bonsai 27B trial (Sam approved 2026-09-17): upstream-compatible Q2_g64 pack for stock llama.cpp; PQ2_0 pack needs the PrismML fork",
+      "derived_from": "Qwen/Qwen3.6-27B@6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00015.safetensors",
+          "sha256": "5f21d4e349aef6c74bedef7b3835dc8c11a16dd5ce72f4437e2284f1e83736e9",
+          "size": 3968861352
+        },
+        {
+          "path": "model-00002-of-00015.safetensors",
+          "sha256": "03de44dc7e933025498d72f8d7ea32d5cde16eb7a85b35ff1fa49a737f4b2242",
+          "size": 3921677136
+        },
+        {
+          "path": "model-00003-of-00015.safetensors",
+          "sha256": "5c3a68304dabeaa5a0eb70a5e383d2b8134997ef6d5c1e8afdcd236091c847f2",
+          "size": 3921677128
+        },
+        {
+          "path": "model-00004-of-00015.safetensors",
+          "sha256": "ba8b0849cb4c4c97e674709bfe56a9c008d7563a68ac57120ceb2855a73a9944",
+          "size": 3921677128
+        },
+        {
+          "path": "model-00005-of-00015.safetensors",
+          "sha256": "a5abc1d5e9583409193e2cd58a671a4ed98467a6eaf883cd4377e3cc02021c22",
+          "size": 3921677112
+        },
+        {
+          "path": "model-00006-of-00015.safetensors",
+          "sha256": "160d914e2e4704a401a3eab9e9eec3380e5723a35981c9169bedfb82ea32e6d6",
+          "size": 3900710888
+        },
+        {
+          "path": "model-00007-of-00015.safetensors",
+          "sha256": "0bcd0ce28c7d2cc6f5ab2c21902cd032fec0cc5f29e0897e3bb0967add388e47",
+          "size": 3994391976
+        },
+        {
+          "path": "model-00008-of-00015.safetensors",
+          "sha256": "584a0ed8018d3b19ce8e533d08a460454650027901be6323b50b591da143dca6",
+          "size": 3879219776
+        },
+        {
+          "path": "model-00009-of-00015.safetensors",
+          "sha256": "e7e3e1a17a2673340eb6bba95c3c6f07b12e7746ee738dde56551cbde27656f5",
+          "size": 3921677136
+        },
+        {
+          "path": "model-00010-of-00015.safetensors",
+          "sha256": "e8934789f4742c11da88f937da84bdbb8764c8a7f7ebe9e7b056bcbd41b14285",
+          "size": 3921677128
+        },
+        {
+          "path": "model-00011-of-00015.safetensors",
+          "sha256": "44e8fe06d2d609bf20b16b1d2f42348ca2dc99179721f76035ff50db678f9a8a",
+          "size": 3921677136
+        },
+        {
+          "path": "model-00012-of-00015.safetensors",
+          "sha256": "33c5d7d18e1b3f661334dff736fc7d00561f1f1bb9d2970c669b40d2e582974e",
+          "size": 3921677136
+        },
+        {
+          "path": "model-00013-of-00015.safetensors",
+          "sha256": "68db2ebb03231238c2a114f3642df967a970a1d96b029adc427838cb5cf7f27a",
+          "size": 3995081848
+        },
+        {
+          "path": "model-00014-of-00015.safetensors",
+          "sha256": "26c114fb6d5d4131ab227552d489d7a97c8c958a9ed94f6d3d1584f6cfe4b9fb",
+          "size": 3942652952
+        },
+        {
+          "path": "model-00015-of-00015.safetensors",
+          "sha256": "b84b5b1315e865c9a19a444045d422a73e3e2e31ce3766797cffd3507c68c9c9",
+          "size": 508670568
+        }
+      ]
     }
   ]
 }
