@@ -8,7 +8,8 @@
     "google",
     "meta-llama",
     "mistralai",
-    "nvidia"
+    "nvidia",
+    "prism-ml"
   ],
   "packager": [
     "unsloth",
@@ -17,7 +18,8 @@
     "mlx-community"
   ],
   "runtime_repos": [
-    "ggml-org/llama.cpp"
+    "ggml-org/llama.cpp",
+    "PrismML-Eng/llama.cpp"
   ],
   "overlay_repos": [
     "Hellblazer/qwen-coprocessor-stack"
