@@ -398,6 +398,42 @@ init — **before any tool call, regardless of `write_authority`** (stdio
 `mcpServers` commands are not permission-gated; inherited RDR-013 trust model).
 Treat it as trusted input; it is not sandboxed here.
 
+### LSP lifecycle across spawns (TypeScript/Go vs Java)
+
+TypeScript and Go share a warm cross-spawn reuse pattern via agent-lsp's
+daemon-broker; Java (jdtls) does not.
+
+**TypeScript/Go.** agent-lsp ships a persistent per-(root, language)
+daemon-broker that survives supervisor session teardown. A second codeIntel
+spawn on the same root gets warm symbol lookups with no additional
+configuration. The broker self-reaps after ~30 minutes idle (Finding 1), so
+resident brokers are self-bounding. tsserver is ~88 MB per root (Finding 2).
+The supervisor never touches the agent-lsp process tree — the RDR-013 bright
+line is unchanged — and killing brokers defeats the reuse. Cross-spawn reuse is
+automatic for TS/Go; see [RDR-015](rdr/RDR-015-codeintel-agent-lsp-daemon-lifecycle.md).
+
+**Java (jdtls).** There is no warm cross-spawn reuse. jdtls runs in-process
+under each spawn's `uvx agent-lsp`, one shared instance across that spawn's
+Java roots, and dies at teardown. It never registers in the daemon registry
+(Finding 4). Every Java codeIntel spawn pays a cold `start_lsp` index.
+
+**jdtls cold-start amortizer.** agent-lsp writes a persistent symbol cache at
+`.agent-lsp/cache.db.gz` in the target repo (Finding 3). Run one codeIntel
+spawn (or agent-lsp directly) against the repo so the cache is written, then
+decide per repo whether to commit the file. Committing it is a per-repo
+operator decision, not something this project does for you.
+
+**Manual concurrency guidance for Java.** Concurrent codeIntel spawns with Java
+roots each hold their own in-process jdtls, ~0.8–2 GB each (~2 GB plateau on a
+large Maven repo), alive only for the spawn. The footprint is bounded
+and self-cleaning but not capped. Bound the number K of concurrent Java
+codeIntel spawns so that K × 2 GB fits in host headroom after the served model
+(for example on a 128 GB Mac serving a ~42 GB model). No supervisor-side cap
+exists yet; any such cap is deferred to a future decision record.
+
+Observed on agent-lsp 0.15.0 / jdtls 1.57.0. Not contractual — re-measure on
+upgrade.
+
 ---
 
 ## Recipe: use it from your own application
