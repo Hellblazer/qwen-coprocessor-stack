@@ -41,8 +41,14 @@ RERANK_PORT="${RERANK_PORT:-8082}"
 }
 
 PIDFILE="$LOGS/llama-rerank.pid"
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-  echo "[+] llama-server (rerank) already running (pid $(cat "$PIDFILE"))"
+# The pid in the pidfile being alive is NOT evidence this service is up. A pid written
+# days ago gets recycled by the OS, and `kill -0` then succeeds against a stranger. That
+# happened (qwen-coprocessor-stack-jh3): the rerank pidfile held 1464, by then a WebKit
+# networking process, so this guard reported "already running" and exited 0 without
+# starting anything for 24540 consecutive keepalive cycles while :8082 stayed down.
+# The port is the only authoritative answer to "is it serving", so ask the port.
+if curl -sf --max-time 5 "http://localhost:$RERANK_PORT/health" >/dev/null 2>&1; then
+  echo "[+] llama-server (rerank) already serving :$RERANK_PORT"
 else
   echo "[*] Starting llama-server (rerank) on :$RERANK_PORT ..."
   # --reranking implies --embedding + --pooling rank (llama.cpp flag
