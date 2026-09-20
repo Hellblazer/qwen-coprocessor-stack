@@ -29,7 +29,19 @@ up()  { curl -s --max-time 5 "http://localhost:$1/v1/models" 2>/dev/null | grep 
 uph() { curl -sf --max-time 5 "http://localhost:$1/health" 2>/dev/null | grep -q 'ok'; }  # llama.cpp embed/rerank expose /health, not a model list
 log() { echo "$(date '+%H:%M:%S') $*"; }
 kpid(){ [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
-kpidfile(){ local f="$1"; [ -f "$f" ] && kpid "$(cat "$f" 2>/dev/null)"; }
+# Only signal a pid the pidfile still legitimately owns. A pidfile outlives its process, the
+# OS recycles the number, and an unvalidated `kill` then lands on a stranger: the rerank
+# pidfile held 1464, which by then was a WebKit networking process (jh3).
+kpidfile(){
+  local f="$1" p
+  [ -f "$f" ] || return 0
+  p="$(cat "$f" 2>/dev/null)"
+  [ "${p:-0}" -gt 0 ] 2>/dev/null || return 0
+  case "$(ps -p "$p" -o comm= 2>/dev/null)" in
+    *llama-server) kpid "$p" ;;
+    *) log "stale pidfile $f (pid $p is not llama-server) — not signalling" ;;
+  esac
+}
 # Hard-reap every process matching a pattern: SIGTERM, wait, then SIGKILL-escalate.
 # MLX servers (mlx_vlm.server / mlx_lm.server) IGNORE SIGTERM while loading the 4-bit
 # model off the slow external disk, so a lone `kpid` SIGTERM never reaps them — the prior
@@ -136,18 +148,34 @@ start_reason() {
 }
 # embed-local / rerank-local are llama.cpp servers driven by their own start scripts,
 # which self-background, write a pidfile under $REPO_ROOT/logs, wait for /health, and are
-# idempotent (a running instance is detected via pidfile, so re-invoking is a no-op). We
-# just call them when the port is down; their own llama-server child reparents away, so we
-# track shutdown via their pidfiles rather than a PID var.
-start_embed() {
-  log "starting embed-local (:8081, bge-m3) via start-embed-server.sh"
-  bash "$REPO_ROOT/scripts/start-embed-server.sh" >> "$LOGDIR/embed-mac.log" 2>&1 \
-    && log "embed-local UP" || log "embed-local start returned nonzero (see embed-mac.log)"
-}
-start_rerank() {
-  log "starting rerank-local (:8082, bge-reranker-v2-m3) via start-rerank-server.sh"
-  bash "$REPO_ROOT/scripts/start-rerank-server.sh" >> "$LOGDIR/rerank-mac.log" 2>&1 \
-    && log "rerank-local UP" || log "rerank-local start returned nonzero (see rerank-mac.log)"
+# idempotent (a running instance is detected by probing the port — NOT by the pidfile, whose
+# pid gets recycled and then lies; jh3). We call them when the port is down and re-check the
+# port afterward; their own llama-server child reparents away, so we track shutdown via their
+# pidfiles rather than a PID var, validating ownership before signalling.
+# A zero exit from the start script is NOT evidence the port is serving — verify before
+# claiming UP. Without that check the loop logged a cheerful "rerank-local UP" every 20s for
+# six days while nothing listened on :8082 (24540 cycles, 16.5 MB of log, jh3). <failvar> and
+# <duevar> must name globals; ensure_http gates the retry cadence on them.
+ensure_http() {
+  local port="$1" label="$2" script="$3" logf="$4" failvar="$5" duevar="$6" fails backoff
+  uph "$port" && { if [ "${!failvar:-0}" -ne 0 ]; then log "$label UP (:$port)"; fi
+                       printf -v "$failvar" '%s' 0; printf -v "$duevar" '%s' 0; return 0; }
+  [ "$(date +%s)" -lt "${!duevar:-0}" ] && return 0   # backing off — no attempt this tick
+  log "starting $label (:$port) via $(basename "$script")"
+  bash "$script" >> "$LOGDIR/$logf" 2>&1 || true
+  if uph "$port"; then
+    log "$label UP (:$port)"
+    printf -v "$failvar" '%s' 0; printf -v "$duevar" '%s' 0
+  else
+    fails=$(( ${!failvar:-0} + 1 ))
+    # 20s doubling to a 10-minute ceiling: a service that will not start must not respawn
+    # every 20s forever, filling the disk with identical failures nobody reads.
+    backoff=$(( 20 * (2 ** $(( fails > 5 ? 5 : fails - 1 )) ) ))
+    [ "$backoff" -gt 600 ] && backoff=600
+    printf -v "$failvar" '%s' "$fails"
+    printf -v "$duevar" '%s' "$(( $(date +%s) + backoff ))"
+    log "$label FAILED to come up on :$port (attempt $fails; retry in ${backoff}s; see $logf)"
+  fi
 }
 trap 'log "shutdown; killing servers"; reap_pat "mlx_vlm\.server" vision-mac; reap_pat "mlx_lm\.server" reason-mac; kpidfile "$REPO_ROOT/logs/llama-embed.pid"; kpidfile "$REPO_ROOT/logs/llama-rerank.pid"; exit 0' TERM INT
 log "mac keepalive started (pid $$) — vision-mac + embed-local + rerank-local (reason-mac enabled=$REASON_ENABLED)"
@@ -161,7 +189,7 @@ while true; do
   # The memory backstop lives inside ensure_mlx (mem_ok before any spawn).
   ensure_mlx 8083 vision-mac VISION_PID VISION_DEADLINE start_vision
   [ "$REASON_ENABLED" = 1 ] && ensure_mlx 8084 reason-mac REASON_PID REASON_DEADLINE start_reason
-  uph 8081 || start_embed
-  uph 8082 || start_rerank
+  ensure_http 8081 embed-local  "$REPO_ROOT/scripts/start-embed-server.sh"  embed-mac.log  EMBED_FAILS  EMBED_DUE
+  ensure_http 8082 rerank-local "$REPO_ROOT/scripts/start-rerank-server.sh" rerank-mac.log RERANK_FAILS RERANK_DUE
   sleep 20
 done
