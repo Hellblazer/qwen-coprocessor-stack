@@ -2050,7 +2050,7 @@ async function main(): Promise<void> {
       { destructiveHint: false, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
       async (args) => {
         const result = await installHandler(args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        return toWireResult(result);
       },
     );
     log.info("qwen_extension_install tool registered");
@@ -2068,7 +2068,7 @@ async function main(): Promise<void> {
       { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
       async (args) => {
         const result = await removeHandler(args);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        return toWireResult(result);
       },
     );
     log.info("qwen_extension_remove tool registered");
@@ -2090,7 +2090,7 @@ async function main(): Promise<void> {
         const handlerArgs: { name: string; scope?: string } = { name: args.name };
         if (args.scope !== undefined) handlerArgs.scope = args.scope;
         const result = await enableHandler(handlerArgs);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        return toWireResult(result);
       },
     );
     log.info("qwen_extension_enable tool registered");
@@ -2112,7 +2112,7 @@ async function main(): Promise<void> {
         const handlerArgs: { name: string; scope?: string } = { name: args.name };
         if (args.scope !== undefined) handlerArgs.scope = args.scope;
         const result = await disableHandler(handlerArgs);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        return toWireResult(result);
       },
     );
     log.info("qwen_extension_disable tool registered");
@@ -2132,7 +2132,7 @@ async function main(): Promise<void> {
         const handlerArgs: { names?: string[] } = {};
         if (args.names !== undefined) handlerArgs.names = args.names;
         const result = await updateHandler(handlerArgs);
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+        return toWireResult(result);
       },
     );
     log.info("qwen_extension_update tool registered");

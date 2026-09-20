@@ -796,6 +796,24 @@ describe("MCP tool handlers", () => {
         expect(cache.reload).not.toHaveBeenCalled();
       });
 
+      // The five extension tools build their MCP results through toWireResult (bead kan),
+      // same as every other tool. Without it a remote_install_gated refusal would reach the
+      // client as a plain success envelope with the error only in the body — the exact
+      // regression kan removed, and these are the only tools that can emit that code.
+      it("wire boundary: a gated install refusal carries isError through toWireResult", () => {
+        const refusal = {
+          error: {
+            code: "remote_install_gated",
+            message: "remote sources refused unless QWEN_ALLOW_REMOTE_INSTALL=1",
+          },
+        };
+        const wire = toWireResult(refusal);
+        expect(wire).toEqual({
+          content: [{ type: "text" as const, text: JSON.stringify(refusal) }],
+          isError: true,
+        });
+      });
+
       it("Phase 0 gate: remote source permitted and shells out when QWEN_ALLOW_REMOTE_INSTALL=1", async () => {
         vi.stubEnv("QWEN_ALLOW_REMOTE_INSTALL", "1");
         const fixture = makeFakeQwenBin(dir);
