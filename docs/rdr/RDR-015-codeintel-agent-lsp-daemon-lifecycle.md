@@ -2,7 +2,8 @@
 title: "codeIntel agent-lsp daemon lifecycle — document TS/Go daemon-broker warm reuse and the in-process jdtls model; defer any spawn-concurrency cap"
 id: RDR-015
 type: Design
-status: accepted
+status: closed
+closed_date: 2026-09-20
 priority: medium
 author: hal
 reviewed-by: self
