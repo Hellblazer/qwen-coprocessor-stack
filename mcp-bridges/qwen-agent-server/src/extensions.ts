@@ -28,8 +28,9 @@
 // installedCache) algorithm and the qwen_spawn handler integration.
 
 import { execFile, execFileSync } from "node:child_process";
-import { statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createLogger } from "./log.js";
@@ -632,4 +633,748 @@ function validateInstalled(names: string[], installed: Set<string>): void {
       unknown,
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// W2 — extension lifecycle exec layer (bead qwen-coprocessor-stack-3su.13)
+//
+// RDR-002 §Layer 1, Phase 0 amendment (2026-08-22, gate-approved):
+// install/upgrade/lifecycle mutation, thin shell-out to `qwen extensions
+// <subcommand>`. Everything below is pure argv-construction + validation
+// plus an injectable execFn for the actual exec — no MCP tool wiring
+// here (that's bead 3su.14).
+//
+// Gate decision (hard acceptance criterion): LOCAL sources are ungated;
+// REMOTE sources (git URL, npm @scope/name, owner/repo shorthand,
+// marketplace url:name) are refused unless QWEN_ALLOW_REMOTE_INSTALL=1
+// is set in the supervisor's environment. The enforcement point is HERE,
+// inside the library functions below — not deferred to the MCP boundary
+// — so an in-process caller (bench harness, driver script) cannot bypass
+// it by skipping the MCP tool.
+
+/** Env var that must be "1" to permit installing/updating a remote source. */
+export const QWEN_ALLOW_REMOTE_INSTALL_ENV = "QWEN_ALLOW_REMOTE_INSTALL";
+
+export const EXTENSION_LIFECYCLE_ERROR_CODES = [
+  /** Source classification failed, or a caller-claimed local path doesn't exist. */
+  "invalid_source",
+  /** A required name argument was empty/whitespace, or flag-shaped (leading '-') —
+   *  the latter checked independently of cache membership (bead 3su.16
+   *  code-review remediation: a malformed argv element must never reach
+   *  the real CLI's yargs parser, even for a hypothetical installed name
+   *  that happens to start with '-'). */
+  "invalid_name",
+  /** --scope was anything other than "user" | "workspace". */
+  "invalid_scope",
+  /** Remote source refused because QWEN_ALLOW_REMOTE_INSTALL!=1. */
+  "remote_install_gated",
+  /** name is well-formed but not present in the caller-supplied installed
+   *  set (bead 3su.16 code-review remediation IMPORTANT #1) — mirrors
+   *  updateExtensions' own "not installed" per-item refusal so
+   *  uninstall/enable/disable get the same defense update already had. */
+  "unknown_extension",
+  /** The underlying `qwen extensions <subcommand>` exec failed (nonzero exit / spawn error). */
+  "exec_failed",
+] as const;
+export type ExtensionLifecycleErrorCode = (typeof EXTENSION_LIFECYCLE_ERROR_CODES)[number];
+
+/**
+ * Structured error surfaced by every mutation function in this section.
+ * Mirrors the `QwenDispatchError` pattern in dispatch-tool.ts: a fixed
+ * `code` union plus a human-readable message. `stderr` is populated when
+ * the failure came from an actual subprocess exit (exec_failed); it is
+ * intentionally omitted (not set to `undefined`) on every other code so
+ * JSON serialization stays compact and `exactOptionalPropertyTypes`
+ * holds.
+ */
+export class ExtensionLifecycleError extends Error {
+  readonly code: ExtensionLifecycleErrorCode;
+  readonly stderr?: string;
+  constructor(code: ExtensionLifecycleErrorCode, message: string, stderr?: string) {
+    super(message);
+    this.name = "ExtensionLifecycleError";
+    this.code = code;
+    if (stderr !== undefined) this.stderr = stderr;
+  }
+}
+
+/**
+ * Validate a caller-supplied extension name before it can reach argv:
+ * non-empty, and not flag-shaped (a leading '-' would let the real
+ * `qwen` CLI's yargs parser misread the positional as an option — bead
+ * 3su.16 code-review remediation IMPORTANT #1). This check is
+ * independent of and runs BEFORE any installed-set lookup, so it fires
+ * even for a hypothetical installed name that starts with '-'.
+ */
+function requireValidName(name: string, context: string): string {
+  const trimmed = name.trim();
+  if (trimmed === "") {
+    throw new ExtensionLifecycleError(
+      "invalid_name",
+      `extension name must not be empty (${context})`,
+    );
+  }
+  if (trimmed.startsWith("-")) {
+    throw new ExtensionLifecycleError(
+      "invalid_name",
+      `extension name '${trimmed}' looks like a CLI flag (leading '-') and is refused (${context})`,
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Refuse a name that isn't in the caller-supplied installed set (bead
+ * 3su.16 code-review remediation IMPORTANT #1) — matches
+ * `updateExtensions`' own "not installed" per-item refusal, applied
+ * here to the single-target uninstall/enable/disable operations that
+ * previously had no such check despite the cache being available at
+ * every real call site (server.ts only registers these handlers when a
+ * cache is wired in).
+ *
+ * Matches case-insensitively and returns the canonical (lowercased)
+ * name to build argv from: `installedNames` (from
+ * `InstalledExtensionsCache.get()`) always holds lowercased names
+ * (`parseInstalledExtensionsRich` lowercases on parse), and RDR-002 §Q3
+ * documents upstream's own extension-identity matching as
+ * `config.name.toLowerCase() === requestedName.toLowerCase()`. Without
+ * this normalization, a caller passing the extension's declared-case
+ * name (e.g. "Serena") would be wrongly refused as unknown even though
+ * it's installed — this is why the tool descriptions can truthfully
+ * say "(case-insensitive)" (bead 3su.16 code-review SUGGESTION):
+ * normalization is implemented, not just claimed.
+ */
+function requireInstalled(name: string, installedNames: ReadonlySet<string>): string {
+  const lower = name.toLowerCase();
+  if (!installedNames.has(lower)) {
+    throw new ExtensionLifecycleError(
+      "unknown_extension",
+      `extension '${name}' is not installed`,
+    );
+  }
+  return lower;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Source classification — RDR-002 Phase 0 amendment: `qwen extensions
+// install <source>` takes ONE positional and auto-detects. There is no
+// --source and no --path flag; do not invent one.
+//
+// Auto-detect order, verbatim from the live-install verification
+// (qwen-code 0.15.6): stat() succeeds -> local path; git URL -> git;
+// @scope/name -> npm; owner/repo -> git; otherwise "Install source not
+// found". stat() is checked FIRST for every input shape (not only
+// path-marker-prefixed ones) so a literal on-disk match always wins over
+// a superficial remote-shape match. Marketplace `url:name` sources are
+// documented in the original Layer-1 table and are classified last,
+// before the final rejection — the amendment's "otherwise" wording
+// describes the terminal case, not marketplace's absence.
+export type ExtensionSourceType = "local" | "git" | "npm" | "marketplace";
+
+export interface ClassifiedSource {
+  type: ExtensionSourceType;
+  /** Absolute path for "local"; the source string verbatim otherwise —
+   *  this is exactly the positional argument `qwen extensions install`
+   *  receives. */
+  value: string;
+}
+
+const GIT_URL_RE = /^(git@|git:\/\/|https?:\/\/|ssh:\/\/)/i;
+const NPM_SCOPE_RE = /^@[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/;
+const OWNER_REPO_RE = /^[a-zA-Z0-9][\w.-]*\/[a-zA-Z0-9][\w.-]*$/;
+// First char excludes '-' (bead 3su.16 code-review remediation, lower-
+// severity flag-injection gap): unlike OWNER_REPO_RE/NPM_SCOPE_RE, this
+// was the one source regex that let a flag-shaped string like "-x:evil"
+// through as a classified value. Gated behind QWEN_ALLOW_REMOTE_INSTALL=1
+// either way, but there is no reason to accept it.
+const MARKETPLACE_RE = /^[^\s:-][^\s:]*:[^\s:/]+$/;
+
+function looksLikeExplicitLocalPath(s: string): boolean {
+  return (
+    s.startsWith("/") ||
+    s.startsWith("./") ||
+    s.startsWith("../") ||
+    s.startsWith("~/") ||
+    s === "." ||
+    s === ".." ||
+    s === "~"
+  );
+}
+
+/**
+ * Classify a caller-supplied extension source string, resolving a
+ * relative local path to absolute. Throws `ExtensionLifecycleError`
+ * (code `invalid_source`) pre-exec when the source is empty, when it
+ * unambiguously looks like a local path but doesn't exist on disk, or
+ * when it matches none of the recognized shapes.
+ *
+ * `cwd` defaults to `process.cwd()`; tests inject a temp dir so path
+ * resolution/existence checks don't depend on the process's real cwd.
+ */
+export function classifySource(source: string, cwd: string = process.cwd()): ClassifiedSource {
+  const trimmed = source.trim();
+  if (trimmed === "") {
+    throw new ExtensionLifecycleError("invalid_source", "extension source must not be empty");
+  }
+
+  const resolvedAbs = isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed);
+
+  // stat() succeeds -> local path. Checked first for every shape.
+  if (existsSync(resolvedAbs)) {
+    return { type: "local", value: resolvedAbs };
+  }
+
+  // An explicit local-path marker with no match on disk is a path error,
+  // not a "try the next source type" fallthrough. Rejecting here also
+  // prevents a nonexistent './foo/bar' from being misread as an
+  // owner/repo git shorthand purely because it contains one slash.
+  if (looksLikeExplicitLocalPath(trimmed)) {
+    throw new ExtensionLifecycleError(
+      "invalid_source",
+      `local extension path does not exist: ${resolvedAbs}`,
+    );
+  }
+
+  if (GIT_URL_RE.test(trimmed)) {
+    return { type: "git", value: trimmed };
+  }
+  if (NPM_SCOPE_RE.test(trimmed)) {
+    return { type: "npm", value: trimmed };
+  }
+  if (OWNER_REPO_RE.test(trimmed)) {
+    return { type: "git", value: trimmed };
+  }
+  if (MARKETPLACE_RE.test(trimmed)) {
+    return { type: "marketplace", value: trimmed };
+  }
+
+  throw new ExtensionLifecycleError(
+    "invalid_source",
+    `Install source not found: ${trimmed}`,
+  );
+}
+
+/** Anything other than "local" requires QWEN_ALLOW_REMOTE_INSTALL=1. */
+export function isRemoteSourceType(type: ExtensionSourceType): boolean {
+  return type !== "local";
+}
+
+/**
+ * Gate decision enforcement point (RDR-002 Phase 0 amendment, hard
+ * acceptance criterion). Throws `ExtensionLifecycleError` (code
+ * `remote_install_gated`) naming the env var when `type` is remote and
+ * the var isn't set to exactly "1". A no-op for local sources.
+ */
+export function assertRemoteAllowed(type: ExtensionSourceType, env: NodeJS.ProcessEnv): void {
+  if (!isRemoteSourceType(type)) return;
+  if (env[QWEN_ALLOW_REMOTE_INSTALL_ENV] === "1") return;
+  throw new ExtensionLifecycleError(
+    "remote_install_gated",
+    `remote extension source (type=${type}) refused: set ${QWEN_ALLOW_REMOTE_INSTALL_ENV}=1 ` +
+      "in the supervisor environment to allow remote install/update",
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// --scope validation — RDR-002 Phase 0 amendment: upstream VALIDATES
+// user|workspace|system|systemdefaults but the handlers only branch on
+// "workspace" — system/systemdefaults silently behave as "user". This
+// wrapper accepts ONLY user|workspace and rejects the rest before exec.
+
+export type ExtensionScope = "user" | "workspace";
+
+const SILENTLY_DOWNGRADED_SCOPES = new Set(["system", "systemdefaults"]);
+
+/**
+ * Validate a caller-supplied `--scope` value. Returns `undefined` when
+ * `scope` is `undefined` so the caller can apply its own explicit
+ * default (see `DEFAULT_ENABLE_SCOPE` / `DEFAULT_DISABLE_SCOPE`) rather
+ * than silently inheriting upstream's asymmetric defaults. Throws
+ * `ExtensionLifecycleError` (code `invalid_scope`) for anything other
+ * than "user" | "workspace", including the two values upstream accepts
+ * but silently downgrades.
+ */
+export function validateScope(scope: string | undefined): ExtensionScope | undefined {
+  if (scope === undefined) return undefined;
+  const lower = scope.toLowerCase();
+  if (lower === "user" || lower === "workspace") return lower;
+  if (SILENTLY_DOWNGRADED_SCOPES.has(lower)) {
+    throw new ExtensionLifecycleError(
+      "invalid_scope",
+      `scope '${scope}' is rejected: upstream 'qwen extensions' validates it but silently ` +
+        "treats it as 'user' (RDR-002 Phase 0 amendment) — pass 'user' explicitly instead",
+    );
+  }
+  throw new ExtensionLifecycleError(
+    "invalid_scope",
+    `invalid scope '${scope}': only 'user' or 'workspace' are accepted`,
+  );
+}
+
+/**
+ * Explicit wrapper defaults applied when the caller omits --scope.
+ * Upstream's own defaults are asymmetric (enable -> all scopes; disable
+ * -> User) and must not be silently inherited (RDR-002 Phase 0
+ * amendment). This wrapper instead picks one visible, symmetric default
+ * for both verbs: "user" — the narrower, least-surprising scope. An
+ * operator who wants the wider behavior passes `--scope workspace`
+ * explicitly.
+ */
+export const DEFAULT_ENABLE_SCOPE: ExtensionScope = "user";
+export const DEFAULT_DISABLE_SCOPE: ExtensionScope = "user";
+
+// ─────────────────────────────────────────────────────────────────
+// Mutation exec — execFile only, never exec (shell-injection pin below
+// in tests). Mutation failures THROW a typed error carrying stderr; this
+// is deliberately NOT fail-soft, unlike the LIST path above (a silent
+// no-op mutation is the worst outcome for install/uninstall/enable/
+// disable/update).
+
+/**
+ * Injectable mutation exec function, mirroring `ExecExtensionsListFn`'s
+ * shape (`(qwenRealBin) => Promise<string>`) but taking the full argv
+ * tail. Resolves with stdout on success; rejects (any Error, optionally
+ * carrying a `.stderr` string property) on failure. `runMutation` below
+ * normalizes any rejection into an `ExtensionLifecycleError`.
+ */
+export type ExecExtensionsMutateFn = (qwenRealBin: string, args: string[]) => Promise<string>;
+
+export const defaultExecExtensionsMutate: ExecExtensionsMutateFn = (qwenRealBin, args) =>
+  new Promise((res, rej) => {
+    execFile(qwenRealBin, args, { encoding: "utf8" }, (err, stdout, stderr) => {
+      if (err) {
+        rej(
+          new ExtensionLifecycleError(
+            "exec_failed",
+            `qwen ${args.join(" ")} failed: ${err.message}`,
+            stderr,
+          ),
+        );
+        return;
+      }
+      res(stdout);
+    });
+  });
+
+function extractStderr(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "stderr" in err) {
+    const s = (err as { stderr?: unknown }).stderr;
+    if (typeof s === "string") return s;
+  }
+  return undefined;
+}
+
+/** Run one mutation exec, normalizing any rejection into `ExtensionLifecycleError`. */
+async function runMutation(
+  qwenRealBin: string,
+  argv: string[],
+  execFn: ExecExtensionsMutateFn = defaultExecExtensionsMutate,
+): Promise<string> {
+  try {
+    return await execFn(qwenRealBin, argv);
+  } catch (err) {
+    if (err instanceof ExtensionLifecycleError) throw err;
+    throw new ExtensionLifecycleError(
+      "exec_failed",
+      `qwen ${argv.join(" ")} failed: ${err instanceof Error ? err.message : String(err)}`,
+      extractStderr(err),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// argv builders — asserted exactly by tests. Pure functions; the unit
+// under test is argv construction itself.
+
+/**
+ * `--consent` is REQUIRED, not optional. Verified live against the real
+ * qwen 0.15.6 CLI (bead 3su.15's mandated end-to-end exercise): without
+ * it, `qwen extensions install <source>` prints an interactive
+ * "Do you want to continue? [Y/n]:" prompt and reads from stdin. The
+ * supervisor's exec layer (`defaultExecExtensionsMutate`) never writes
+ * to or closes the child's stdin, so a real invocation hangs the exec
+ * call — and the awaiting MCP tool call — forever. `--consent`
+ * ("Acknowledge the security risks of installing an extension and skip
+ * the confirmation prompt") makes install run non-interactively, same
+ * as every other subcommand this module shells out to. This is safe to
+ * always pass: the confirmation prompt exists for a human at an
+ * interactive terminal, which the supervisor never is; the Phase 0
+ * remote-install gate (`assertRemoteAllowed`, called before this
+ * function) is this wrapper's own consent gate for remote sources, and
+ * a local source needs no extra confirmation at all.
+ */
+export function buildInstallArgv(classified: ClassifiedSource): string[] {
+  return ["extensions", "install", classified.value, "--consent"];
+}
+
+/** The `remove` -> `uninstall` name translation lives entirely here: the
+ *  argv always says "uninstall" regardless of which caller-facing verb
+ *  ("remove" or "uninstall") the MCP tool layer (3su.14) exposes. */
+export function buildUninstallArgv(name: string): string[] {
+  return ["extensions", "uninstall", name];
+}
+
+export function buildEnableArgv(name: string, scope: ExtensionScope): string[] {
+  return ["extensions", "enable", name, "--scope", scope];
+}
+
+export function buildDisableArgv(name: string, scope: ExtensionScope): string[] {
+  return ["extensions", "disable", name, "--scope", scope];
+}
+
+/**
+ * Always a single-name update — see `updateExtensions` for why --all is
+ * never passed through raw.
+ *
+ * Non-interactivity VERIFIED LIVE against the real qwen 0.15.6 CLI
+ * (bead 3su.16 code-review remediation IMPORTANT #2 — install's and
+ * link's own interactive prompts were discovered the same way, so this
+ * was checked rather than assumed): `qwen extensions update --help`
+ * carries no consent/confirm/interactive-prompt flag of any kind.
+ * `qwen extensions update qwen-toolkit` (a real link-installed
+ * extension on this host) returned instantly — "Extension
+ * \"qwen-toolkit\" is already up to date." — exit 0, no prompt.
+ * `qwen extensions update nx` (a real installed extension with no
+ * `.qwen-extension-install.json`) also returned instantly with "Unable
+ * to install extension \"nx\" due to missing install metadata" — a
+ * clean non-interactive failure message, not a hang (and one our own
+ * `classifyInstallMetadataType` fail-closed check already intercepts
+ * before exec in practice, so this exec is never actually reached for
+ * a metadata-less extension). No --consent-equivalent flag exists or
+ * is needed for `update`.
+ */
+export function buildUpdateArgv(name: string): string[] {
+  return ["extensions", "update", name];
+}
+
+/**
+ * KNOWN LIMITATION (found alongside the install --consent fix above,
+ * bead 3su.15's live exercise): `qwen extensions link <path>` shows the
+ * SAME interactive confirmation prompt as `install`, but — unlike
+ * install — its subcommand does not accept `--consent` at all
+ * (`Unknown argument: consent`, verified against qwen 0.15.6). There is
+ * currently no upstream flag to run `link` non-interactively. `link` is
+ * not wired to any MCP tool today (3su.14 scoped install/remove/enable/
+ * disable/update only), so this is dormant, not exploitable — but a
+ * future caller of `linkExtension` against a real qwen binary WILL
+ * hang. Do not expose it via an MCP tool without first confirming a
+ * non-interactive path exists upstream (or piping a "y" into stdin,
+ * which this module's exec layer does not currently support).
+ */
+export function buildLinkArgv(absPath: string): string[] {
+  return ["extensions", "link", absPath];
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Top-level lifecycle operations — classify/validate, gate, build argv,
+// exec. Every mutation is enforced HERE, before exec, so no caller
+// (MCP tool or in-process driver) can bypass the gate/scope checks by
+// calling exec directly.
+
+export interface InstallExtensionOpts {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  execFn?: ExecExtensionsMutateFn;
+}
+
+export interface InstallExtensionResult {
+  argv: string[];
+  stdout: string;
+  source: ClassifiedSource;
+}
+
+export async function installExtension(
+  qwenRealBin: string,
+  source: string,
+  opts: InstallExtensionOpts = {},
+): Promise<InstallExtensionResult> {
+  const cwd = opts.cwd ?? process.cwd();
+  const env = opts.env ?? process.env;
+  const classified = classifySource(source, cwd);
+  assertRemoteAllowed(classified.type, env);
+  const argv = buildInstallArgv(classified);
+  const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
+  return { argv, stdout, source: classified };
+}
+
+export interface UninstallExtensionResult {
+  argv: string[];
+  stdout: string;
+}
+
+/**
+ * `installedNames` is REQUIRED (not optional) — mirrors
+ * `updateExtensions`' own required `installed` positional exactly (bead
+ * 3su.16 code-review remediation IMPORTANT #1). `name` must both be
+ * well-formed (`requireValidName`) and already present in the set
+ * (`requireInstalled`); both checks run before any exec is attempted.
+ * Every real call site (server.ts) already has the cache in scope —
+ * these handlers only exist when a cache was wired into
+ * createToolHandlers — so this is never a burden in practice, only in
+ * tests, which is exactly where a missing check would otherwise hide.
+ */
+export async function uninstallExtension(
+  qwenRealBin: string,
+  name: string,
+  installedNames: ReadonlySet<string>,
+  opts: { execFn?: ExecExtensionsMutateFn } = {},
+): Promise<UninstallExtensionResult> {
+  const trimmedName = requireValidName(name, "uninstall");
+  const canonicalName = requireInstalled(trimmedName, installedNames);
+  const argv = buildUninstallArgv(canonicalName);
+  const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
+  return { argv, stdout };
+}
+
+export interface EnableDisableOpts {
+  scope?: string;
+  execFn?: ExecExtensionsMutateFn;
+}
+
+export interface EnableDisableResult {
+  argv: string[];
+  stdout: string;
+  scope: ExtensionScope;
+}
+
+/** See `uninstallExtension`'s doc comment — `installedNames` is required
+ *  for the same reason. */
+export async function enableExtension(
+  qwenRealBin: string,
+  name: string,
+  installedNames: ReadonlySet<string>,
+  opts: EnableDisableOpts = {},
+): Promise<EnableDisableResult> {
+  const trimmedName = requireValidName(name, "enable");
+  const canonicalName = requireInstalled(trimmedName, installedNames);
+  const scope = validateScope(opts.scope) ?? DEFAULT_ENABLE_SCOPE;
+  const argv = buildEnableArgv(canonicalName, scope);
+  const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
+  return { argv, stdout, scope };
+}
+
+/** See `uninstallExtension`'s doc comment — `installedNames` is required
+ *  for the same reason. */
+export async function disableExtension(
+  qwenRealBin: string,
+  name: string,
+  installedNames: ReadonlySet<string>,
+  opts: EnableDisableOpts = {},
+): Promise<EnableDisableResult> {
+  const trimmedName = requireValidName(name, "disable");
+  const canonicalName = requireInstalled(trimmedName, installedNames);
+  const scope = validateScope(opts.scope) ?? DEFAULT_DISABLE_SCOPE;
+  const argv = buildDisableArgv(canonicalName, scope);
+  const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
+  return { argv, stdout, scope };
+}
+
+export interface LinkExtensionResult {
+  argv: string[];
+  stdout: string;
+}
+
+/** `link <path>` only ever accepts a local path (RDR-002 dev-loop note)
+ *  and is always ungated, same as install-from-local-path. A remote-
+ *  shaped source is rejected as `invalid_source`, never silently routed
+ *  through the remote gate. */
+export async function linkExtension(
+  qwenRealBin: string,
+  path: string,
+  opts: { cwd?: string; execFn?: ExecExtensionsMutateFn } = {},
+): Promise<LinkExtensionResult> {
+  const cwd = opts.cwd ?? process.cwd();
+  const classified = classifySource(path, cwd);
+  if (classified.type !== "local") {
+    throw new ExtensionLifecycleError(
+      "invalid_source",
+      `link requires a local path; '${path}' classified as ${classified.type}`,
+    );
+  }
+  const argv = buildLinkArgv(classified.value);
+  const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
+  return { argv, stdout };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// update — RDR-002 Layer-1 table + 2026-08-22 pickup addendum: `update`
+// carries no source argument. `--all` is NEVER passed through raw:
+// permitting it would let a single remote-sourced extension silently
+// ride along with every local one under one opaque exec call, with no
+// per-extension gate check and no way to report a per-extension
+// refusal. Instead: enumerate the installed set (or the caller's
+// explicit name list), classify EACH one by reading its
+// `.qwen-extension-install.json` (installMetadata.type/source) BEFORE
+// exec, apply the same remote gate per extension, and shell out to
+// `qwen extensions update <name>` individually for every permitted one.
+
+/** File Qwen Code writes into each extension's install directory,
+ *  carrying its `installMetadata` (RDR-002 pickup addendum, 2026-08-22). */
+export const EXTENSION_INSTALL_METADATA_FILENAME = ".qwen-extension-install.json";
+
+export interface InstallMetadata {
+  type?: string;
+  source?: string;
+}
+
+/** Injected for testability; production default reads
+ *  `<extensionPath>/.qwen-extension-install.json`. Returns `null` on
+ *  any failure (missing file, unreadable, unparseable, not a JSON
+ *  object) — the caller treats `null` as "fail closed", not "assume
+ *  local". */
+export type ReadInstallMetadataFn = (extensionPath: string) => Promise<InstallMetadata | null>;
+
+export const defaultReadInstallMetadata: ReadInstallMetadataFn = async (extensionPath) => {
+  try {
+    const raw = await readFile(join(extensionPath, EXTENSION_INSTALL_METADATA_FILENAME), "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as InstallMetadata;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * installMetadata.type values this wrapper recognizes as local (ungated)
+ * vs. remote (gated via QWEN_ALLOW_REMOTE_INSTALL). This is an allowlist
+ * by design (RDR-002 pickup addendum: "fail closed on missing/unknown
+ * metadata") — an unrecognized type is refused, never assumed either
+ * way. The exact upstream vocabulary was not independently re-spiked for
+ * this bead (ground truth: RDR-002 §Layer 1 table names the file and
+ * fields, not the full value set); adjust these sets if a live
+ * `.qwen-extension-install.json` sample shows a value not covered here.
+ */
+const LOCAL_INSTALL_METADATA_TYPES = new Set(["local", "link"]);
+const REMOTE_INSTALL_METADATA_TYPES = new Set(["git", "npm", "marketplace", "github-release"]);
+
+interface MetadataClassification {
+  ok: boolean;
+  remote: boolean;
+  reason?: string;
+}
+
+function classifyInstallMetadataType(meta: InstallMetadata | null): MetadataClassification {
+  if (!meta || typeof meta.type !== "string" || meta.type.trim() === "") {
+    return {
+      ok: false,
+      remote: false,
+      reason:
+        `missing or unreadable ${EXTENSION_INSTALL_METADATA_FILENAME} (installMetadata.type) — ` +
+        "update refused fail-closed",
+    };
+  }
+  const type = meta.type.trim().toLowerCase();
+  if (LOCAL_INSTALL_METADATA_TYPES.has(type)) return { ok: true, remote: false };
+  if (REMOTE_INSTALL_METADATA_TYPES.has(type)) return { ok: true, remote: true };
+  return {
+    ok: false,
+    remote: false,
+    reason: `unknown installMetadata.type '${meta.type}' — update refused fail-closed`,
+  };
+}
+
+export type UpdateItemStatus = "updated" | "refused" | "failed";
+
+export interface UpdateItemResult {
+  name: string;
+  status: UpdateItemStatus;
+  /** Present for "refused" (why it was refused) and "failed" (the exec error message). */
+  reason?: string;
+  /** Present once an exec was actually attempted ("updated" or "failed"). */
+  argv?: string[];
+  /** Present only for "updated". */
+  stdout?: string;
+}
+
+export interface UpdateExtensionsResult {
+  items: UpdateItemResult[];
+}
+
+export interface UpdateExtensionsOpts {
+  env?: NodeJS.ProcessEnv;
+  execFn?: ExecExtensionsMutateFn;
+  readMetadataFn?: ReadInstallMetadataFn;
+}
+
+/**
+ * Update one or more installed extensions. `names` is either an explicit
+ * list (each looked up in `installed`) or the literal `"all"`, which
+ * enumerates every entry in `installed` — never a raw `--all` argv.
+ *
+ * Every target is classified individually via its
+ * `.qwen-extension-install.json` before any exec is attempted; a name
+ * not present in `installed`, a target with no known `path`, missing/
+ * unreadable metadata, or an unrecognized `installMetadata.type` is
+ * reported as `"refused"` and never reaches exec. A recognized-remote
+ * target is refused the same way when `QWEN_ALLOW_REMOTE_INSTALL!=1`.
+ *
+ * One item's exec failure does not abort the batch: it's captured as
+ * `"failed"` (with the stderr-derived message in `reason`) so every
+ * other item still gets a result. This mirrors the acceptance
+ * requirement to "report per-item results including refusals" — the
+ * single-target functions above (`installExtension` etc.) still THROW
+ * on exec failure, per "mutation failures are NOT fail-soft"; this
+ * batch operation is the one explicitly specified to produce a
+ * structured per-item report instead.
+ */
+export async function updateExtensions(
+  qwenRealBin: string,
+  installed: readonly Pick<ExtensionInfo, "name" | "path">[],
+  names: string[] | "all",
+  opts: UpdateExtensionsOpts = {},
+): Promise<UpdateExtensionsResult> {
+  const env = opts.env ?? process.env;
+  const readMetadata = opts.readMetadataFn ?? defaultReadInstallMetadata;
+
+  const wanted: string[] = names === "all" ? installed.map((i) => i.name) : dedupeLower(names);
+  const byName = new Map(installed.map((i) => [i.name, i]));
+
+  const items: UpdateItemResult[] = [];
+  for (const name of wanted) {
+    const info = byName.get(name);
+    if (!info) {
+      items.push({ name, status: "refused", reason: `extension '${name}' is not installed` });
+      continue;
+    }
+    if (!info.path) {
+      items.push({
+        name,
+        status: "refused",
+        reason:
+          `installed-extensions listing has no path for '${name}'; cannot locate ` +
+          EXTENSION_INSTALL_METADATA_FILENAME,
+      });
+      continue;
+    }
+
+    const meta = await readMetadata(info.path);
+    const classification = classifyInstallMetadataType(meta);
+    if (!classification.ok) {
+      items.push({ name, status: "refused", reason: classification.reason ?? "refused" });
+      continue;
+    }
+    if (classification.remote && env[QWEN_ALLOW_REMOTE_INSTALL_ENV] !== "1") {
+      items.push({
+        name,
+        status: "refused",
+        reason:
+          `remote extension update refused: set ${QWEN_ALLOW_REMOTE_INSTALL_ENV}=1 to allow`,
+      });
+      continue;
+    }
+
+    const argv = buildUpdateArgv(info.name);
+    try {
+      const stdout = await runMutation(qwenRealBin, argv, opts.execFn);
+      items.push({ name, status: "updated", argv, stdout });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      items.push({ name, status: "failed", reason, argv });
+    }
+  }
+
+  return { items };
 }
