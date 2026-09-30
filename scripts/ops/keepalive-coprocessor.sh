@@ -48,7 +48,8 @@
 # sustained I/O five times (bead jxu); the last one took the server down. The D:
 # copies of both trees are untouched and are the revert: put D: back in LL and
 # CODER_MODEL. The directory name llama-b10867-patched is load-bearing
-# (EXPECTED_BUILD is parsed from it). D:\claude-coordination is still on D:.
+# (EXPECTED_BUILD is parsed from it). The coordination directory moved to
+# C:\claude-coordination the same day; D:\claude-coordination is a write-refusing stub.
 set -u
 HOST=qwentescence
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
@@ -66,7 +67,7 @@ LL='C:\llama-b10867-patched\llama-server.exe'   # 2026-09-30 moved from D: (see 
 # host-visible/GTT. RAM free 7.2 -> 22.3 GB (WoW co-residency), tps 41.9 -> 43.8.
 # Historical (bead 081): b9611 did NOT fix the qwen3_next Vulkan crash; that was
 # co-residency VRAM exhaustion, eliminated by moving vision/35B off the box.
-# VARIANT: tuning flags agreed in D:\claude-coordination\QWEN_SERVER_NEGOTIATION.md
+# VARIANT: tuning flags agreed in C:\claude-coordination\QWEN_SERVER_NEGOTIATION.md
 # (GTT-spill reduction for WoW co-residency). Empty = baseline. e.g. "--no-mmap"
 #
 # 2026-07-26: --no-mmap REMOVED. On first launch after the C: repair + D: cable/
@@ -490,7 +491,7 @@ gpu_check() {  # POST-LOAD residency assertion. sets GPU_REASON/GPU_LAST; 0 = in
 # without measuring a cold load first.
 waitup(){ for i in $(seq 1 150); do up "$1" && return 0; sleep 8; done; return 1; }
 # Launch metadata for the box-side Claude (negotiation commitment 2, 2026-07-21):
-# every (re)launch writes D:\claude-coordination\qwen-server-state.json.
+# every (re)launch writes C:\claude-coordination\qwen-server-state.json.
 write_state() {
   local pid age ts json ps b64 src owner elapsed
   # PID of the process that OWNS :1235 — not tasklist's first llama-server row,
@@ -515,7 +516,7 @@ write_state() {
   if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
   json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
-  ps="Set-Content -Path D:\claude-coordination\qwen-server-state.json -Value '$json'"
+  ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
   log "state json written (pid ${pid:-unknown} via $src, owner $owner)"
