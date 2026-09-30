@@ -42,6 +42,13 @@
 # QWEN_KEEPALIVE_SELFTEST=1 runs guard+assertions against the live box and exits
 # without launching anything, so a guard change can be validated without a service
 # interruption (a keepalive restart IS one: the held ssh is llama-server's parent).
+#
+# 2026-09-30: model, runtime and server log MOVED from D: to the internal C:
+# (bead kgh). D: is the OWC Express 1M2 USB4 enclosure, which has faulted under
+# sustained I/O five times (bead jxu); the last one took the server down. The D:
+# copies of both trees are untouched and are the revert: put D: back in LL and
+# CODER_MODEL. The directory name llama-b10867-patched is load-bearing
+# (EXPECTED_BUILD is parsed from it). D:\claude-coordination is still on D:.
 set -u
 HOST=qwentescence
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
@@ -53,7 +60,7 @@ SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
 # b10078 regression is understood (see bead 36p / the negotiation channel), b9596 is the
 # only build measured to use the carve here. Do NOT re-pin b10078 on the strength of tps
 # alone — tps was 47-50 in the broken states, HIGHER than b9596's 45-46.
-LL='D:\llama-b10867-patched\llama-server.exe'   # 2026-09-13 (was D:\llama-b9596); see header
+LL='C:\llama-b10867-patched\llama-server.exe'   # 2026-09-30 moved from D: (see header); 2026-09-13 was D:\llama-b9596
 # b10078 (2026-07-21, negotiation V8): fixes ggml-vulkan memory-type selection — the
 # whole model lands in the dedicated carve (48.4 GB) instead of spilling ~16 GB to
 # host-visible/GTT. RAM free 7.2 -> 22.3 GB (WoW co-residency), tps 41.9 -> 43.8.
@@ -93,7 +100,7 @@ VARIANT=""
 # 2026-09-12: unset -> 0.74 GB dedicated (the #22930 signature), set -> 28.85 GB.
 # It is REQUIRED on this runtime, not a tuning option.
 ENVSET="GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1"
-CODER_MODEL='D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf'
+CODER_MODEL='C:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf'
 # Q6_K over Q8_0: +26% decode, no capability loss observed (shakeout 9/9 both).
 # CODER line flags (all load-bearing, 2026-08-16 window):
 #   --mmproj             vision/OCR head (Qwen3.8 is multimodal; supervisor
@@ -118,7 +125,7 @@ CODER_MANIFEST_ID="qwen3-coder-next-unsloth-gguf@ce09c67b"
 # drops the flag and the check together (text-only serving).
 MMPROJ_MODEL=''   # Coder-Next is text-only
 MMPROJ_MANIFEST_ID=""
-CODER="$LL -m $CODER_MODEL${MMPROJ_MODEL:+ --mmproj $MMPROJ_MODEL} --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 262144 --ubatch-size 1024 --batch-size 4096 --flash-attn 1 --jinja --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
+CODER="$LL -m $CODER_MODEL${MMPROJ_MODEL:+ --mmproj $MMPROJ_MODEL} --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 262144 --ubatch-size 1024 --batch-size 4096 --flash-attn 1 --jinja --threads 16 --alias qwen --log-file C:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 # Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
 OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
