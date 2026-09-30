@@ -238,7 +238,10 @@ buildok() {
   printf '%s' "$bi" | grep -qE "\"build_info\":\"$BASE_BUILD(-|\")"
 }
 ownerpid() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERPID_B64" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+ -?[0-9]+$' | head -1 | cut -d' ' -f1; }
-ownercmd() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERCMD_B64" 2>/dev/null | tr -d '\r' | grep 'llama-server' | head -1 | sed 's/"//g; s/[[:space:]]*$//'; }
+# tr -s ' ': Win32_Process reports TWO spaces after the exe when cmd /c launched it
+# (the ENVSET path), so without it adopt() never matched and every keepalive
+# restart relaunched a correct server (measured 2026-09-30, bead 07i).
+ownercmd() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OWNERCMD_B64" 2>/dev/null | tr -d '\r' | grep 'llama-server' | head -1 | sed 's/"//g; s/[[:space:]]*$//' | tr -s ' '; }
 reclaim() {  # $1 = reason. Counts toward the stand-down cap; crash restarts don't.
   RECLAIMS=$((RECLAIMS+1))
   if [ "$RECLAIMS" -gt "$MAX_RECLAIMS" ]; then
@@ -259,7 +262,7 @@ adopt() {
   pid=$1
   cmd=$(ownercmd)
   [ -z "$cmd" ] && return   # transient — retry next cycle, adopt nothing on no data
-  want=$(printf '%s' "$CODER" | sed 's/"//g')
+  want=$(printf '%s' "$CODER" | sed 's/"//g' | tr -s ' ')
   if [ "$cmd" = "$want" ]; then
     EXPECTED_PID=$pid
     log "adopted serving pid $pid (build + cmdline verified)"
