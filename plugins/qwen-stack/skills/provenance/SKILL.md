@@ -45,7 +45,7 @@ re-hashed. The manifest + this workflow close all four.
 6. **Never bulk-hash `D:\models` against a live mmap-served model.** The box's
    D: NVMe has surprise-removed under sustained read (2026-08-01/07/15) and
    takes llama-server with it. Announce a service window in
-   `C:\claude-coordination\QWEN_SERVER_NEGOTIATION.md` or hash one file at a
+   `D:\claude-coordination\QWEN_SERVER_NEGOTIATION.md` or hash one file at a
    time while the served model is on `--no-mmap` (b10078 config).
 7. **Escape hatch** `QWEN_PROVENANCE_ENFORCE=0` exists for the keepalive; using
    it is a logged, reviewable event, not a convenience.
@@ -95,7 +95,7 @@ keeps the on-disk name), no download, `verified_on: [box]`. This is how the
    `PROVENANCE_TRANSFER=1 scp "<local file>" qwentescence:D:/models/<subdir>/`
 2. On the box, produce a listing (this is a read of ONLY the new files, not
    the whole tree):
-   `ssh qwentescence powershell -NoProfile -ExecutionPolicy Bypass -File C:\claude-coordination\Get-ProvenanceListing.ps1 -Root D:\models\<subdir> -Out C:\Users\sam\<id>.listing`
+   `ssh qwentescence powershell -NoProfile -ExecutionPolicy Bypass -File D:\claude-coordination\Get-ProvenanceListing.ps1 -Root D:\models\<subdir> -Out C:\Users\sam\<id>.listing`
    then `scp qwentescence:C:/Users/sam/<id>.listing ./`
 3. Import: `python3 scripts/ops/provenance/provenance.py verify --id <id> --listing <id>.listing --host box`
    → stamps `verified_on: ["mac","box"]`. Only now may the keepalive serve it.
