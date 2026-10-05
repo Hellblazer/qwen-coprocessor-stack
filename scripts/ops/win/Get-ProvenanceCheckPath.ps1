@@ -27,11 +27,11 @@
 
     Intended caller: the Mac keepalive, over ssh, before launching a model:
 
-        ssh -n qwentescence 'powershell -File C:\claude-coordination\Get-ProvenanceCheckPath.ps1 -Manifest C:\claude-coordination\MANIFEST.json -Path D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf -TargetHost box -Id qwen3-coder-next-q4kxl'
+        ssh -n qwentescence 'powershell -File D:\claude-coordination\Get-ProvenanceCheckPath.ps1 -Manifest D:\claude-coordination\MANIFEST.json -Path D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf -TargetHost box -Id qwen3-coder-next-q4kxl'
 
     DEPLOYMENT: see the header of Get-ProvenanceListing.ps1 for the scp
     commands that copy this script (alongside the other two) to
-    C:\claude-coordination\ on the box. Not deployed by this repo automatically.
+    D:\claude-coordination\ on the box. Not deployed by this repo automatically.
 
 .PARAMETER Manifest
     Path to models/MANIFEST.json (or a box-local copy of it).

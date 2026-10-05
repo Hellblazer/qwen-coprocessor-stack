@@ -18,9 +18,9 @@
     script in this repo): copy to the box coordination directory alongside
     the existing keepalive coordination files.
 
-        scp "scripts/ops/win/Get-ProvenanceListing.ps1" qwentescence:C:/claude-coordination/Get-ProvenanceListing.ps1
-        scp "scripts/ops/win/Test-Provenance.ps1"        qwentescence:C:/claude-coordination/Test-Provenance.ps1
-        scp "scripts/ops/win/Get-ProvenanceCheckPath.ps1" qwentescence:C:/claude-coordination/Get-ProvenanceCheckPath.ps1
+        scp "scripts/ops/win/Get-ProvenanceListing.ps1" qwentescence:D:/claude-coordination/Get-ProvenanceListing.ps1
+        scp "scripts/ops/win/Test-Provenance.ps1"        qwentescence:D:/claude-coordination/Test-Provenance.ps1
+        scp "scripts/ops/win/Get-ProvenanceCheckPath.ps1" qwentescence:D:/claude-coordination/Get-ProvenanceCheckPath.ps1
 
 .PARAMETER Root
     Directory to hash recursively (e.g. D:\models or D:\llama-b10078).
@@ -32,7 +32,7 @@
     byte-for-byte). When omitted, the listing is written to stdout only.
 
 .EXAMPLE
-    .\Get-ProvenanceListing.ps1 -Root D:\models -Out C:\claude-coordination\models-listing.txt
+    .\Get-ProvenanceListing.ps1 -Root D:\models -Out D:\claude-coordination\models-listing.txt
 
 .NOTES
     PowerShell 5.1 target (box has no pwsh 7, no python — RDR-016 F4).
