@@ -31,7 +31,7 @@
 
     DEPLOYMENT: see the header of Get-ProvenanceListing.ps1 for the scp
     commands that copy this script (alongside the other two) to
-    D:\claude-coordination\ on the box. Not deployed by this repo automatically.
+    C:\claude-coordination\ on the box. Not deployed by this repo automatically.
 
 .PARAMETER Manifest
     Path to models/MANIFEST.json (or a box-local copy of it).

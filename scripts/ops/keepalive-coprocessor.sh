@@ -43,13 +43,13 @@
 # without launching anything, so a guard change can be validated without a service
 # interruption (a keepalive restart IS one: the held ssh is llama-server's parent).
 #
-# 2026-10-04: model, runtime, server log and the coordination directory are BACK
-# on D: (bead 96qh, Sam's decision). From 2026-09-30 to 10-04 they were on the
-# internal C: (bead kgh, PRs #113/#114) after the OWC D: enclosure faulted under
-# sustained I/O (bead jxu); a fan now holds it at 34 C idle / 61-66 C under
-# sustained read, with no faults since. The C: copies of both trees are the
-# revert: put C: back in LL and CODER_MODEL. The directory name
-# llama-b10867-patched is load-bearing (EXPECTED_BUILD is parsed from it).
+# 2026-10-09: model, runtime, server log and the coordination directory are on
+# the internal C: (Sam's decision). D: is the OWC Express 1M2 USB4 enclosure (bead
+# jxu): it faulted five times through 09-30, served again 10-04 to 10-09 after a
+# fan fix (bead 96qh), then faulted twice on 10-08 under light load; RMA reopened.
+# The D: copies of both trees are the revert: put D: back in LL and CODER_MODEL.
+# The directory name llama-b10867-patched is load-bearing (EXPECTED_BUILD is
+# parsed from it). D:\claude-coordination is a write-refusing stub.
 set -u
 HOST=qwentescence
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
@@ -61,13 +61,13 @@ SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
 # b10078 regression is understood (see bead 36p / the negotiation channel), b9596 is the
 # only build measured to use the carve here. Do NOT re-pin b10078 on the strength of tps
 # alone — tps was 47-50 in the broken states, HIGHER than b9596's 45-46.
-LL='D:\llama-b10867-patched\llama-server.exe'   # 2026-10-04 back on D: (see header); 2026-09-13 was D:\llama-b9596
+LL='C:\llama-b10867-patched\llama-server.exe'   # 2026-10-09 back on C: (see header); 2026-09-13 was D:\llama-b9596
 # b10078 (2026-07-21, negotiation V8): fixes ggml-vulkan memory-type selection — the
 # whole model lands in the dedicated carve (48.4 GB) instead of spilling ~16 GB to
 # host-visible/GTT. RAM free 7.2 -> 22.3 GB (WoW co-residency), tps 41.9 -> 43.8.
 # Historical (bead 081): b9611 did NOT fix the qwen3_next Vulkan crash; that was
 # co-residency VRAM exhaustion, eliminated by moving vision/35B off the box.
-# VARIANT: tuning flags agreed in D:\claude-coordination\QWEN_SERVER_NEGOTIATION.md
+# VARIANT: tuning flags agreed in C:\claude-coordination\QWEN_SERVER_NEGOTIATION.md
 # (GTT-spill reduction for WoW co-residency). Empty = baseline. e.g. "--no-mmap"
 #
 # 2026-07-26: --no-mmap REMOVED. On first launch after the C: repair + D: cable/
@@ -101,7 +101,7 @@ VARIANT=""
 # 2026-09-12: unset -> 0.74 GB dedicated (the #22930 signature), set -> 28.85 GB.
 # It is REQUIRED on this runtime, not a tuning option.
 ENVSET="GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1"
-CODER_MODEL='D:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf'
+CODER_MODEL='C:\models\qwen3-coder-next\Qwen3-Coder-Next-UD-Q4_K_XL.gguf'
 # Q6_K over Q8_0: +26% decode, no capability loss observed (shakeout 9/9 both).
 # CODER line flags (all load-bearing, 2026-08-16 window):
 #   --mmproj             vision/OCR head (Qwen3.8 is multimodal; supervisor
@@ -126,7 +126,7 @@ CODER_MANIFEST_ID="qwen3-coder-next-unsloth-gguf@ce09c67b"
 # drops the flag and the check together (text-only serving).
 MMPROJ_MODEL=''   # Coder-Next is text-only
 MMPROJ_MANIFEST_ID=""
-CODER="$LL -m $CODER_MODEL${MMPROJ_MODEL:+ --mmproj $MMPROJ_MODEL} --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 262144 --ubatch-size 1024 --batch-size 4096 --flash-attn 1 --jinja --threads 16 --alias qwen --log-file D:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
+CODER="$LL -m $CODER_MODEL${MMPROJ_MODEL:+ --mmproj $MMPROJ_MODEL} --host 0.0.0.0 --port 1235 --n-gpu-layers 99 --ctx-size 262144 --ubatch-size 1024 --batch-size 4096 --flash-attn 1 --jinja --threads 16 --alias qwen --log-file C:\\logs\\coder-box.log${VARIANT:+ $VARIANT}"
 KILLALL_B64=$(printf 'Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force' | iconv -t UTF-16LE | base64)
 # Emits "<pid> <age-seconds>" for the process OWNING :1235 (age -1 if unreadable).
 OWNERPID_B64=$(printf '$c = Get-NetTCPConnection -LocalPort 1235 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; $age = -1; if ($p) { $age = [int]((Get-Date) - $p.StartTime).TotalSeconds }; Write-Output "$($c.OwningProcess) $age" }' | iconv -t UTF-16LE | base64)
@@ -494,7 +494,7 @@ gpu_check() {  # POST-LOAD residency assertion. sets GPU_REASON/GPU_LAST; 0 = in
 # without measuring a cold load first.
 waitup(){ for i in $(seq 1 150); do up "$1" && return 0; sleep 8; done; return 1; }
 # Launch metadata for the box-side Claude (negotiation commitment 2, 2026-07-21):
-# every (re)launch writes D:\claude-coordination\qwen-server-state.json.
+# every (re)launch writes C:\claude-coordination\qwen-server-state.json.
 write_state() {
   local pid age ts json ps b64 src owner elapsed
   # PID of the process that OWNS :1235 — not tasklist's first llama-server row,
@@ -519,7 +519,7 @@ write_state() {
   if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
   json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
-  ps="Set-Content -Path D:\claude-coordination\qwen-server-state.json -Value '$json'"
+  ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
   log "state json written (pid ${pid:-unknown} via $src, owner $owner)"

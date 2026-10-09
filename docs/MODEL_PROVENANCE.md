@@ -55,7 +55,7 @@ $P register --id qwen3.8-27b-q8_0 --kind model --format gguf --trust-tier self-q
 # 4. ship to the box (marker lets the hook through), verify there, import
 PROVENANCE_TRANSFER=1 scp Qwen3.8-27B-Q8_0.gguf qwentescence:D:/models/qwen3.8-27b/
 ssh qwentescence powershell -NoProfile -ExecutionPolicy Bypass \
-   -File D:\claude-coordination\Get-ProvenanceListing.ps1 -Root D:\models\qwen3.8-27b -Out C:\Users\sam\qwen3.8.listing
+   -File C:\claude-coordination\Get-ProvenanceListing.ps1 -Root D:\models\qwen3.8-27b -Out C:\Users\sam\qwen3.8.listing
 scp qwentescence:C:/Users/sam/qwen3.8.listing ./
 $P verify --id qwen3.8-27b-q8_0 --listing qwen3.8.listing --host box
 # 5. wire: keepalive CODER/VISION line → arch probe (load + real generation) → shakeout → backend config
@@ -211,7 +211,7 @@ or a listing + `verify --listing`. **Do not bulk-hash `D:\models` while a
 model is being served with mmap** — the box's D: NVMe (OWC Aura Ultra IV) has
 surprise-removed under sustained read three times (2026-08-01/07/15) and takes
 `llama-server` with it (`0xc0000006`). Announce a service window in
-`D:\claude-coordination\QWEN_SERVER_NEGOTIATION.md`, or hash one file at a
+`C:\claude-coordination\QWEN_SERVER_NEGOTIATION.md`, or hash one file at a
 time with the served model on `--no-mmap`.
 
 ### Drift and CI
