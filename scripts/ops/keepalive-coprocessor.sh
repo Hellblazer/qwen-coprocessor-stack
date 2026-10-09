@@ -218,6 +218,88 @@ MAX_RECLAIMS=3
 GUARDS_DOWN=0
 BUILDCHK_DARK=0
 up()    { curl -s --max-time 5 "http://$HOST:$1/v1/models" 2>/dev/null | grep -q '"name"'; }
+# Inference probe (bead ffsc). up() is not liveness when the disk under the
+# server is gone: on 2026-10-08 D: dropped out, llama-server kept answering
+# /health and /v1/models from memory, and only the next real completion touched
+# the dead pages and crashed it (0xc0000006, 2026-10-09 00:29). One generated
+# token forces that fault out on our schedule instead of a user's: a crash then
+# fails up() on the next cycle and the DOWN path relaunches, so the probe itself
+# only has to COUNT the server-alive-but-broken cases.
+# infer_probe returns 0 = generated; 1 = hard failure, sets PROBE_REASON: HTTP
+# 500/other non-200, 200 without content, or a 60 s timeout while /slots showed
+# an idle slot (a hang, e.g. IO stuck on a dead disk); 2 = inconclusive: any
+# transport error (a network blip between up() and the probe), HTTP 503 (a real
+# request took the last slot after the /slots read), a timeout with no idle slot
+# seen, or every slot positively busy. Inconclusive never counts: killing a busy,
+# healthy server is the 2026-08-04 flapping class.
+# Busy is inferred from positive evidence only: a /slots body with
+# "is_processing": true and no false. A missing, errored or reformatted /slots
+# (--no-slots, a format change) does not disable the probe; it runs anyway.
+# Cost: the 1-token prompt (cache_prompt false) lands in an idle slot and can
+# evict that slot's cached prefix, once per PROBE_EVERY.
+PROBE_PORT=1235
+PROBE_EVERY=15         # cadence in healthy 20s cycles (~5 min); every cycle while failing
+MAX_PROBE_FAILS=3      # consecutive hard failures before a relaunch
+MAX_PROBE_RELAUNCHES=2 # probe relaunches with no passing probe in between, then stand down
+PROBE_FAILS=0
+PROBE_CYC=0
+PROBE_RELAUNCHES=0
+PROBE_OFF=0
+infer_probe() {
+  local slots idle=0 out rc code
+  PROBE_REASON=""
+  slots=$(curl -s --max-time 5 "http://$HOST:$PROBE_PORT/slots" 2>/dev/null)
+  if printf '%s' "$slots" | grep -qE '"is_processing": *false'; then
+    idle=1
+  elif printf '%s' "$slots" | grep -qE '"is_processing": *true'; then
+    PROBE_REASON="all slots busy"; return 2
+  fi
+  out=$(curl -s --max-time 60 -w '\n%{http_code}' -H 'Content-Type: application/json' \
+        -d '{"prompt":"ok","n_predict":1,"cache_prompt":false}' \
+        "http://$HOST:$PROBE_PORT/completion" 2>/dev/null); rc=$?
+  if [ "$rc" -eq 28 ]; then
+    PROBE_REASON="timed out after 60 s"
+    [ "$idle" -eq 1 ] && { PROBE_REASON="$PROBE_REASON with an idle slot"; return 1; }
+    return 2
+  fi
+  if [ "$rc" -ne 0 ]; then PROBE_REASON="curl rc $rc (transport)"; return 2; fi
+  code=${out##*$'\n'}
+  if [ "$code" = 503 ]; then PROBE_REASON="HTTP 503"; return 2; fi
+  if [ "$code" != 200 ]; then PROBE_REASON="HTTP $code"; return 1; fi
+  printf '%s' "$out" | grep -q '"content":' || { PROBE_REASON="200 without content"; return 1; }
+  return 0
+}
+# Runs on a live server, also while the identity guards stand down (a peer
+# launcher's server that cannot generate is relaunched like our own).
+# Returns 1 when the server must be relaunched. Bounded like GPU_FAILS: after
+# MAX_PROBE_RELAUNCHES relaunches with no passing probe, the server is left up
+# with a standing alert and probing stops -- a build or flag change that breaks
+# /completion must not become a cold-load loop (the 2026-07-24 kill/retry
+# hard-reset class). The main loop counts a relaunch only when start_coder
+# actually launched (a preflight/provenance refusal launches nothing), and a
+# successful DOWN-path launch (a fresh server after a crash) turns probing back on.
+probe_step() {
+  [ "$PROBE_OFF" -eq 1 ] && return 0
+  PROBE_CYC=$((PROBE_CYC + 1))
+  [ "$PROBE_FAILS" -gt 0 ] || [ $((PROBE_CYC % PROBE_EVERY)) -eq 0 ] || return 0
+  infer_probe
+  case $? in
+    0) [ "$PROBE_FAILS" -gt 0 ] && log "inference probe recovered"
+       PROBE_FAILS=0; PROBE_RELAUNCHES=0 ;;
+    2) log "inference probe inconclusive ($PROBE_REASON) -- not counted" ;;
+    *) PROBE_FAILS=$((PROBE_FAILS + 1))
+       log "inference probe FAILED ($PROBE_REASON), $PROBE_FAILS/$MAX_PROBE_FAILS"
+       [ "$PROBE_FAILS" -lt "$MAX_PROBE_FAILS" ] && return 0
+       if [ "$PROBE_RELAUNCHES" -ge "$MAX_PROBE_RELAUNCHES" ]; then
+         PROBE_OFF=1
+         log "ALERT STANDS: inference probe still failing after $PROBE_RELAUNCHES relaunches ($PROBE_REASON). Leaving the server UP and probing OFF until keepalive restart -- :1235 liveness does not mean it can generate."
+         return 0
+       fi
+       log "coder-box ZOMBIE: :1235 answers liveness but cannot generate -- relaunching ($((PROBE_RELAUNCHES + 1))/$MAX_PROBE_RELAUNCHES)"
+       return 1 ;;
+  esac
+  return 0
+}
 # Reclaim only on a POSITIVE build mismatch. No/garbled /props response is NOT
 # a mismatch — up() already gates liveness, and reclaiming on transient curl
 # failure would relaunch a healthy server on every network blip (the 2026-08-04
@@ -618,6 +700,11 @@ if [ "${QWEN_KEEPALIVE_SELFTEST:-0}" = "1" ]; then
   wait_for_session
   if preflight; then log "SELFTEST preflight PASS"; else log "SELFTEST preflight FAIL -- $PREFLIGHT_REASON"; fi
   if gpu_check; then log "SELFTEST gpu residency PASS ($GPU_LAST)"; else log "SELFTEST gpu residency FAIL -- $GPU_REASON (measured: ${GPU_LAST:-none})"; fi
+  infer_probe; case $? in
+    0) log "SELFTEST inference probe PASS (1 token generated)" ;;
+    2) log "SELFTEST inference probe INCONCLUSIVE -- $PROBE_REASON" ;;
+    *) log "SELFTEST inference probe FAIL -- $PROBE_REASON" ;;
+  esac
   if prov_gate; then log "SELFTEST provenance PASS (model=$PROV_MODEL_ID mmproj=$PROV_MMPROJ_ID runtime=$PROV_RUNTIME_ID)"; else log "SELFTEST provenance FAIL -- $PROV_REASON"; fi
   log "SELFTEST done"
   exit 0
@@ -626,7 +713,11 @@ CYC=0
 while true; do
   if ! up 1235; then
     log "coder-box DOWN"
-    start_coder
+    start_coder && { PROBE_FAILS=0; PROBE_OFF=0; }
+  elif ! probe_step; then
+    # Counters move only when a launch happened: a refused launch
+    # (preflight/provenance) leaves the zombie up and it is re-probed next cycle.
+    start_coder && { PROBE_FAILS=0; PROBE_RELAUNCHES=$((PROBE_RELAUNCHES + 1)); }
   elif [ "$GUARDS_DOWN" -eq 1 ]; then
     :  # stood down (reclaim cap) — liveness duty only
   elif ! buildok; then
