@@ -273,9 +273,11 @@ infer_probe() {
 # launcher's server that cannot generate is relaunched like our own).
 # Returns 1 when the server must be relaunched. Bounded like GPU_FAILS: after
 # MAX_PROBE_RELAUNCHES relaunches with no passing probe, the server is left up
-# with a standing alert and probing stops until a keepalive restart -- a build
-# or flag change that breaks /completion must not become a cold-load loop
-# (the 2026-07-24 kill/retry hard-reset class).
+# with a standing alert and probing stops -- a build or flag change that breaks
+# /completion must not become a cold-load loop (the 2026-07-24 kill/retry
+# hard-reset class). The main loop counts a relaunch only when start_coder
+# actually launched (a preflight/provenance refusal launches nothing), and a
+# successful DOWN-path launch (a fresh server after a crash) turns probing back on.
 probe_step() {
   [ "$PROBE_OFF" -eq 1 ] && return 0
   PROBE_CYC=$((PROBE_CYC + 1))
@@ -293,8 +295,7 @@ probe_step() {
          log "ALERT STANDS: inference probe still failing after $PROBE_RELAUNCHES relaunches ($PROBE_REASON). Leaving the server UP and probing OFF until keepalive restart -- :1235 liveness does not mean it can generate."
          return 0
        fi
-       PROBE_RELAUNCHES=$((PROBE_RELAUNCHES + 1))
-       log "coder-box ZOMBIE: :1235 answers liveness but cannot generate -- relaunching ($PROBE_RELAUNCHES/$MAX_PROBE_RELAUNCHES)"
+       log "coder-box ZOMBIE: :1235 answers liveness but cannot generate -- relaunching ($((PROBE_RELAUNCHES + 1))/$MAX_PROBE_RELAUNCHES)"
        return 1 ;;
   esac
   return 0
@@ -712,11 +713,11 @@ CYC=0
 while true; do
   if ! up 1235; then
     log "coder-box DOWN"
-    start_coder && PROBE_FAILS=0
+    start_coder && { PROBE_FAILS=0; PROBE_OFF=0; }
   elif ! probe_step; then
-    # PROBE_FAILS stays set until a launch succeeds: a refused launch
-    # (preflight/provenance) leaves the zombie up, and it is re-probed next cycle.
-    start_coder && PROBE_FAILS=0
+    # Counters move only when a launch happened: a refused launch
+    # (preflight/provenance) leaves the zombie up and it is re-probed next cycle.
+    start_coder && { PROBE_FAILS=0; PROBE_RELAUNCHES=$((PROBE_RELAUNCHES + 1)); }
   elif [ "$GUARDS_DOWN" -eq 1 ]; then
     :  # stood down (reclaim cap) — liveness duty only
   elif ! buildok; then

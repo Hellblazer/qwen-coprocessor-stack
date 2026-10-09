@@ -63,12 +63,18 @@ expect "probe_step not due" "0/0" "$r/$PROBE_FAILS"
 probe_step; expect "probe_step fail 1" "0/1" "$?/$PROBE_FAILS"; stop
 serve busy; probe_step; expect "probe_step inconclusive" "0/1" "$?/$PROBE_FAILS"; stop
 serve 500; probe_step; expect "probe_step fail 2" "0/2" "$?/$PROBE_FAILS"
-probe_step; expect "probe_step relaunch 1" "1/1" "$?/$PROBE_RELAUNCHES"
-# the loop resets PROBE_FAILS after a successful start_coder
-PROBE_FAILS=0; PROBE_CYC=14
-for i in 1 2; do probe_step; done; probe_step; expect "probe_step relaunch 2" "1/2" "$?/$PROBE_RELAUNCHES"
-PROBE_FAILS=0; PROBE_CYC=14
-for i in 1 2; do probe_step; done; probe_step; expect "probe_step stands down" "0/1" "$?/$PROBE_OFF"
+probe_step; expect "probe_step relaunch due" "1/0" "$?/$PROBE_RELAUNCHES"
+# loop(): the main loop's handling of probe_step's verdict, with start_coder's
+# outcome given as $1 (0 launched, 1 refused).
+loop() { probe_step || { [ "$1" -eq 0 ] && { PROBE_FAILS=0; PROBE_RELAUNCHES=$((PROBE_RELAUNCHES + 1)); }; }; }
+loop 0; expect "launched relaunch counts" "1/0" "$PROBE_RELAUNCHES/$PROBE_FAILS"
+# refused launches never burn the budget or stand the probe down
+PROBE_CYC=14; for i in 1 2 3 4 5 6; do loop 1; done
+expect "refused launches do not count" "1/0" "$PROBE_RELAUNCHES/$PROBE_OFF"
+PROBE_FAILS=0; PROBE_CYC=14; for i in 1 2 3; do loop 0; done
+expect "second launched relaunch" "2/0" "$PROBE_RELAUNCHES/$PROBE_OFF"
+PROBE_CYC=14; for i in 1 2 3; do loop 0; done
+expect "probe_step stands down at cap" "2/1" "$PROBE_RELAUNCHES/$PROBE_OFF"
 c=$PROBE_CYC; probe_step; expect "probe_step off stays off (no probe, no count)" "0/$c" "$?/$PROBE_CYC"; stop
 # a passing probe clears both counters
 PROBE_OFF=0; PROBE_FAILS=1; serve ok; probe_step; expect "probe_step recovery" "0/0/0" "$?/$PROBE_FAILS/$PROBE_RELAUNCHES"; stop
