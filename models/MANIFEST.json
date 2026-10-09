@@ -634,8 +634,8 @@
       "verified_on": [
         "box"
       ],
-      "verified_at": "2026-09-30T23:33:49Z",
-      "notes": "adopted from existing files on box at revision ce09c67b53bc8739eef83fe67b2f5d293c270632 (pinned; may not be current main); Retro 2026-08-15: files pre-existing in D:\\models\\qwen3-coder-next; UD-Q4_K_XL is the served coder-box model. Q6_K shard 3 of 3 was never on the box. 2026-09-30: UD-Q4_K_XL copied box-locally to C:\\models\\qwen3-coder-next (served from there; D: copy kept as revert) and re-verified on C:.",
+      "verified_at": "2026-10-09T13:44:01Z",
+      "notes": "adopted from existing files on box at revision ce09c67b53bc8739eef83fe67b2f5d293c270632 (pinned; may not be current main); Retro 2026-08-15: files pre-existing in D:\\models\\qwen3-coder-next; UD-Q4_K_XL is the served coder-box model. Q6_K shard 3 of 3 was never on the box. 2026-09-30: UD-Q4_K_XL copied box-locally to C:\\models\\qwen3-coder-next (served from there; D: copy kept as revert) and re-verified on C:. 2026-10-08: D: faulted twice more (bead jxu, RMA reopened); 2026-10-09: served from C:\\models\\qwen3-coder-next again and the C: copy re-verified (sha256 match); the D: copy is the revert.",
       "derived_from": "Qwen/Qwen3-Coder-Next@a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb",
       "derived_from_files": [
         {
@@ -2789,8 +2789,8 @@
         "mac",
         "box"
       ],
-      "verified_at": "2026-09-30T23:33:54Z",
-      "notes": "overlay runtime: official llama-b10867-bin-win-vulkan-x64.zip with ggml-vulkan.dll replaced per Hellblazer/qwen-coprocessor-stack#34707921300 artifact ggml-vulkan-b10867-patched; 2026-09-30: tree copied box-locally to C:\\llama-b10867-patched (served from there; D: copy kept as revert) and re-verified on C:, 52/52 files.",
+      "verified_at": "2026-10-09T13:44:07Z",
+      "notes": "overlay runtime: official llama-b10867-bin-win-vulkan-x64.zip with ggml-vulkan.dll replaced per Hellblazer/qwen-coprocessor-stack#34707921300 artifact ggml-vulkan-b10867-patched; 2026-09-30: tree copied box-locally to C:\\llama-b10867-patched (served from there; D: copy kept as revert) and re-verified on C:, 52/52 files. 2026-10-09: served from C:\\llama-b10867-patched again after the 10-08 D: faults, C: tree re-verified 52/52; the D: copy is the revert.",
       "overlay": {
         "repo": "Hellblazer/qwen-coprocessor-stack",
         "run_id": 34707921300,

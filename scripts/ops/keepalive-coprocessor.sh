@@ -43,13 +43,13 @@
 # without launching anything, so a guard change can be validated without a service
 # interruption (a keepalive restart IS one: the held ssh is llama-server's parent).
 #
-# 2026-09-30: model, runtime and server log MOVED from D: to the internal C:
-# (bead kgh). D: is the OWC Express 1M2 USB4 enclosure, which has faulted under
-# sustained I/O five times (bead jxu); the last one took the server down. The D:
-# copies of both trees are untouched and are the revert: put D: back in LL and
-# CODER_MODEL. The directory name llama-b10867-patched is load-bearing
-# (EXPECTED_BUILD is parsed from it). The coordination directory moved to
-# C:\claude-coordination the same day; D:\claude-coordination is a write-refusing stub.
+# 2026-10-09: model, runtime, server log and the coordination directory are on
+# the internal C: (Sam's decision). D: is the OWC Express 1M2 USB4 enclosure (bead
+# jxu): it faulted five times through 09-30, served again 10-04 to 10-09 after a
+# fan fix (bead 96qh), then faulted twice on 10-08 under light load; RMA reopened.
+# The D: copies of both trees are the revert: put D: back in LL and CODER_MODEL.
+# The directory name llama-b10867-patched is load-bearing (EXPECTED_BUILD is
+# parsed from it). D:\claude-coordination is a write-refusing stub.
 set -u
 HOST=qwentescence
 SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
@@ -61,7 +61,7 @@ SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
 # b10078 regression is understood (see bead 36p / the negotiation channel), b9596 is the
 # only build measured to use the carve here. Do NOT re-pin b10078 on the strength of tps
 # alone — tps was 47-50 in the broken states, HIGHER than b9596's 45-46.
-LL='C:\llama-b10867-patched\llama-server.exe'   # 2026-09-30 moved from D: (see header); 2026-09-13 was D:\llama-b9596
+LL='C:\llama-b10867-patched\llama-server.exe'   # 2026-10-09 back on C: (see header); 2026-09-13 was D:\llama-b9596
 # b10078 (2026-07-21, negotiation V8): fixes ggml-vulkan memory-type selection — the
 # whole model lands in the dedicated carve (48.4 GB) instead of spilling ~16 GB to
 # host-visible/GTT. RAM free 7.2 -> 22.3 GB (WoW co-residency), tps 41.9 -> 43.8.
