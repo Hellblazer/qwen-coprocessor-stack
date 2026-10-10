@@ -55,7 +55,7 @@ jobs:
           git apply --check --verbose $p
           git apply $p
           Write-Host "--- patched region ---"
-          Select-String -Path ggml/src/ggml-vulkan/ggml-vulkan.cpp -Pattern "Carve-first" -Context 2,14
+          Select-String -Path ggml/src/ggml-vulkan/*.cpp -Pattern "Carve-first" -Context 2,14
 
       - name: Install Vulkan SDK
         run: |
