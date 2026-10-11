@@ -2,36 +2,39 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Bash",
         "hooks": [
           {
-            "command": "bash \"$CLAUDE_PROJECT_DIR/plugins/qwen-stack/hooks/provenance-guard.sh\"",
-            "type": "command"
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/plugins/qwen-stack/hooks/provenance-guard.sh\""
           }
-        ],
-        "matcher": "Bash"
+        ]
       }
     ],
     "PreCompact": [
       {
+        "matcher": "",
         "hooks": [
           {
-            "command": "bd prime",
-            "type": "command"
+            "type": "command",
+            "command": "bd prime"
           }
-        ],
-        "matcher": ""
+        ]
       }
     ],
     "SessionStart": [
       {
+        "matcher": "",
         "hooks": [
           {
-            "command": "bd prime",
-            "type": "command"
+            "type": "command",
+            "command": "bd prime"
           }
-        ],
-        "matcher": ""
+        ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "qwen-stack@qwen-stack": true
   }
 }
