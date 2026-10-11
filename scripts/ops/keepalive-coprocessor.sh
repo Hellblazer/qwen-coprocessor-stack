@@ -61,7 +61,7 @@ SSH="ssh -n -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
 # b10078 regression is understood (see bead 36p / the negotiation channel), b9596 is the
 # only build measured to use the carve here. Do NOT re-pin b10078 on the strength of tps
 # alone — tps was 47-50 in the broken states, HIGHER than b9596's 45-46.
-LL='C:\llama-b10867-patched\llama-server.exe'   # 2026-10-09 back on C: (see header); 2026-09-13 was D:\llama-b9596
+LL='C:\llama-b11541-patched\llama-server.exe'   # 2026-10-10 b11541-patched (bead shis: prefill +37-46%, battery 43.2 s vs 50.6 s); revert: C:\llama-b10867-patched
 # b10078 (2026-07-21, negotiation V8): fixes ggml-vulkan memory-type selection — the
 # whole model lands in the dedicated carve (48.4 GB) instead of spilling ~16 GB to
 # host-visible/GTT. RAM free 7.2 -> 22.3 GB (WoW co-residency), tps 41.9 -> 43.8.
