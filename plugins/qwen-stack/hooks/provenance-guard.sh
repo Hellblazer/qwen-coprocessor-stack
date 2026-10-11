@@ -84,6 +84,30 @@ matchLine() {
     done
 }
 
+# Fetch rules match a COMMAND, not a mention. $COMMAND is cut into segments at
+# shell separators (quotes are not parsed; a deny-list errs toward allow here),
+# and a segment counts only when curl/wget/aria2c is the program it runs. The
+# first form denied every command whose text held both "curl" and a Hugging Face
+# hostname anywhere, e.g. a health check followed by a commit message, and any
+# GitHub release download at all (2026-10-11).
+SEGMENTS="$(printf '%s' "${COMMAND//$'\\\n'/ }" | tr ';|&(`{' '\n\n\n\n\n\n')"
+FETCH_CMD='^[[:space:]"'"'"']*((sudo|command|exec|time|env|nohup|xargs|then|do|else)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:]]*/)?(curl|wget|aria2c)([[:space:]]|$)'
+HF_HOST='(^|[^A-Za-z0-9.-])([A-Za-z0-9-]+\.)*(huggingface\.co|hf\.co)($|[^A-Za-z0-9.-])'
+# llama.cpp-family runtimes only; other projects' release assets are not ours to gate.
+RUNTIME_RELEASE='github\.com/((ggml-org|ggerganov)/[^[:space:]/]+|[^[:space:]/]+/[^[:space:]/]*(llama|ggml|ollama|kobold|lm-?studio|mlx)[^[:space:]/]*)/releases/download/'
+# True iff one segment runs a fetch tool AND matches $1 AND (when given) not $2.
+fetchSeg() {
+    printf '%s\n' "$SEGMENTS" | {
+        while IFS= read -r seg; do
+            printf '%s' "$seg" | grep -Eqi -- "$FETCH_CMD" || continue
+            printf '%s' "$seg" | grep -Eqi -- "$1" || continue
+            if [ -n "${2:-}" ] && printf '%s' "$seg" | grep -Eqi -- "$2"; then continue; fi
+            exit 0
+        done
+        exit 1
+    }
+}
+
 PROVENANCE_FETCH='python3 scripts/ops/provenance/provenance.py fetch'
 PROVENANCE_ADD_RUNTIME='python3 scripts/ops/provenance/provenance.py add-runtime'
 PROVENANCE_VERIFY='python3 scripts/ops/provenance/provenance.py verify'
@@ -105,7 +129,7 @@ elif match 'snapshot_download\(' \
     REASON="Raw huggingface_hub usage (snapshot_download / hf_hub_download / HfApi — direct call, aliased import, or dotted attribute access) bypasses provenance tracking. Use: $PROVENANCE_FETCH <repo> (or $PROVENANCE_SKILL fetch)."
 elif match '(git clone|git lfs)' && match 'huggingface\.co'; then
     REASON="Raw git clone/lfs of a Hugging Face repo bypasses provenance tracking (no hash verification, revision not pinned to a resolved sha). Use: $PROVENANCE_FETCH <repo> (or $PROVENANCE_SKILL fetch)."
-elif match '(curl|wget|aria2c)' && match '(huggingface\.co|hf\.co)' && ! match '/api/'; then
+elif fetchSeg "$HF_HOST" '(huggingface\.co|hf\.co)/api/'; then
     REASON="Raw curl/wget/aria2c against Hugging Face bypasses provenance tracking. Read-only /api/ metadata calls are fine; weight downloads are not. Use: $PROVENANCE_FETCH <repo> (or $PROVENANCE_SKILL fetch)."
 elif match '(^|[^A-Za-z0-9_])ollama[[:space:]]+pull($|[^A-Za-z0-9_])'; then
     REASON="'ollama pull' bypasses provenance tracking. Use: $PROVENANCE_FETCH <repo> (or $PROVENANCE_SKILL fetch)."
@@ -115,8 +139,8 @@ elif match '(^|[^A-Za-z0-9_])lms[[:space:]]+(get|pull)($|[^A-Za-z0-9_])'; then
     REASON="LM Studio CLI pull bypasses provenance tracking. Use: $PROVENANCE_FETCH <repo> (or $PROVENANCE_SKILL fetch)."
 elif match 'gh[[:space:]]+release[[:space:]]+download' && match '(llama\.cpp|ggml)'; then
     REASON="Raw 'gh release download' of a llama.cpp/ggml asset bypasses provenance tracking. Use: $PROVENANCE_ADD_RUNTIME (or $PROVENANCE_SKILL add-runtime)."
-elif match '(curl|wget)' && match 'github\.com/[^ ]*/releases/download/'; then
-    REASON="Raw curl/wget of a GitHub release asset bypasses provenance tracking. Use: $PROVENANCE_ADD_RUNTIME (or $PROVENANCE_SKILL add-runtime)."
+elif fetchSeg "$RUNTIME_RELEASE"; then
+    REASON="Raw curl/wget of a llama.cpp-family GitHub release asset bypasses provenance tracking. Use: $PROVENANCE_ADD_RUNTIME (or $PROVENANCE_SKILL add-runtime)."
 elif matchLine '(^|[^A-Za-z0-9_])(scp|rsync|sftp)($|[^A-Za-z0-9_])' '(\.gguf|\.safetensors|mmproj)' '(qwentescence|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)' && ! matchF 'PROVENANCE_TRANSFER=1'; then
     REASON="Transferring weights/runtime to the box outside the provenance tool. Verify first ($PROVENANCE_VERIFY), then transfer via $PROVENANCE_SKILL, which sets PROVENANCE_TRANSFER=1 for its own scp/rsync step."
 elif match 'torch\.load\(' && ! matchF 'weights_only=True' && ! matchF 'weights_only = True'; then
