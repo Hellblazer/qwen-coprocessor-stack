@@ -14,6 +14,8 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-11
+
 Ships the RDR-002 §Layer 1 extension-lifecycle surface: five new MCP tools
 (`qwen_extension_install`/`remove`/`enable`/`disable`/`update`) alongside the
 existing read-only `qwen_extensions`/`qwen_reload_extensions`, plus the
@@ -35,6 +37,14 @@ calls the listing-detail verb `inspect`; the skill has always spelled it
 `info` — same behavior, no functional gap, just a name that never matched
 across the two documents.)
 
+Also in this release: the provenance guard hook no longer denies ordinary
+curl use. Its two fetch rules tested the whole command text, so any command
+that mentioned curl or wget and a Hugging Face hostname anywhere was denied,
+and so was a curl or wget of any GitHub release asset, in every project with
+the plugin enabled. They now fire only when curl, wget or aria2c is the
+program being run, against a real Hugging Face host or a llama.cpp-family
+release.
+
 ### Added
 
 - **`qwen_extension_install` / `qwen_extension_remove` / `qwen_extension_enable`
@@ -46,6 +56,13 @@ across the two documents.)
 
 ### Fixed
 
+- **Provenance guard denied unrelated curl and wget commands.** A health check
+  followed by a commit message naming Hugging Face, a `grep` for both words,
+  and a download of another project's GitHub release (the Actions runner
+  tarball, 2026-10-10) were all refused. The command is now cut into segments
+  at shell separators and a segment counts only when the fetch tool is the
+  program it runs; the release rule covers llama.cpp-family repositories only.
+  13 new cases in `hooks/tests/test-provenance-guard.sh`.
 - **`qwen_extension_install` no longer hangs the supervisor.** The real
   `qwen extensions install <source>` CLI prompts interactively ("Do you want
   to continue? [Y/n]:") unless `--consent` is passed; the exec layer never
