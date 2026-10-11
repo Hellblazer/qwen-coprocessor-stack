@@ -180,13 +180,14 @@ SESSION_B64=$(printf '%s' '$q = @(query session 2>$null); $c = $false; foreach (
 # Static machine-state assertions, one ssh round trip. STARTUP deliberately
 # filters on EXECUTABLE extensions, not on name: a launcher in the Startup folder
 # is the hazard regardless of what it is called (Tailscale.lnk is not one).
-PREFLIGHT_B64=$(printf '%s' '$ErrorActionPreference="SilentlyContinue"; $k="HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"; $v=(Get-ItemProperty -Path $k -Name "HardwareInformation.qwMemorySize")."HardwareInformation.qwMemorySize"; Write-Output ("CARVE=" + $v); $pf=Get-CimInstance Win32_PageFileSetting | Select-Object -First 1; Write-Output ("PAGEFILE=" + $(if($pf){"" + $pf.InitialSize + "/" + $pf.MaximumSize}else{"automatic"})); $d=@("C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup","C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"); $f=@(); foreach ($x in $d) { if (Test-Path $x) { Get-ChildItem -LiteralPath $x -File | Where-Object { $_.Extension -match "^\.(cmd|bat|ps1|exe|vbs)$" } | ForEach-Object { $f += $_.Name } } }; Write-Output ("STARTUP=" + $(if($f){$f -join ","}else{"none"})); $t=@(Get-ScheduledTask | Where-Object { ($_.TaskName -match "qwen|llama") -and ($_.State -ne "Disabled") }); Write-Output ("TASKS=" + $(if($t){($t | ForEach-Object { $_.TaskName }) -join ","}else{"none"})); $s=@(Get-Service | Where-Object { $_.Name -match "qwen|llama" -or $_.DisplayName -match "qwen|llama" }); Write-Output ("SERVICES=" + $(if($s){($s | ForEach-Object { $_.Name }) -join ","}else{"none"}))' | iconv -t UTF-16LE | base64)
+PREFLIGHT_B64=$(printf '%s' '$ErrorActionPreference="SilentlyContinue"; $k="HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"; $v=(Get-ItemProperty -Path $k -Name "HardwareInformation.qwMemorySize")."HardwareInformation.qwMemorySize"; Write-Output ("CARVE=" + $v); $pf=Get-CimInstance Win32_PageFileSetting | Select-Object -First 1; Write-Output ("PAGEFILE=" + $(if($pf){"" + $pf.InitialSize + "/" + $pf.MaximumSize}else{"automatic"})); $d=@("C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup","C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"); $f=@(); foreach ($x in $d) { if (Test-Path $x) { Get-ChildItem -LiteralPath $x -File | Where-Object { $_.Extension -match "^\.(cmd|bat|ps1|exe|vbs)$" } | ForEach-Object { $f += $_.Name } } }; Write-Output ("STARTUP=" + $(if($f){$f -join ","}else{"none"})); $t=@(Get-ScheduledTask | Where-Object { ($_.TaskName -match "qwen|llama") -and ($_.State -ne "Disabled") }); Write-Output ("TASKS=" + $(if($t){($t | ForEach-Object { $_.TaskName }) -join ","}else{"none"})); $s=@(Get-Service | Where-Object { $_.Name -match "qwen|llama" -or $_.DisplayName -match "qwen|llama" }); Write-Output ("SERVICES=" + $(if($s){($s | ForEach-Object { $_.Name }) -join ","}else{"none"})); $fw=@(Get-NetFirewallApplicationFilter -Program "'"$LL"'" | Get-NetFirewallRule | Where-Object { $_.Enabled -eq "True" -and $_.Direction -eq "Inbound" -and $_.Action -eq "Block" }); Write-Output ("FWBLOCK=" + $(if($fw){($fw | ForEach-Object { $_.DisplayName + "/" + $_.Profile }) -join ","}else{"none"}))' | iconv -t UTF-16LE | base64)
 # Post-load residency sample. GPUDED=-1 means the counter itself was unreadable
 # (localized counter names on a non-English Windows would do this) -- that is
 # DARK, not a failure, and is logged once rather than silently swallowed.
 GPU_B64=$(printf '%s' '$ErrorActionPreference="SilentlyContinue"; $c=Get-Counter "\GPU Adapter Memory(*)\Dedicated Usage"; if ($c -eq $null) { Write-Output "GPUDED=-1" } else { $m=0; foreach($s in $c.CounterSamples){ if($s.CookedValue -gt $m){ $m=$s.CookedValue } }; Write-Output ("GPUDED=" + [int64]$m) }; $a=Get-Counter "\Memory\Available MBytes"; Write-Output ("AVAILMB=" + $(if($a){[int]$a.CounterSamples[0].CookedValue}else{-1}))' | iconv -t UTF-16LE | base64)
 CODER_PID=0
 LAUNCH_T0=0
+LAUNCH_DEAD=0   # consecutive launches whose ssh exited before :1235 answered (07i)
 # Serving-identity guards (bead bm2): liveness alone accepted a foreign b9596
 # server for two days (2026-07-25) while the keepalive believed it owned b10078.
 # EXPECTED_BUILD: the build tag baked into $LL ("b9596"). EXPECTED_PID: the
@@ -510,7 +511,7 @@ wait_for_session() {
   return 0
 }
 preflight() {  # sets PREFLIGHT_REASON; returns 1 on any failed assertion
-  local out carve pf startup tasks services
+  local out carve pf startup tasks services fwblock
   PREFLIGHT_REASON=""
   out=$($SSH "$HOST" "powershell -NoProfile -EncodedCommand $PREFLIGHT_B64" 2>/dev/null | tr -d '\r')
   if [ -z "$out" ]; then PREFLIGHT_REASON="preflight probe returned nothing (ssh or powershell failure) -- refusing rather than assuming"; return 1; fi
@@ -519,6 +520,7 @@ preflight() {  # sets PREFLIGHT_REASON; returns 1 on any failed assertion
   startup=$(printf '%s\n' "$out" | sed -n 's/^STARTUP=//p' | head -1)
   tasks=$(printf '%s\n' "$out" | sed -n 's/^TASKS=//p' | head -1)
   services=$(printf '%s\n' "$out" | sed -n 's/^SERVICES=//p' | head -1)
+  fwblock=$(printf '%s\n' "$out" | sed -n 's/^FWBLOCK=//p' | head -1)
   if [ "$carve" != "$EXPECT_CARVE_BYTES" ]; then
     PREFLIGHT_REASON="BIOS GPU carve is '${carve:-unreadable}', expected $EXPECT_CARVE_BYTES (64 GiB). usable VRAM = min(carve, Windows-visible RAM), so a larger carve REDUCES capacity (96G halves it). Fix in BIOS, then restart the keepalive."
     return 1
@@ -537,6 +539,14 @@ preflight() {  # sets PREFLIGHT_REASON; returns 1 on any failed assertion
   fi
   if [ "$services" != "none" ]; then
     PREFLIGHT_REASON="Windows service(s) matching qwen|llama: $services. Second launcher (bead 36p)."
+    return 1
+  fi
+  # Bead 07i. A listen from the desktop session raises the firewall prompt, and a
+  # dismissed prompt leaves Block rules that override the Tailscale allow: the
+  # server loads and :1235 never answers (2026-09-30, 13 min). Empty = the cmdlet
+  # gave nothing, which is not evidence of a block.
+  if [ -n "$fwblock" ] && [ "$fwblock" != "none" ]; then
+    PREFLIGHT_REASON="inbound firewall Block rule(s) for $LL: $fwblock. :1235 would be unreachable from the Mac. Set them to Allow or remove them on the box."
     return 1
   fi
   return 0
@@ -574,7 +584,22 @@ gpu_check() {  # POST-LOAD residency assertion. sets GPU_REASON/GPU_LAST; 0 = in
 # hammers the box. This is the 2026-07-24 13:02:27 / 13:09:27 double-FAILED pattern in
 # logs/keepalive.log, immediately before that day's two hard resets. Do not lower it
 # without measuring a cold load first.
-waitup(){ for i in $(seq 1 150); do up "$1" && return 0; sleep 8; done; return 1; }
+# Bead 07i: $2 is the held launch ssh. A box server cannot outlive its ssh, so once
+# that pid is gone nothing of ours is loading and the remaining wait is dead time
+# (2026-10-10: ssh died 2 min after a power-cut boot, serving stayed down until a
+# manual kickstart). Returns 2 for that case; one last up() covers a peer's server.
+waitup(){
+  local i
+  for i in $(seq 1 150); do
+    up "$1" && return 0
+    if [ "${2:-0}" -gt 0 ] 2>/dev/null && ! kill -0 "$2" 2>/dev/null; then
+      up "$1" && return 0
+      return 2
+    fi
+    sleep "${WAITUP_SLEEP:-8}"
+  done
+  return 1
+}
 # Launch metadata for the box-side Claude (negotiation commitment 2, 2026-07-21):
 # every (re)launch writes C:\claude-coordination\qwen-server-state.json.
 write_state() {
@@ -592,6 +617,11 @@ write_state() {
   if [ -n "${age:-}" ] && [ "$age" -gt $((elapsed + 60)) ] 2>/dev/null; then
     owner="preexisting-not-this-launch"
   fi
+  # Bead 07i: age alone mislabels a peer's server started during a long wait. If
+  # we launched and our ssh is gone, whatever owns :1235 is not ours.
+  if [ "$CODER_PID" -gt 0 ] 2>/dev/null && ! kill -0 "$CODER_PID" 2>/dev/null; then
+    owner="not-this-launch-ssh-exited"
+  fi
   if [ -z "${pid:-}" ] || [ "$pid" = "0" ]; then
     pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
     src=tasklist-fallback   # can still credit a husk — visible in the log line
@@ -607,6 +637,7 @@ write_state() {
   log "state json written (pid ${pid:-unknown} via $src, owner $owner)"
 }
 start_coder() {
+  local rc sshrc back
   # Bead naf: session guard FIRST. Everything below needs a GPU-capable desktop.
   wait_for_session
   # Preflight assertions, same shape as the RDR-016 gate below: refuse loudly and
@@ -648,7 +679,19 @@ start_coder() {
   else
     $SSH "$HOST" "$CODER" >/dev/null 2>&1 & CODER_PID=$!
   fi
-  if ! waitup 1235; then log "coder-box FAILED to come up"; EXPECTED_PID=0; return 1; fi
+  waitup 1235 "$CODER_PID"; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    wait "$CODER_PID" 2>/dev/null; sshrc=$?
+    # Back off so a server that dies at load is not relaunched every 30 s.
+    LAUNCH_DEAD=$((LAUNCH_DEAD + 1))
+    back=$((LAUNCH_DEAD * 20)); [ "$back" -gt 280 ] && back=280
+    log "coder-box launch ssh exited (rc $sshrc) after $((SECONDS - LAUNCH_T0))s with :1235 still down -- llama-server is not running (see C:\\logs\\coder-box.log). retry in ${back}s (streak $LAUNCH_DEAD)"
+    CODER_PID=0; EXPECTED_PID=0
+    sleep "$back"
+    return 1
+  fi
+  if [ "$rc" -ne 0 ]; then log "coder-box FAILED to come up"; EXPECTED_PID=0; return 1; fi
+  LAUNCH_DEAD=0
   log "coder-box UP"
   write_state
   # POST-LOAD residency assertion. Sampled NOW, with the model loaded and the
