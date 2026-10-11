@@ -60,6 +60,21 @@ TESTS=(
     # --- allow: sanctioned tool / read-only / unrelated commands ---
     "allow~~~sanctioned fetch~~~python3 scripts/ops/provenance/provenance.py fetch Qwen/Qwen3.8-27B"
     "allow~~~sanctioned fetch, cwd-prefixed~~~cd /Volumes/Transcend\\ Hell/git/qwen-coprocessor-stack && python3 scripts/ops/provenance/provenance.py fetch Qwen/Qwen3.8-27B"
+    # --- fetch rules match a command, not a mention (2026-10-11 over-match) ---
+    "allow~~~curl of another project's release asset~~~curl -L -o e.tgz https://github.com/Hellblazer/nexus/releases/download/engine-service-v0.1.159/engine.tgz"
+    "allow~~~actions runner release over ssh (labrun, 2026-10-10)~~~ssh chas 'set -e; [ -f ar.tgz ] || { curl -fsSLo ar.tgz https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz; }'"
+    "allow~~~wget uv release~~~gh release view; wget https://github.com/astral-sh/uv/releases/download/0.9.0/uv.tar.gz"
+    "allow~~~health check, then a commit message naming HF~~~curl -s http://localhost:8080/health && git commit -m \"docs: mention huggingface.co\""
+    "allow~~~grep for curl and an HF hostname~~~grep -rn \"curl\" docs/ | grep huggingface.co"
+    "allow~~~words containing curl and hf.co~~~echo curly; cat notes-on-hf.co.txt"
+    "allow~~~plain curl~~~curl -s http://qwentescence:1235/health"
+    "deny~~~curl HF behind env, path and sudo~~~HF_TOKEN=x sudo /usr/bin/curl -LO https://huggingface.co/Qwen/Qwen3.8-27B/resolve/main/model.safetensors"
+    "deny~~~curl HF after && inside ssh quotes~~~ssh box 'cd /tmp && curl -LO https://cdn-lfs.huggingface.co/repos/ab/cd/model.gguf'"
+    "deny~~~curl HF in a brace group~~~[ -f m.gguf ] || { curl -LO https://hf.co/Qwen/x/resolve/main/m.gguf; }"
+    "deny~~~curl HF with line continuation~~~curl -L \\
+  -o m.gguf https://huggingface.co/Qwen/x/resolve/main/m.gguf"
+    "deny~~~wget ollama release~~~wget https://github.com/ollama/ollama/releases/download/v0.9.0/ollama-darwin.tgz"
+    "deny~~~xargs curl llama.cpp fork release~~~echo u | xargs curl -LO https://github.com/someone/llama.cpp-fork/releases/download/b1/x.zip"
     "allow~~~HF api metadata read~~~curl -s https://huggingface.co/api/models/Qwen/Qwen3.8-27B"
     "allow~~~git status~~~git status"
     "allow~~~npm run build~~~npm run build"
