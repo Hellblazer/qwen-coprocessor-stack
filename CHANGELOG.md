@@ -28,6 +28,10 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   deleted. The sha256 of every finished file is still compared with upstream (bead cl2p).
   `fetch` also refuses a file whose upstream metadata carries neither an LFS sha256 nor a
   blobId; before, such a file was manifested with its own hash and compared with nothing.
+- `provenance.py fetch` locks its destination: a second fetch into the same `--dest`
+  is refused while the first runs (flock on `.<dest>.fetch.lock` beside the directory,
+  released when the process exits). It also re-reads the manifest just before writing
+  its entry, so an entry recorded by another command during a long download is kept.
 
 ### Fixed
 

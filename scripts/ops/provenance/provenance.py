@@ -20,6 +20,7 @@ narrow with --include/--exclude, or re-acquire cleanly).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -38,7 +39,12 @@ import tarfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
+
+try:
+    import fcntl
+except ImportError:  # Windows; the tool is run on the Mac
+    fcntl = None  # type: ignore[assignment]
 
 LOG = logging.getLogger("provenance")
 
@@ -809,6 +815,35 @@ def cmd_validate(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def _dest_lock(dest_dir: Path) -> Iterator[None]:
+    """Hold an exclusive lock on a fetch destination for the length of a fetch.
+
+    Two fetches into one directory share its `.part` files: each would hash its
+    own stream and pass, while the file on disk held both streams interleaved.
+    The lock is a flock on a dotfile beside the directory (not inside it, where
+    it would count as a model file). The kernel drops it when the process
+    exits, however it exits, so there is no stale lock to clear by hand. The
+    file itself is left in place: unlinking it would let a waiter that already
+    opened it hold a lock nobody else can see.
+    """
+    lock_path = dest_dir.with_name(f".{dest_dir.name}.fetch.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a") as fh:
+        if fcntl is None:
+            LOG.warning("no fcntl on this platform; fetch destination %s is not locked", dest_dir)
+        else:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise ProvenanceError(
+                    f"refusing: another fetch holds {lock_path} for {dest_dir}. "
+                    "Sanctioned next step: wait for it to finish, or stop it; the lock clears "
+                    "when that process exits."
+                ) from exc
+        yield
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     allowlist = load_allowlist(args.allowlist)
     owner, name = split_repo(args.repo_id)
@@ -915,95 +950,99 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         validate_safe_relpath(f, dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    file_entries: list[dict[str, Any]] = []
-    for f in candidates:
-        sib = siblings[f]
-        url = f"{args.hf_base}/{args.repo_id}/resolve/{sha}/{f}"
-        dest_path = dest_dir / f
-        lfs = sib.get("lfs")
-        expected_lfs = (lfs or {}).get("sha256")
-        if not expected_lfs and not (lfs is None and sib.get("blobId")):
-            # Without an upstream hash there is nothing to verify against, and the file's own
-            # hash would be manifested as if it had been.
-            raise ProvenanceError(
-                f"refusing: upstream metadata for {f} carries no sha256 (LFS) or blobId to verify "
-                "against; manifest not updated. Sanctioned next step: re-run, or check the repo "
-                "metadata at this revision."
-            )
-        reused = False
-        sha256_hex, size = "", 0
-        if expected_lfs and dest_path.is_file():
-            # A weight file left by an earlier run is kept only if it hashes to
-            # what upstream publishes at this revision; anything else is refetched.
-            local_sha = sha256_file(dest_path)
-            if local_sha.lower() == expected_lfs.lower():
-                sha256_hex, size, reused = local_sha, dest_path.stat().st_size, True
-                LOG.info("%s: already on disk with the upstream sha256; not downloading", f)
+    with _dest_lock(dest_dir):
+        file_entries: list[dict[str, Any]] = []
+        for f in candidates:
+            sib = siblings[f]
+            url = f"{args.hf_base}/{args.repo_id}/resolve/{sha}/{f}"
+            dest_path = dest_dir / f
+            lfs = sib.get("lfs")
+            expected_lfs = (lfs or {}).get("sha256")
+            if not expected_lfs and not (lfs is None and sib.get("blobId")):
+                # Without an upstream hash there is nothing to verify against, and the file's own
+                # hash would be manifested as if it had been.
+                raise ProvenanceError(
+                    f"refusing: upstream metadata for {f} carries no sha256 (LFS) or blobId to verify "
+                    "against; manifest not updated. Sanctioned next step: re-run, or check the repo "
+                    "metadata at this revision."
+                )
+            reused = False
+            sha256_hex, size = "", 0
+            if expected_lfs and dest_path.is_file():
+                # A weight file left by an earlier run is kept only if it hashes to
+                # what upstream publishes at this revision; anything else is refetched.
+                local_sha = sha256_file(dest_path)
+                if local_sha.lower() == expected_lfs.lower():
+                    sha256_hex, size, reused = local_sha, dest_path.stat().st_size, True
+                    LOG.info("%s: already on disk with the upstream sha256; not downloading", f)
+                else:
+                    LOG.warning("%s: on disk but sha256 %s is not upstream's %s; refetching", f, local_sha, expected_lfs)
+                    dest_path.unlink()
+            if not reused:
+                # Resume is for weight files. A config or tokenizer is a few KB, and a stale .part
+                # of one would be appended to and fail its blob check for nothing.
+                sha256_hex, size = download_to_path(
+                    url, dest_path, headers, resume=bool(expected_lfs) and not args.no_resume
+                )
+
+            if lfs:
+                expected = lfs.get("sha256")
+                if expected and expected.lower() != sha256_hex.lower():
+                    dest_path.unlink(missing_ok=True)
+                    raise ProvenanceError(
+                        f"hash mismatch for {f}: expected lfs sha256 {expected}, "
+                        f"got {sha256_hex}; file deleted, manifest not updated."
+                    )
             else:
-                LOG.warning("%s: on disk but sha256 %s is not upstream's %s; refetching", f, local_sha, expected_lfs)
-                dest_path.unlink()
-        if not reused:
-            # Resume is for weight files. A config or tokenizer is a few KB, and a stale .part
-            # of one would be appended to and fail its blob check for nothing.
-            sha256_hex, size = download_to_path(
-                url, dest_path, headers, resume=bool(expected_lfs) and not args.no_resume
+                data = dest_path.read_bytes()
+                blob_sha = git_blob_sha1(data)
+                expected_blob = sib.get("blobId")
+                if expected_blob and expected_blob.lower() != blob_sha.lower():
+                    dest_path.unlink(missing_ok=True)
+                    raise ProvenanceError(
+                        f"git-blob hash mismatch for {f}: expected {expected_blob}, "
+                        f"got {blob_sha}; file deleted, manifest not updated."
+                    )
+
+            file_entries.append(
+                {
+                    "path": f,
+                    "sha256": sha256_hex,
+                    "size": size,
+                    "hf_security": _security_summary(security_by_path.get(f)),
+                }
             )
 
-        if lfs:
-            expected = lfs.get("sha256")
-            if expected and expected.lower() != sha256_hex.lower():
-                dest_path.unlink(missing_ok=True)
-                raise ProvenanceError(
-                    f"hash mismatch for {f}: expected lfs sha256 {expected}, "
-                    f"got {sha256_hex}; file deleted, manifest not updated."
-                )
-        else:
-            data = dest_path.read_bytes()
-            blob_sha = git_blob_sha1(data)
-            expected_blob = sib.get("blobId")
-            if expected_blob and expected_blob.lower() != blob_sha.lower():
-                dest_path.unlink(missing_ok=True)
-                raise ProvenanceError(
-                    f"git-blob hash mismatch for {f}: expected {expected_blob}, "
-                    f"got {blob_sha}; file deleted, manifest not updated."
-                )
+        entry: dict[str, Any] = {
+            "id": args.id or f"{name.lower()}@{sha[:8]}",
+            "kind": "model",
+            "status": "verified",
+            "source": {
+                "host": "huggingface",
+                "repo": args.repo_id,
+                "revision": sha,
+                "url": f"{args.hf_base}/{args.repo_id}/resolve/{sha}/",
+            },
+            "format": _infer_format(candidates),
+            "trust_tier": tier,
+            "quantized_by": None,
+            "remote_code_files": py_candidates,
+            "remote_code_present": remote_code_present,
+            "files": file_entries,
+            "verified_on": ["mac"],
+            "verified_at": utc_now_iso(),
+            "notes": "; ".join(notes_parts),
+        }
+        if args.derived_from:
+            entry["derived_from"] = args.derived_from
+            entry["derived_from_files"] = derived_from_files
 
-        file_entries.append(
-            {
-                "path": f,
-                "sha256": sha256_hex,
-                "size": size,
-                "hf_security": _security_summary(security_by_path.get(f)),
-            }
-        )
-
-    entry: dict[str, Any] = {
-        "id": args.id or f"{name.lower()}@{sha[:8]}",
-        "kind": "model",
-        "status": "verified",
-        "source": {
-            "host": "huggingface",
-            "repo": args.repo_id,
-            "revision": sha,
-            "url": f"{args.hf_base}/{args.repo_id}/resolve/{sha}/",
-        },
-        "format": _infer_format(candidates),
-        "trust_tier": tier,
-        "quantized_by": None,
-        "remote_code_files": py_candidates,
-        "remote_code_present": remote_code_present,
-        "files": file_entries,
-        "verified_on": ["mac"],
-        "verified_at": utc_now_iso(),
-        "notes": "; ".join(notes_parts),
-    }
-    if args.derived_from:
-        entry["derived_from"] = args.derived_from
-        entry["derived_from_files"] = derived_from_files
-
-    upsert_entry(manifest, entry)
-    save_manifest(args.manifest, manifest)
-    LOG.info("fetched %s (%d files) -> %s", entry["id"], len(file_entries), dest_dir)
+        # Re-read: the copy loaded before the downloads can be hours old, and writing it back
+        # would drop any entry another fetch or add-runtime recorded in the meantime.
+        manifest = load_manifest(args.manifest)
+        upsert_entry(manifest, entry)
+        save_manifest(args.manifest, manifest)
+        LOG.info("fetched %s (%d files) -> %s", entry["id"], len(file_entries), dest_dir)
     return 0
 
 
