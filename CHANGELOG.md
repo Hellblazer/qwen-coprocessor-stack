@@ -26,6 +26,8 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   continued with a Range request (`--no-resume` opts out). A transfer that ends early is
   now an error that keeps the `.part`, not a short file that fails its hash check and is
   deleted. The sha256 of every finished file is still compared with upstream (bead cl2p).
+  `fetch` also refuses a file whose upstream metadata carries neither an LFS sha256 nor a
+  blobId; before, such a file was manifested with its own hash and compared with nothing.
 
 ### Fixed
 

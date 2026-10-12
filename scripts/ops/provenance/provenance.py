@@ -571,14 +571,27 @@ def populate_derived_from_files(
         return None
 
 
+_CONTENT_RANGE_RE = re.compile(r"^\s*bytes\s+(?:(\d+)-(\d+)|\*)/(\d+|\*)\s*$")
+
+
+def _parse_content_range(value: str) -> tuple[int | None, int | None]:
+    """(start, total) of a Content-Range value; None for a part it does not state."""
+    m = _CONTENT_RANGE_RE.match(value or "")
+    if not m:
+        return None, None
+    start = int(m.group(1)) if m.group(1) is not None else None
+    total = int(m.group(3)) if m.group(3) != "*" else None
+    return start, total
+
+
 def _expected_total(resp: Any, offset: int) -> int | None:
     """Full length of the resource a response is delivering, when it says."""
-    content_range = resp.headers.get("Content-Range", "")
-    if resp.status == 206 and "/" in content_range:
-        total = content_range.rsplit("/", 1)[1].strip()
-        return int(total) if total.isdigit() else None
-    length = resp.headers.get("Content-Length", "")
-    return offset + int(length) if length.isdigit() else None
+    if resp.status == 206:
+        total = _parse_content_range(resp.headers.get("Content-Range", ""))[1]
+        if total is not None:
+            return total
+    length = (resp.headers.get("Content-Length") or "").strip()
+    return offset + int(length) if length.isdecimal() else None
 
 
 def download_to_path(
@@ -594,8 +607,11 @@ def download_to_path(
     and a failed transfer leaves its `.part` behind for the next attempt. The
     returned sha256 always covers every byte of the finished file, the bytes
     read back from the `.part` included, so a resumed file is checked against
-    upstream exactly as a fresh one is. A server that ignores Range (200) or
-    rejects it (416) restarts the file from zero.
+    upstream exactly as a fresh one is. The `.part` is continued only on a 206
+    whose Content-Range starts at the offset asked for; a 200, a 206 from any
+    other offset, or a 416 restarts the file from zero. The exception is a 416
+    that reports a total equal to the `.part` length: the file was complete
+    when the earlier run died before its rename, so nothing is downloaded.
     """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     part_path = dest_path.with_name(dest_path.name + ".part")
@@ -610,35 +626,49 @@ def download_to_path(
                 h.update(chunk)
                 size += len(chunk)
     try:
-        req_headers = dict(headers)
+        resp = None
+        complete = False
         if size:
-            req_headers["Range"] = f"bytes={size}-"
-        req = urllib.request.Request(url, headers=req_headers)
-        try:
-            resp = _urlopen_retry(req)
-        except urllib.error.HTTPError as exc:
-            if not (size and exc.code == 416):
-                raise
-            LOG.warning("%s: server rejected the resume offset %d; restarting from zero", dest_path.name, size)
-            resp = _urlopen_retry(urllib.request.Request(url, headers=headers))
-        with resp:
-            if size and resp.status != 206:
-                h, size = hashlib.sha256(), 0
-            elif size:
-                LOG.info("%s: resuming at byte %d", dest_path.name, size)
-            total = _expected_total(resp, size)
-            with open(part_path, "ab" if size else "wb") as f:
-                while True:
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    h.update(chunk)
-                    size += len(chunk)
-        if total is not None and size != total:
-            # A connection that closes early reads as end-of-body. Without this
-            # the short file would fail its hash check and be thrown away whole.
-            raise ProvenanceError(f"short read: {url}: got {size} of {total} bytes")
+            try:
+                resp = _urlopen_retry(urllib.request.Request(url, headers={**headers, "Range": f"bytes={size}-"}))
+            except urllib.error.HTTPError as exc:
+                if exc.code != 416:
+                    raise
+                complete = _parse_content_range(exc.headers.get("Content-Range", ""))[1] == size
+                exc.close()
+                if complete:
+                    LOG.info("%s: .part already holds all %d bytes; not downloading", dest_path.name, size)
+                else:
+                    LOG.warning("%s: server rejected resume offset %d; restarting from zero", dest_path.name, size)
+                    h, size = hashlib.sha256(), 0
+            else:
+                start = _parse_content_range(resp.headers.get("Content-Range", ""))[0]
+                if resp.status == 206 and start == size:
+                    LOG.info("%s: resuming at byte %d", dest_path.name, size)
+                else:
+                    if resp.status == 206:
+                        # A range from some other offset cannot be appended; ask again for the whole file.
+                        LOG.warning("%s: 206 from offset %s, wanted %d; restarting from zero", dest_path.name, start, size)
+                        resp.close()
+                        resp = None
+                    h, size = hashlib.sha256(), 0
+        if not complete:
+            if resp is None:
+                resp = _urlopen_retry(urllib.request.Request(url, headers=headers))
+            with resp:
+                total = _expected_total(resp, size)
+                with open(part_path, "ab" if size else "wb") as f:
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        h.update(chunk)
+                        size += len(chunk)
+            if total is not None and size != total:
+                # A connection that closes early reads as end-of-body. Without this
+                # the short file would fail its hash check and be thrown away whole.
+                raise ProvenanceError(f"short read: {url}: got {size} of {total} bytes")
     except urllib.error.URLError as exc:
         if not resume:
             part_path.unlink(missing_ok=True)
@@ -892,6 +922,14 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         dest_path = dest_dir / f
         lfs = sib.get("lfs")
         expected_lfs = (lfs or {}).get("sha256")
+        if not expected_lfs and not (lfs is None and sib.get("blobId")):
+            # Without an upstream hash there is nothing to verify against, and the file's own
+            # hash would be manifested as if it had been.
+            raise ProvenanceError(
+                f"refusing: upstream metadata for {f} carries no sha256 (LFS) or blobId to verify "
+                "against; manifest not updated. Sanctioned next step: re-run, or check the repo "
+                "metadata at this revision."
+            )
         reused = False
         sha256_hex, size = "", 0
         if expected_lfs and dest_path.is_file():
@@ -905,7 +943,11 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 LOG.warning("%s: on disk but sha256 %s is not upstream's %s; refetching", f, local_sha, expected_lfs)
                 dest_path.unlink()
         if not reused:
-            sha256_hex, size = download_to_path(url, dest_path, headers, resume=not args.no_resume)
+            # Resume is for weight files. A config or tokenizer is a few KB, and a stale .part
+            # of one would be appended to and fail its blob check for nothing.
+            sha256_hex, size = download_to_path(
+                url, dest_path, headers, resume=bool(expected_lfs) and not args.no_resume
+            )
 
         if lfs:
             expected = lfs.get("sha256")

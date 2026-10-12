@@ -1129,6 +1129,61 @@ class DownloadResumeTests(ProvenanceTestCase):
         self.assertFalse(part.exists())
 
 
+    def test_206_from_another_offset_restarts_from_zero(self) -> None:
+        seen: list = []
+
+        def handler(headers: dict) -> Response:
+            rng = next((v for k, v in headers.items() if k.lower() == "range"), None)
+            seen.append(rng)
+            if rng:  # a broken cache: answers with a range that is not the one asked for
+                n = len(self.content)
+                return Response(206, {"Content-Range": f"bytes 100-{n - 1}/{n}"}, self.content[100:])
+            return Response(200, {}, self.content)
+
+        self.server.header_routes["/resume/wrongstart.bin"] = handler
+        dest = self._dest()
+        dest.with_name(dest.name + ".part").write_bytes(self.content[:5000])
+        sha, size = prov.download_to_path(f"{self.server.base_url}/resume/wrongstart.bin", dest, {}, resume=True)
+        self.assertEqual(seen, ["bytes=5000-", None])
+        self.assertEqual(sha, hashlib.sha256(self.content).hexdigest())
+        self.assertEqual(dest.read_bytes(), self.content)
+        self.assertEqual(size, len(self.content))
+
+    def test_complete_part_is_accepted_without_a_download(self) -> None:
+        # The earlier run died after the last write and before the rename.
+        seen: list = []
+        self.server.header_routes["/resume/complete.bin"] = _range_route(self.content, seen)
+        dest = self._dest()
+        dest.with_name(dest.name + ".part").write_bytes(self.content)
+        sha, size = prov.download_to_path(f"{self.server.base_url}/resume/complete.bin", dest, {}, resume=True)
+        self.assertEqual(seen, [f"bytes={len(self.content)}-"])
+        self.assertEqual(sha, hashlib.sha256(self.content).hexdigest())
+        self.assertEqual(size, len(self.content))
+        self.assertEqual(dest.read_bytes(), self.content)
+
+    def test_complete_but_corrupt_part_still_returns_its_own_hash(self) -> None:
+        seen: list = []
+        self.server.header_routes["/resume/complete-bad.bin"] = _range_route(self.content, seen)
+        dest = self._dest()
+        dest.with_name(dest.name + ".part").write_bytes(b"\x00" * len(self.content))
+        sha, _ = prov.download_to_path(f"{self.server.base_url}/resume/complete-bad.bin", dest, {}, resume=True)
+        self.assertNotEqual(sha, hashlib.sha256(self.content).hexdigest())
+
+    def test_content_range_parsing(self) -> None:
+        self.assertEqual(prov._parse_content_range("bytes 5-9/10"), (5, 10))
+        self.assertEqual(prov._parse_content_range("bytes 5-9/*"), (5, None))
+        self.assertEqual(prov._parse_content_range("bytes */10"), (None, 10))
+        self.assertEqual(prov._parse_content_range("bytes 5-9/\u00b2"), (None, None))
+        self.assertEqual(prov._parse_content_range(""), (None, None))
+
+    def test_unknown_total_falls_back_to_content_length(self) -> None:
+        class _Resp:
+            status = 206
+            headers = {"Content-Range": "bytes 5-9/*", "Content-Length": "5"}
+
+        self.assertEqual(prov._expected_total(_Resp(), 5), 10)
+
+
 class FetchReuseTests(ProvenanceTestCase):
     def _fetch(self, dest: str, manifest_path: str, *extra: str) -> int:
         return self.run_main(
@@ -1204,6 +1259,59 @@ class FetchReuseTests(ProvenanceTestCase):
         self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
         self.assertFalse((Path(dest) / "model.safetensors").exists())
         self.assertFalse((Path(dest) / "model.safetensors.part").exists())
+
+
+    def test_stale_part_of_a_small_file_is_not_appended_to(self) -> None:
+        dest, manifest_path = self.make_dest_dir(), self.make_manifest_path()
+        Path(dest).mkdir(parents=True)
+        (Path(dest) / "config.json.part").write_bytes(b"left over from another revision")
+        self.assertEqual(self._fetch(dest, manifest_path), 0)
+        self.assertEqual((Path(dest) / "config.json").read_bytes(), self.basic_config)
+
+    def test_reuse_still_applies_with_no_resume(self) -> None:
+        hits = self._count_weight_downloads()
+        dest, manifest_path = self.make_dest_dir(), self.make_manifest_path()
+        Path(dest).mkdir(parents=True)
+        (Path(dest) / "model.safetensors").write_bytes(self.basic_weights)
+        self.assertEqual(self._fetch(dest, manifest_path, "--no-resume"), 0)
+        self.assertEqual(hits, [])
+
+    def _fetch_repo_with_siblings(self, name: str, siblings: list) -> tuple:
+        sha = sha1_commit(name)
+        weights, config = b"W" * 4096, b'{"model_type": "fake"}'
+        register_hf_repo(
+            self.server,
+            f"Qwen/{name}",
+            sha,
+            siblings(config, weights),
+            [tree_entry("config.json", config), tree_entry("model.safetensors", weights)],
+            {"config.json": config, "model.safetensors": weights},
+        )
+        dest, manifest_path = self.make_dest_dir(), self.make_manifest_path()
+        rc = self.run_main(
+            ["fetch", f"Qwen/{name}", "--manifest", manifest_path, "--dest", dest, "--hf-base", self.server.base_url]
+        )
+        return rc, manifest_path
+
+    def test_weight_file_without_an_upstream_sha256_is_refused(self) -> None:
+        def siblings(config: bytes, weights: bytes) -> list:
+            w = sibling_weight("model.safetensors", weights)
+            w["lfs"] = {"size": len(weights)}
+            return [sibling_text("config.json", config), w]
+
+        rc, manifest_path = self._fetch_repo_with_siblings("repo-no-lfs-sha", siblings)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+
+    def test_small_file_without_a_blob_id_is_refused(self) -> None:
+        def siblings(config: bytes, weights: bytes) -> list:
+            c = sibling_text("config.json", config)
+            del c["blobId"]
+            return [c, sibling_weight("model.safetensors", weights)]
+
+        rc, manifest_path = self._fetch_repo_with_siblings("repo-no-blobid", siblings)
+        self.assertEqual(rc, 1)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
 
 
 # --------------------------------------------------------------------------
