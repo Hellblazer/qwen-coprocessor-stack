@@ -19,9 +19,7 @@
   ],
   "runtime_repos": [
     "ggml-org/llama.cpp",
-    "PrismML-Eng/llama.cpp",
-    "vllm-project/vllm-metal",
-    "vllm-project/vllm"
+    "PrismML-Eng/llama.cpp"
   ],
   "overlay_repos": [
     "Hellblazer/qwen-coprocessor-stack"
