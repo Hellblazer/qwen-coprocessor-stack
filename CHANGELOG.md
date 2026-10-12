@@ -26,6 +26,8 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 - `keepalive-mac.sh` reaped every `mlx_lm.server` when restarting reason-mac. The reap
   and singleton patterns are now port-specific.
+- `keepalive-mac.sh` killed any second `mlx_vlm.server` as a vision-mac duplicate. The
+  vision pattern is now tied to :8083 like the others (bead s9rm).
 
 ## [0.12.0] - 2026-10-11
 
