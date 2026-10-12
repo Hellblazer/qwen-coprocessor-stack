@@ -45,7 +45,6 @@ import {
 import { createDefaultDispatcherRegistry } from "./dispatch-registry.js";
 import {
   gitExtractPatch,
-  isDispatchEnabled,
   makeSupervisorQwenSpawnEffects,
   qwenDispatchInputShape,
   QwenDispatchError,
@@ -63,12 +62,18 @@ import {
 } from "./pool.js";
 import { setupShutdown } from "./shutdown.js";
 import {
+  createSessionSettings,
+  effectiveDefaultExtensions,
+  settingsDispatchGates,
+  type SessionSettingsView,
+} from "./session-settings.js";
+import { createSettingsPage, registerSettingsTool, toSettingsBackendRows } from "./settings-page.js";
+import {
   createInstalledExtensionsCache,
   disableExtension,
   enableExtension,
   ExtensionLifecycleError,
   ExtensionResolutionError,
-  getSessionDefaultExtensions,
   installExtension,
   listInstalledExtensions,
   resolveExtensions,
@@ -641,6 +646,9 @@ export function createToolHandlers(
   existingPool?: SessionPool,
   installedExtensionsCache?: InstalledExtensionsCache,
   threadStore?: ThreadStore,
+  // Read-only view of the settings-page state (bead 9sm2). Handlers only ever
+  // receive the view: the writer belongs to the settings page alone.
+  sessionSettings?: SessionSettingsView,
 ): ToolHandlers {
   const pool = existingPool ?? createPool();
   // One thread store per handler set. In production main() one is wired
@@ -667,7 +675,8 @@ export function createToolHandlers(
     let resolvedExtensions: import("./extensions.js").ResolveExtensionsResult | undefined;
     if (installedExtensionsCache !== undefined) {
       try {
-        const sessionDefault = getSessionDefaultExtensions(process.env);
+        // Page value if set from the settings page, else env/config (bead 9sm2).
+        const sessionDefault = effectiveDefaultExtensions(sessionSettings, process.env).value;
         resolvedExtensions = resolveExtensions(
           opts.extensions,
           sessionDefault,
@@ -1648,7 +1657,21 @@ async function main(): Promise<void> {
   );
 
   const pool = createPool({ qwenRealBin, wrapperPath });
-  const handlers = createToolHandlers(pool, installedExtensionsCache);
+  // Per-session settings from the human-operated settings page (bead 9sm2).
+  // In memory only. Everything the model can reach gets the read-only `view`;
+  // the `writer` goes to the settings page and nowhere else.
+  const sessionSettings = createSessionSettings();
+  const handlers = createToolHandlers(pool, installedExtensionsCache, undefined, sessionSettings.view);
+  const settingsPage = createSettingsPage({
+    view: sessionSettings.view,
+    writer: sessionSettings.writer,
+    loadProviders: loadAgentProviders,
+    listBackends: async () => {
+      refreshPoolBackends(pool);
+      return toSettingsBackendRows(pool.backends, getCachedHealth);
+    },
+    installedExtensions: () => [...installedExtensionsCache.get()].sort(),
+  });
 
   const mcpServer = new McpServer({
     name: "qwen-agent-server",
@@ -1774,6 +1797,12 @@ async function main(): Promise<void> {
     },
   );
 
+  // ── qwen_settings (bead 9sm2) ──
+  //
+  // Read-only: returns the settings page URL + current effective settings. It
+  // cannot change them; only the page's HTTP POST can (see settings-page.ts).
+  registerSettingsTool(mcpServer, settingsPage);
+
   // ── qwen_dispatch (RDR-008 P2) ──
   //
   // The agentic-dispatch operator: resolve a dispatcher from the P1 registry,
@@ -1783,7 +1812,7 @@ async function main(): Promise<void> {
   // per-call because base_commit is per-call (see dispatch-registry.ts).
   mcpServer.tool(
     "qwen_dispatch",
-    "Agentic dispatch (RDR-008/009/010): OPT-IN PER SESSION — the supervisor must have been started with QWEN_DISPATCH_ENABLE=1 or this returns error code dispatch_not_enabled. Run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
+    "Agentic dispatch (RDR-008/009/010): OPT-IN PER SESSION — the supervisor must have been started with QWEN_DISPATCH_ENABLE=1, or the user must have enabled it on this session's settings page (tool qwen_settings, skill /qwen-stack:dispatch), or this returns error code dispatch_not_enabled. Run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
     qwenDispatchInputShape,
     async (args) => {
       // Mirror the spawn-initiating tools' shutdown envelope (consistent error
@@ -1820,8 +1849,8 @@ async function main(): Promise<void> {
       const wtWorkRoot = join(getConfigDir(), "worktrees", "work");
       try {
         const result = await runQwenDispatch(args, {
-          enabled: isDispatchEnabled,
-          loadProviders: loadAgentProviders,
+          // Settings-page value if set, else the env/config rules (bead 9sm2).
+          ...settingsDispatchGates(sessionSettings.view, loadAgentProviders),
           backendIds: () => pool.backends.map((b) => b.id),
           resolveDispatch: (provider, baseCommit) =>
             createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit }).resolve(provider),
@@ -2153,6 +2182,8 @@ async function main(): Promise<void> {
     // Activate the tool-handler shutdown guard so qwen_spawn/vision/chat reject
     // new work immediately on signal (the closure flag is otherwise never set).
     () => handlers.__setShuttingDown(true),
+    // Stop the settings page listener with the rest of the shutdown (bead 9sm2).
+    () => settingsPage.close(),
   );
 
   process.on("SIGTERM", () => {

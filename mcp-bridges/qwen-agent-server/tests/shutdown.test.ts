@@ -211,4 +211,35 @@ describe("setupShutdown", () => {
     await handleSignal("SIGTERM");
     expect(mockExit).toHaveBeenCalledWith(0);
   });
+  // ── auxiliary listener (settings page, bead 9sm2) ──────────
+
+  it("closes the auxiliary listener during shutdown, and exits 0", async () => {
+    const pool = makePool([]);
+    const onClose = vi.fn().mockResolvedValue(undefined);
+    const { handleSignal } = setupShutdown(
+      mockServer as Parameters<typeof setupShutdown>[0],
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
+      undefined,
+      onClose,
+    );
+    await handleSignal("SIGTERM");
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(mockExit).toHaveBeenCalledWith(0);
+  });
+
+  it("a failing auxiliary close does not stop the sessions or change the exit code", async () => {
+    const s1 = makeStoppableSession("s1");
+    const pool = makePool([s1]);
+    const { handleSignal } = setupShutdown(
+      mockServer as Parameters<typeof setupShutdown>[0],
+      pool as unknown as Parameters<typeof setupShutdown>[1],
+      mockExit as Parameters<typeof setupShutdown>[2],
+      undefined,
+      () => Promise.reject(new Error("boom")),
+    );
+    await handleSignal("SIGTERM");
+    expect(s1.stop).toHaveBeenCalledOnce();
+    expect(mockExit).toHaveBeenCalledWith(0);
+  });
 });

@@ -8,7 +8,7 @@
 //
 // Shutdown sequence:
 //   1. Set shutting_down flag (qwen_spawn returns error after this)
-//   2. Close MCP server transport
+//   2. Close MCP server transport (and the settings page listener, if any)
 //   3. For each live session: call stop() with a 5s per-session timeout
 //   4. If any stop() exceeds 5s → exit code 1 (force kill path)
 //      Otherwise                → exit code 0
@@ -41,6 +41,9 @@ export function setupShutdown(
   // caller flip its own tool-handler `shuttingDown` guard so no new spawn slips
   // through the window between signal receipt and transport close completing.
   onShutdownStart?: () => void,
+  // Closes any auxiliary listener (the settings page) after the MCP transport.
+  // A failure is logged and does not block session stop or exit.
+  onClose?: () => Promise<void>,
 ): {
   handleSignal: (signal: string) => Promise<void>;
   isShuttingDown: () => boolean;
@@ -63,6 +66,14 @@ export function setupShutdown(
       await server.close();
     } catch (err) {
       log.error({ err }, "error closing MCP server");
+    }
+
+    if (onClose !== undefined) {
+      try {
+        await onClose();
+      } catch (err) {
+        log.error({ err }, "error closing auxiliary listener");
+      }
     }
 
     // Stop all live sessions with a per-session timeout
