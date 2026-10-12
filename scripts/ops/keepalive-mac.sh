@@ -37,14 +37,16 @@ CODER_SNAPSHOT="$HF_HOME/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapsh
 CODER_FILE_COUNT=10   # 9 weight shards + tokenizer.json, the files[] of CODER_MANIFEST_ID
 CODER_MAX_TOKENS="${CODER_MAX_TOKENS:-16384}"   # a low cap truncates tool calls mid-write (CLAUDE.md eval rule 4)
 CODER_MIN_FREE_GB="${CODER_MIN_FREE_GB:-50}"    # MIN_FREE_GB is sized for the 4.5 GB vision model; this one wires ~45 GB
-CODER_PAT='mlx_lm\.server.*--port 8085'
-REASON_PAT='mlx_lm\.server.*--port 8084'  # port-specific: both are mlx_lm.server, a bare pattern makes each reap the other
+CODER_PAT='mlx_lm\.server.*--port 8085( |$)'
+REASON_PAT='mlx_lm\.server.*--port 8084( |$)'  # port-specific and end-anchored: both are mlx_lm.server, a bare pattern makes each reap the other, and an open-ended one takes a bench on :80850 too
+PROBE_FAILS_MAX="${PROBE_FAILS_MAX:-3}"   # failed probes in a row before a server that still holds its port is reaped
 PROV="$REPO_ROOT/scripts/ops/provenance/provenance.py"
 PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 2>/dev/null || echo python3)
 PROVENANCE_ENFORCE=${QWEN_PROVENANCE_ENFORCE:-1}
 VISION_PID=0; REASON_PID=0; CODER_PID=0
 VISION_DEADLINE=0; REASON_DEADLINE=0; CODER_DEADLINE=0  # epoch when each in-flight load's budget expires (0 = not loading)
 CODER_REFUSED=0; PROV_REASON=""
+CODER_READY=0; CODER_STARTS=0; CODER_NEXT_START=0
 up()  { curl -s --max-time 5 "http://localhost:$1/v1/models" 2>/dev/null | grep -q '"object"'; }
 uph() { curl -sf --max-time 5 "http://localhost:$1/health" 2>/dev/null | grep -q 'ok'; }  # llama.cpp embed/rerank expose /health, not a model list
 log() { echo "$(date '+%H:%M:%S') $*"; }
@@ -131,7 +133,21 @@ coder_prov_ok(){
   done
   [ "$n" -eq "$CODER_FILE_COUNT" ] || { PROV_REASON="$n of $CODER_FILE_COUNT manifested files present in $CODER_SNAPSHOT"; return 1; }
 }
-# ensure_mlx <port> <label> <pidvar> <deadlinevar> <startfn> [min_free_gb]
+# coder-mac readiness. mlx_lm.server answers /v1/models within seconds of spawn, while its
+# generation thread is still loading 42 GB; if that load raises, the thread dies and the HTTP
+# side keeps answering forever. So until the first success after a spawn the probe also
+# needs a one-token completion. After that it is /v1/models only: a completion queues
+# behind an in-flight request, and a long prefill would read as a dead server.
+# Not detected: a generation thread that dies after readiness.
+coder_up(){
+  up 8085 || return 1
+  [ "$CODER_READY" = 1 ] && return 0
+  curl -sf --max-time 30 http://localhost:8085/v1/chat/completions -H 'Content-Type: application/json' \
+    -d '{"model":"default_model","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' 2>/dev/null \
+    | grep -q '"choices"' || return 1
+  CODER_READY=1; CODER_STARTS=0; CODER_NEXT_START=0
+}
+# ensure_mlx <port> <label> <pidvar> <deadlinevar> <startfn> [min_free_gb] [probefn]
 # Non-blocking health gate (qwen-coprocessor-stack-hxp). Each MLX server loads its weights
 # off the slow external disk; the old design blocked the loop in a synchronous 600s `waitup`
 # inside start_vision, so reason-mac (and embed/rerank) could not start until vision finished
@@ -148,15 +164,28 @@ coder_prov_ok(){
 # (VISION_*/REASON_*); pid/dl/now below are tick-scoped snapshots, and startfn updates the
 # globals for the next tick.
 ensure_mlx() {
-  local port="$1" label="$2" pidvar="$3" dlvar="$4" startfn="$5" minfree="${6:-$MIN_FREE_GB}" pid dl now
-  if up "$port"; then
+  local port="$1" label="$2" pidvar="$3" dlvar="$4" startfn="$5" minfree="${6:-$MIN_FREE_GB}" probe="${7:-up}" pid dl now
+  local failvar="${pidvar%_PID}_PROBE_FAILS" fails
+  if "$probe" "$port"; then
     if [ "${!dlvar:-0}" -ne 0 ]; then log "$label UP (:$port)"; printf -v "$dlvar" '%s' 0; fi
+    printf -v "$failvar" '%s' 0
     return 0
   fi
   pid="${!pidvar:-0}"; dl="${!dlvar:-0}"; now=$(date +%s)
   if [ "$pid" -gt 0 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null && [ "$now" -lt "$dl" ]; then
     return 0   # in-flight load within budget — leave it alone (no respawn = no leak/thrash)
   fi
+  # A server that still holds its port gets PROBE_FAILS_MAX failed probes in a row before it
+  # is reaped. One missed 5 s probe (wake from sleep, a memory stall) used to fall straight
+  # through to the start fn, which kills the server and whatever sessions it was serving.
+  if lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    fails=$(( ${!failvar:-0} + 1 )); printf -v "$failvar" '%s' "$fails"
+    if [ "$fails" -lt "$PROBE_FAILS_MAX" ]; then
+      log "$label probe failed ($fails/$PROBE_FAILS_MAX) with :$port still held — not respawning yet"
+      return 0
+    fi
+  fi
+  printf -v "$failvar" '%s' 0
   if mem_ok "$minfree"; then "$startfn"; else
     log "$label down; reclaimable RAM < ${minfree}G — deferring respawn (memory backstop)"
   fi
@@ -193,14 +222,21 @@ start_coder() {
     fi
   fi
   CODER_REFUSED=0
+  # Spawn backoff, 20 s doubling to 10 min: a coder that dies at load must not reread 42 GB
+  # every tick. coder_up clears it on the first good completion.
+  [ "$(date +%s)" -lt "$CODER_NEXT_START" ] && return 0
+  CODER_STARTS=$((CODER_STARTS + 1))
+  CODER_NEXT_START=$(( $(date +%s) + 20 * (2 ** (CODER_STARTS > 6 ? 5 : CODER_STARTS - 1)) ))
+  CODER_READY=0
   log "starting coder-mac (:8085, $CODER_MANIFEST_ID, max-tokens $CODER_MAX_TOKENS)"
   reap_pat "$CODER_PAT" coder-mac
   # HF_HUB_OFFLINE: mlx_lm.server loads whatever model a request names. Offline, a name that
-  # is not already in the cache is a 404 instead of an unmanifested download (RDR-016).
+  # is not already in the cache is a 404 instead of an unmanifested download (RDR-016). A
+  # name that IS in the cache still loads and replaces the coder; the gate does not cover that.
   # Sampling is the model's intended one; temperature 0 loops agentic runs (CLAUDE.md eval rule 3).
   HF_HUB_OFFLINE=1 "$VENV/bin/mlx_lm.server" --model "$CODER_SNAPSHOT" --host 0.0.0.0 --port 8085 \
     --temp 0.7 --top-p 0.8 --max-tokens "$CODER_MAX_TOKENS" \
-    > "$LOGDIR/coder-mac.log" 2>&1 & CODER_PID=$!
+    >> "$LOGDIR/coder-mac.log" 2>&1 & CODER_PID=$!   # append: a load crash's traceback must survive the respawn
   CODER_DEADLINE=$(( $(date +%s) + LOAD_BUDGET ))
   log "coder-mac spawned (pid $CODER_PID); load budget ${LOAD_BUDGET}s"
 }
@@ -237,6 +273,13 @@ ensure_http() {
 }
 trap 'log "shutdown; killing servers"; reap_pat "mlx_vlm\.server" vision-mac; reap_pat "$REASON_PAT" reason-mac; reap_pat "$CODER_PAT" coder-mac; kpidfile "$REPO_ROOT/logs/llama-embed.pid"; kpidfile "$REPO_ROOT/logs/llama-rerank.pid"; exit 0' TERM INT
 log "mac keepalive started (pid $$) — vision-mac + embed-local + rerank-local (reason-mac enabled=$REASON_ENABLED, coder-mac enabled=$CODER_ENABLED)"
+# A coder that outlived the previous keepalive (it was killed, not TERMed) may be mid-request,
+# where the readiness completion cannot answer. Adopt it with a fresh load budget.
+if [ "$CODER_ENABLED" = 1 ] && up 8085; then
+  CODER_PID=$(lsof -tiTCP:8085 -sTCP:LISTEN 2>/dev/null | head -1); CODER_PID=${CODER_PID:-0}
+  CODER_DEADLINE=$(( $(date +%s) + LOAD_BUDGET ))
+  log "coder-mac already serving (pid $CODER_PID) — adopting; readiness budget ${LOAD_BUDGET}s"
+fi
 while true; do
   # Backstop: prune duplicate MLX servers (keep the one serving its port) before the health
   # checks, so a stuck/orphaned instance can't keep failing `up` and stacking respawns.
@@ -255,7 +298,7 @@ while true; do
       fi
     else
       guard_single "$CODER_PAT" 8085 coder-mac
-      ensure_mlx 8085 coder-mac CODER_PID CODER_DEADLINE start_coder "$CODER_MIN_FREE_GB"
+      ensure_mlx 8085 coder-mac CODER_PID CODER_DEADLINE start_coder "$CODER_MIN_FREE_GB" coder_up
     fi
   fi
   ensure_http 8081 embed-local  "$REPO_ROOT/scripts/start-embed-server.sh"  embed-mac.log  EMBED_FAILS  EMBED_DUE

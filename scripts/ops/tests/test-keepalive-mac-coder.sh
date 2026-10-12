@@ -1,5 +1,5 @@
 #!/bin/bash
-# Offline test for coder-mac's provenance gate and reap patterns (bead 4f81):
+# Offline test for coder-mac's provenance gate, reap patterns and probe-failure rule (bead 4f81):
 # coder_prov_ok, extracted from keepalive-mac.sh, against the real manifest and the
 # real provenance.py, over a snapshot directory of sparse files at the manifested sizes.
 # Usage: bash scripts/ops/tests/test-keepalive-mac-coder.sh   (~3 s). Exits non-zero
@@ -17,7 +17,7 @@ grep -E '^(CODER_MANIFEST_ID|CODER_FILE_COUNT|CODER_PAT|REASON_PAT)=' "$ka" | se
 PROV="$REPO_ROOT/scripts/ops/provenance/provenance.py"
 PYTHON=$(command -v python3)
 LOGDIR="$tmp"
-fails=0
+fails=0; PROV_REASON=""
 expect() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: want $2 got $3 ($PROV_REASON)"; fails=$((fails+1)); fi; }
 
 # Sparse stand-ins: check-path is membership + size, so content is irrelevant here.
@@ -72,4 +72,36 @@ expect "coder pattern matches coder-mac"       1 "$(m "$CODER_PAT" "$coder")"
 expect "coder pattern spares reason-mac"       0 "$(m "$CODER_PAT" "$reason")"
 expect "reason pattern matches reason-mac"     1 "$(m "$REASON_PAT" "$reason")"
 expect "reason pattern spares coder-mac"       0 "$(m "$REASON_PAT" "$coder")"
+expect "coder pattern spares a bench on :80850" 0 "$(m "$CODER_PAT" "python /v/bin/mlx_lm.server --model /snap --port 80850 --temp 0.7")"
+expect "coder pattern matches a trailing --port" 1 "$(m "$CODER_PAT" "python /v/bin/mlx_lm.server --model /snap --port 8085")"
+
+# ensure_mlx: a server that still holds its port is not reaped on one failed probe.
+sed -n '/^ensure_mlx() {$/,/^}$/p' "$ka" > "$tmp/ens.sh"
+grep -q 'PROBE_FAILS_MAX' "$tmp/ens.sh" || { echo "FAIL: ensure_mlx block not found in $ka"; exit 1; }
+. "$tmp/ens.sh"
+MIN_FREE_GB=6; PROBE_FAILS_MAX=3
+log() { :; }
+PROBE=1; HELD=1; MEM=0; STARTED=0
+probe() { return "$PROBE"; }
+lsof() { return "$HELD"; }
+mem_ok() { return "$MEM"; }
+startfn() { STARTED=$((STARTED+1)); }
+tick() { ensure_mlx 8085 t T_PID T_DL startfn 50 probe; }
+reset() { T_PID=0; T_DL=0; T_PROBE_FAILS=0; STARTED=0; PROBE=1; HELD=1; MEM=0; }
+
+reset; PROBE=0; T_DL=5; tick
+expect "healthy: no spawn, deadline cleared" "0/0" "$STARTED/$T_DL"
+reset; tick
+expect "down, port free: spawn at once" 1 "$STARTED"
+reset; sleep 30 & T_PID=$!; T_DL=$(( $(date +%s) + 60 )); tick
+expect "loading within budget: left alone" 0 "$STARTED"
+T_DL=1; HELD=0; tick; tick
+expect "past budget, port held: two failed probes do not reap" "0/2" "$STARTED/$T_PROBE_FAILS"
+PROBE=0; tick; PROBE=1; tick
+expect "a good probe resets the streak" "0/1" "$STARTED/$T_PROBE_FAILS"
+tick; tick
+expect "third failed probe in a row reaps" "1/0" "$STARTED/$T_PROBE_FAILS"
+kill "$T_PID" 2>/dev/null; wait "$T_PID" 2>/dev/null
+reset; MEM=1; tick
+expect "memory floor defers the spawn" 0 "$STARTED"
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
