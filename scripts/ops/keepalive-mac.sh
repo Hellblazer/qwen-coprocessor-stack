@@ -2,7 +2,8 @@
 # Keepalive for the Mac-side coprocessor servers (vision-on-mac migration, 2026-06-12).
 # Holds, all co-resident on the M4 Max, restarting any that fall over:
 #   - vision-mac  (:8083, Qwen2.5-VL-7B  via mlx_vlm)  — MLX, mlx-venv
-#   - reason-mac  (:8084, Qwen3.6-35B-A3B via mlx_lm)  — MLX, mlx-venv
+#   - reason-mac  (:8084, Qwen3.6-35B-A3B via mlx_lm)  — MLX, mlx-venv (off by default)
+#   - coder-mac   (:8085, Qwen3-Coder-Next 4-bit via mlx_lm) — MLX, mlx-venv, ~45 GB resident
 #   - embed-local (:8081, bge-m3)                      — llama.cpp, via start-embed-server.sh
 #   - rerank-local(:8082, bge-reranker-v2-m3)          — llama.cpp, via start-rerank-server.sh
 # Local processes (no SSH). Run under launchd (KeepAlive) so it survives logout.
@@ -23,8 +24,27 @@ REASON_ENABLED="${REASON_ENABLED:-0}"  # 2026-09-12: reason-mac OFF by default t
 REASON_MAX_TOKENS="${REASON_MAX_TOKENS:-4096}"  # generation-length guardrail for reason-mac (mlx_lm.server has no --max-kv-size; --max-tokens bounds generation -> bounds KV growth since operator prompts are small). Override via env.
 MIN_FREE_GB="${MIN_FREE_GB:-6}"   # memory backstop: don't (re)spawn a ~4.5G+ MLX model when reclaimable RAM is below this — defers respawn (logs) instead of thrashing disk under pressure (qwen-coprocessor-stack-25s, spec item 4). Override via env.
 LOAD_BUDGET="${LOAD_BUDGET:-900}"  # seconds a freshly-spawned MLX server is allowed to load off the slow external disk before we treat a still-down port as stuck and respawn. Generous so a slow-but-progressing cold load is not killed (qwen-coprocessor-stack-hxp). Override via env.
-VISION_PID=0; REASON_PID=0
-VISION_DEADLINE=0; REASON_DEADLINE=0  # epoch when each in-flight load's budget expires (0 = not loading)
+# coder-mac (bead 4f81, 2026-10-12): Qwen3-Coder-Next MLX 4-bit, pooled with coder-box. Measured on
+# this M4 Max (bead c2m0): 1232/58 tok/s prefill/decode at 8K, 580/42 at 60K, battery 9/9; two
+# concurrent 121K sessions peaked at 84 GB wired with no Metal OOM.
+# Served from the pinned snapshot DIRECTORY, not the repo id: a repo id follows the cache's
+# refs/main, which a later download moves, and the manifest verifies this revision only.
+# CODER_MANIFEST_ID, CODER_SNAPSHOT and CODER_FILE_COUNT change together.
+CODER_ENABLED="${CODER_MAC_ENABLED:-1}"   # CODER_MAC_ENABLED=0 in the plist's environment removes the slot
+CODER_OFF_FILE="$HOME/.qwen-coprocessor-stack/coder-mac.off"  # touch = stop and hold coder-mac down within one tick (frees ~45 GB without a keepalive restart); rm = start it again
+CODER_MANIFEST_ID="qwen3-coder-next-mlx-4bit@7b9321ea"
+CODER_SNAPSHOT="$HF_HOME/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5"
+CODER_FILE_COUNT=10   # 9 weight shards + tokenizer.json, the files[] of CODER_MANIFEST_ID
+CODER_MAX_TOKENS="${CODER_MAX_TOKENS:-16384}"   # a low cap truncates tool calls mid-write (CLAUDE.md eval rule 4)
+CODER_MIN_FREE_GB="${CODER_MIN_FREE_GB:-50}"    # MIN_FREE_GB is sized for the 4.5 GB vision model; this one wires ~45 GB
+CODER_PAT='mlx_lm\.server.*--port 8085'
+REASON_PAT='mlx_lm\.server.*--port 8084'  # port-specific: both are mlx_lm.server, a bare pattern makes each reap the other
+PROV="$REPO_ROOT/scripts/ops/provenance/provenance.py"
+PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 2>/dev/null || echo python3)
+PROVENANCE_ENFORCE=${QWEN_PROVENANCE_ENFORCE:-1}
+VISION_PID=0; REASON_PID=0; CODER_PID=0
+VISION_DEADLINE=0; REASON_DEADLINE=0; CODER_DEADLINE=0  # epoch when each in-flight load's budget expires (0 = not loading)
+CODER_REFUSED=0; PROV_REASON=""
 up()  { curl -s --max-time 5 "http://localhost:$1/v1/models" 2>/dev/null | grep -q '"object"'; }
 uph() { curl -sf --max-time 5 "http://localhost:$1/health" 2>/dev/null | grep -q 'ok'; }  # llama.cpp embed/rerank expose /health, not a model list
 log() { echo "$(date '+%H:%M:%S') $*"; }
@@ -93,8 +113,25 @@ free_gb(){
     /Pages speculative/ {gsub(/\./,"",$3); s=$3}
     END { printf "%d", (f+i+s)*ps/1073741824 }'
 }
-mem_ok(){ [ "$(free_gb)" -ge "$MIN_FREE_GB" ] 2>/dev/null; }
-# ensure_mlx <port> <label> <pidvar> <deadlinevar> <startfn>
+mem_ok(){ [ "$(free_gb)" -ge "${1:-$MIN_FREE_GB}" ] 2>/dev/null; }
+# RDR-016 gate for coder-mac, the Mac twin of prov_gate() in keepalive-coprocessor.sh: every
+# weight shard and the tokenizer must be a file of CODER_MANIFEST_ID, verified on host mac, at
+# the manifested byte length. Membership + size, no hashing (`provenance.py verify` hashes).
+# The count check is the non-vacuity assert: a deleted shard fails no per-file check.
+coder_prov_ok(){
+  local f sz n=0
+  PROV_REASON=""
+  for f in "$CODER_SNAPSHOT"/*.safetensors "$CODER_SNAPSHOT/tokenizer.json"; do
+    [ -f "$f" ] || { PROV_REASON="missing $f"; return 1; }
+    sz=$(wc -c < "$f" | tr -d ' ')
+    "$PYTHON" "$PROV" check-path "$(basename "$f")" --host mac --id "$CODER_MANIFEST_ID" --size "$sz" \
+      >/dev/null 2>"$LOGDIR/coder-mac-prov.err" \
+      || { PROV_REASON="$(basename "$f"): $(tail -n 1 "$LOGDIR/coder-mac-prov.err" 2>/dev/null)"; return 1; }
+    n=$((n+1))
+  done
+  [ "$n" -eq "$CODER_FILE_COUNT" ] || { PROV_REASON="$n of $CODER_FILE_COUNT manifested files present in $CODER_SNAPSHOT"; return 1; }
+}
+# ensure_mlx <port> <label> <pidvar> <deadlinevar> <startfn> [min_free_gb]
 # Non-blocking health gate (qwen-coprocessor-stack-hxp). Each MLX server loads its weights
 # off the slow external disk; the old design blocked the loop in a synchronous 600s `waitup`
 # inside start_vision, so reason-mac (and embed/rerank) could not start until vision finished
@@ -111,7 +148,7 @@ mem_ok(){ [ "$(free_gb)" -ge "$MIN_FREE_GB" ] 2>/dev/null; }
 # (VISION_*/REASON_*); pid/dl/now below are tick-scoped snapshots, and startfn updates the
 # globals for the next tick.
 ensure_mlx() {
-  local port="$1" label="$2" pidvar="$3" dlvar="$4" startfn="$5" pid dl now
+  local port="$1" label="$2" pidvar="$3" dlvar="$4" startfn="$5" minfree="${6:-$MIN_FREE_GB}" pid dl now
   if up "$port"; then
     if [ "${!dlvar:-0}" -ne 0 ]; then log "$label UP (:$port)"; printf -v "$dlvar" '%s' 0; fi
     return 0
@@ -120,8 +157,8 @@ ensure_mlx() {
   if [ "$pid" -gt 0 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null && [ "$now" -lt "$dl" ]; then
     return 0   # in-flight load within budget — leave it alone (no respawn = no leak/thrash)
   fi
-  if mem_ok; then "$startfn"; else
-    log "$label down; reclaimable RAM < ${MIN_FREE_GB}G — deferring respawn (memory backstop)"
+  if mem_ok "$minfree"; then "$startfn"; else
+    log "$label down; reclaimable RAM < ${minfree}G — deferring respawn (memory backstop)"
   fi
 }
 start_vision() {
@@ -139,12 +176,33 @@ start_reason() {
   # generation bounds KV growth because operator prompts are small. 64K is far
   # above any real answer; the model's native window is 256K (we don't need it).
   log "starting reason-mac (:8084, $REASON_MODEL, max-tokens $REASON_MAX_TOKENS)"
-  reap_pat 'mlx_lm\.server' reason-mac   # same SIGKILL-escalating reap (SIGTERM ignored mid-load)
+  reap_pat "$REASON_PAT" reason-mac   # same SIGKILL-escalating reap (SIGTERM ignored mid-load)
   "$VENV/bin/mlx_lm.server" --model "$REASON_MODEL" --host 0.0.0.0 --port 8084 \
     --max-tokens "$REASON_MAX_TOKENS" \
     > "$LOGDIR/reason-mac.log" 2>&1 & REASON_PID=$!
   REASON_DEADLINE=$(( $(date +%s) + LOAD_BUDGET ))   # non-blocking: not gated behind vision's load (hxp)
   log "reason-mac spawned (pid $REASON_PID); load budget ${LOAD_BUDGET}s"
+}
+start_coder() {
+  if ! coder_prov_ok; then
+    if [ "$PROVENANCE_ENFORCE" = 0 ]; then
+      log "PROVENANCE BYPASS (QWEN_PROVENANCE_ENFORCE=0): $PROV_REASON — launching coder-mac anyway"
+    else
+      [ "$CODER_REFUSED" -eq 0 ] && log "REFUSING to launch coder-mac — $PROV_REASON (fix the manifest: /qwen-stack:provenance; or QWEN_PROVENANCE_ENFORCE=0 to bypass, logged)"
+      CODER_REFUSED=1; return 0
+    fi
+  fi
+  CODER_REFUSED=0
+  log "starting coder-mac (:8085, $CODER_MANIFEST_ID, max-tokens $CODER_MAX_TOKENS)"
+  reap_pat "$CODER_PAT" coder-mac
+  # HF_HUB_OFFLINE: mlx_lm.server loads whatever model a request names. Offline, a name that
+  # is not already in the cache is a 404 instead of an unmanifested download (RDR-016).
+  # Sampling is the model's intended one; temperature 0 loops agentic runs (CLAUDE.md eval rule 3).
+  HF_HUB_OFFLINE=1 "$VENV/bin/mlx_lm.server" --model "$CODER_SNAPSHOT" --host 0.0.0.0 --port 8085 \
+    --temp 0.7 --top-p 0.8 --max-tokens "$CODER_MAX_TOKENS" \
+    > "$LOGDIR/coder-mac.log" 2>&1 & CODER_PID=$!
+  CODER_DEADLINE=$(( $(date +%s) + LOAD_BUDGET ))
+  log "coder-mac spawned (pid $CODER_PID); load budget ${LOAD_BUDGET}s"
 }
 # embed-local / rerank-local are llama.cpp servers driven by their own start scripts,
 # which self-background, write a pidfile under $REPO_ROOT/logs, wait for /health, and are
@@ -177,18 +235,29 @@ ensure_http() {
     log "$label FAILED to come up on :$port (attempt $fails; retry in ${backoff}s; see $logf)"
   fi
 }
-trap 'log "shutdown; killing servers"; reap_pat "mlx_vlm\.server" vision-mac; reap_pat "mlx_lm\.server" reason-mac; kpidfile "$REPO_ROOT/logs/llama-embed.pid"; kpidfile "$REPO_ROOT/logs/llama-rerank.pid"; exit 0' TERM INT
-log "mac keepalive started (pid $$) — vision-mac + embed-local + rerank-local (reason-mac enabled=$REASON_ENABLED)"
+trap 'log "shutdown; killing servers"; reap_pat "mlx_vlm\.server" vision-mac; reap_pat "$REASON_PAT" reason-mac; reap_pat "$CODER_PAT" coder-mac; kpidfile "$REPO_ROOT/logs/llama-embed.pid"; kpidfile "$REPO_ROOT/logs/llama-rerank.pid"; exit 0' TERM INT
+log "mac keepalive started (pid $$) — vision-mac + embed-local + rerank-local (reason-mac enabled=$REASON_ENABLED, coder-mac enabled=$CODER_ENABLED)"
 while true; do
   # Backstop: prune duplicate MLX servers (keep the one serving its port) before the health
   # checks, so a stuck/orphaned instance can't keep failing `up` and stacking respawns.
   guard_single 'mlx_vlm\.server' 8083 vision-mac
-  [ "$REASON_ENABLED" = 1 ] && guard_single 'mlx_lm\.server'  8084 reason-mac
+  [ "$REASON_ENABLED" = 1 ] && guard_single "$REASON_PAT" 8084 reason-mac
   # Non-blocking ensures: neither MLX load gates the other (hxp) — both proceed concurrently,
   # and the deadline gate inside ensure_mlx prevents respawn-while-loading (the leak/thrash).
   # The memory backstop lives inside ensure_mlx (mem_ok before any spawn).
   ensure_mlx 8083 vision-mac VISION_PID VISION_DEADLINE start_vision
   [ "$REASON_ENABLED" = 1 ] && ensure_mlx 8084 reason-mac REASON_PID REASON_DEADLINE start_reason
+  if [ "$CODER_ENABLED" = 1 ]; then
+    if [ -e "$CODER_OFF_FILE" ]; then
+      if pgrep -f "$CODER_PAT" >/dev/null 2>&1; then
+        log "coder-mac switched off ($CODER_OFF_FILE present) — stopping"
+        reap_pat "$CODER_PAT" coder-mac; CODER_PID=0; CODER_DEADLINE=0
+      fi
+    else
+      guard_single "$CODER_PAT" 8085 coder-mac
+      ensure_mlx 8085 coder-mac CODER_PID CODER_DEADLINE start_coder "$CODER_MIN_FREE_GB"
+    fi
+  fi
   ensure_http 8081 embed-local  "$REPO_ROOT/scripts/start-embed-server.sh"  embed-mac.log  EMBED_FAILS  EMBED_DUE
   ensure_http 8082 rerank-local "$REPO_ROOT/scripts/start-rerank-server.sh" rerank-mac.log RERANK_FAILS RERANK_DUE
   sleep 20

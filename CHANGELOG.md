@@ -14,6 +14,19 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/ops/keepalive-mac.sh` holds a second coder, **coder-mac**: Qwen3-Coder-Next
+  MLX 4-bit on :8085 (`mlx_lm.server`), served from the manifested snapshot and gated
+  by `provenance.py check-path --host mac`. `touch ~/.qwen-coprocessor-stack/coder-mac.off`
+  stops it without a keepalive restart; `CODER_MAC_ENABLED=0` removes the slot. Example
+  pool: `config/coprocessor-pool-coder-mac.example.json` (bead 4f81).
+
+### Fixed
+
+- `keepalive-mac.sh` reaped every `mlx_lm.server` when restarting reason-mac. The reap
+  and singleton patterns are now port-specific.
+
 ## [0.12.0] - 2026-10-11
 
 Ships the RDR-002 §Layer 1 extension-lifecycle surface: five new MCP tools
