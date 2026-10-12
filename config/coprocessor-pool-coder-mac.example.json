@@ -1,0 +1,58 @@
+{
+  "_comment": "Two-coder topology (2026-10-12, bead 4f81): Qwen3-Coder-Next on the box (llama.cpp Vulkan) and on the Mac (MLX 4-bit, mlx_lm.server :8085 held by scripts/ops/keepalive-mac.sh). Same tier/capacity/weight, so unpinned agentic work and role=code round-robin across both machines. json_schema requests and tokenize go to coder-box only. Measurements: T2 coder-next-m4max-mlx-vs-metal-2026-10-11.",
+  "backends": [
+    {
+      "id": "coder-box",
+      "url": "http://qwentescence:1235/v1",
+      "model": "qwen",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 262144,
+      "modality": "text",
+      "roles": ["code"]
+    },
+    {
+      "_comment": "model must be default_model: mlx_lm.server loads whatever model a request names, and default_model is the one it was started with (the keepalive starts it from a pinned snapshot path). no_schema: MLX ignores response_format.json_schema. no_tokenize: MLX has no /tokenize.",
+      "id": "coder-mac",
+      "url": "http://localhost:8085/v1",
+      "model": "default_model",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 262144,
+      "modality": "text",
+      "roles": ["code"],
+      "no_schema": true,
+      "no_tokenize": true
+    },
+    {
+      "id": "vision-mac",
+      "url": "http://localhost:8083/v1",
+      "model": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
+      "tier": "remote",
+      "capacity": "fast",
+      "weight": 1,
+      "ctx_size": 32768,
+      "modality": "multimodal",
+      "vision_only": true,
+      "no_schema": true
+    },
+    {
+      "id": "embed-local",
+      "url": "http://localhost:8081/v1",
+      "model": "bge-m3",
+      "tier": "local",
+      "capacity": "fast",
+      "modality": "embedding"
+    },
+    {
+      "id": "rerank-local",
+      "url": "http://localhost:8082/v1",
+      "model": "bge-reranker-v2-m3",
+      "tier": "local",
+      "capacity": "fast",
+      "modality": "rerank"
+    }
+  ]
+}
