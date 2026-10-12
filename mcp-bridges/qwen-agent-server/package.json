@@ -1,6 +1,6 @@
 {
   "name": "qwen-agent-server",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Stateful MCP supervisor exposing Qwen Code as a multi-backend agent — see docs/rdr/RDR-001",
   "type": "module",
   "license": "MIT",
