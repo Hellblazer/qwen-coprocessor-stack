@@ -22,13 +22,6 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   stops it without a keepalive restart; `CODER_MAC_ENABLED=0` removes the slot. Example
   pool: `config/coprocessor-pool-coder-mac.example.json` (bead 4f81).
 
-### Changed
-
-- Provenance allowlist `runtime_repos` gains `vllm-project/vllm-metal` and
-  `vllm-project/vllm`, so the vllm-metal trial on the Mac (bead c2m0.6) can register its
-  release wheels with `add-runtime`. The Python dependencies its installer resolves from
-  PyPI are outside the manifest.
-
 ### Fixed
 
 - `keepalive-mac.sh` reaped every `mlx_lm.server` when restarting reason-mac. The reap
