@@ -1314,6 +1314,63 @@ class FetchReuseTests(ProvenanceTestCase):
         self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
 
 
+class FetchLockTests(ProvenanceTestCase):
+    def _fetch(self, dest: str, manifest_path: str) -> int:
+        return self.run_main(
+            ["fetch", "Qwen/repo-basic", "--manifest", manifest_path, "--dest", dest, "--hf-base", self.server.base_url]
+        )
+
+    def test_second_fetch_into_a_locked_destination_is_refused(self) -> None:
+        import fcntl
+
+        dest, manifest_path = self.make_dest_dir(), self.make_manifest_path()
+        lock_path = Path(dest).with_name(f".{Path(dest).name}.fetch.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as holder:  # stands in for a fetch already running
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self._fetch(dest, manifest_path), 1)
+            self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+            self.assertFalse((Path(dest) / "model.safetensors").exists())
+            self.assertFalse((Path(dest) / "model.safetensors.part").exists())
+        # the holder is gone: the same destination is usable again, with no cleanup
+        self.assertEqual(self._fetch(dest, manifest_path), 0)
+
+    def test_lock_is_released_after_a_fetch_and_after_a_failed_one(self) -> None:
+        dest, manifest_path = self.make_dest_dir(), self.make_manifest_path()
+        self.assertEqual(self._fetch(dest, manifest_path), 0)
+        self.assertEqual(self._fetch(dest, manifest_path), 0)
+        bad_dest = self.make_dest_dir()
+        args = ["fetch", "Qwen/repo-lfs-mismatch", "--manifest", manifest_path, "--dest", bad_dest, "--hf-base", self.server.base_url]
+        self.assertEqual(self.run_main(args), 1)
+        self.assertEqual(self.run_main(args), 1)  # a hash mismatch again, not a lock refusal
+
+    def test_lock_file_sits_beside_the_destination_not_inside_it(self) -> None:
+        dest, manifest_path = self.make_dest_dir(), self.make_manifest_path()
+        self.assertEqual(self._fetch(dest, manifest_path), 0)
+        self.assertEqual(sorted(x.name for x in Path(dest).iterdir()), ["config.json", "model.safetensors"])
+        self.assertTrue(Path(dest).with_name(f".{Path(dest).name}.fetch.lock").exists())
+
+    def test_manifest_entry_written_during_a_fetch_is_not_lost(self) -> None:
+        # Another command records an entry while this fetch is downloading. The fetch must
+        # add to the manifest as it is at the end, not write back the copy it read at the start.
+        dest, manifest_path = self.make_dest_dir(), self.make_manifest_path()
+        route = f"/Qwen/repo-basic/resolve/{self.basic_sha}/model.safetensors"
+        original = self.server.routes[route]
+
+        def writes_manifest_mid_download() -> Response:
+            m = prov.load_manifest(manifest_path)
+            m["artifacts"].append({"id": "written-meanwhile"})
+            Path(manifest_path).write_text(json.dumps(m))
+            return original()
+
+        self.server.routes[route] = writes_manifest_mid_download
+        self.addCleanup(self.server.routes.__setitem__, route, original)
+        self.assertEqual(self._fetch(dest, manifest_path), 0)
+        ids = [a["id"] for a in json.loads(Path(manifest_path).read_text())["artifacts"]]
+        self.assertIn("written-meanwhile", ids)
+        self.assertEqual(len(ids), 2)
+
+
 # --------------------------------------------------------------------------
 # fetch: hash verification (LFS sha256 + non-LFS git blob sha1)
 # --------------------------------------------------------------------------
