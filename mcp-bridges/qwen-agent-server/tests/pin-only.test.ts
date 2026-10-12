@@ -248,7 +248,7 @@ describe("pin_only: shipped example configs", () => {
       tier: "remote",
       capacity: "heavy",
       weight: 1,
-      ctx_size: 200000,
+      ctx_size: 1048576,
       modality: "text",
       roles: ["deepseek"],
       api_key_env: "OPENROUTER_API_KEY",

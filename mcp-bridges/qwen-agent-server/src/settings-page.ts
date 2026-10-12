@@ -588,10 +588,11 @@ function renderPage(nonce: string): string {
   h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.6rem; border-bottom: 1px solid #ccc; padding-bottom: .2rem; }
   .note { background: #fff6dc; border: 1px solid #e2cf8f; padding: .6rem .8rem; border-radius: 4px; }
   .muted { color: #666; } .ok { color: #0a6b2d; } .bad { color: #a31515; } .unk { color: #8a6d00; }
+  .warn { color: #a31515; font-weight: 600; }
   label { display: block; margin: .25rem 0; } table { border-collapse: collapse; } td, th { padding: .15rem .8rem .15rem 0; text-align: left; }
   button { font: inherit; padding: .35rem .9rem; margin-top: 1rem; } #status { margin-left: .8rem; }
   code { background: #eee; padding: 0 .25rem; border-radius: 3px; }
-  @media (prefers-color-scheme: dark) { body { color: #e6e6e6; background: #181818; } .note { background: #3a3220; border-color: #6b5a2a; } code { background: #2a2a2a; } .muted { color: #999; } }
+  @media (prefers-color-scheme: dark) { body { color: #e6e6e6; background: #181818; } .note { background: #3a3220; border-color: #6b5a2a; } code { background: #2a2a2a; } .muted { color: #999; } .warn { color: #ff9a9a; } }
 </style>
 </head>
 <body>
@@ -607,6 +608,7 @@ function renderPage(nonce: string): string {
   </select>
 </label>
 <p class="muted" id="enabledNote"></p>
+<p class="warn" id="dispatchWarning"></p>
 
 <h2>Providers</h2>
 <p class="muted">A provider runs a dispatched task on one pinned backend. Tick the backends this session may dispatch to. None ticked uses the providers from the environment or config file.</p>
@@ -633,6 +635,9 @@ function renderPage(nonce: string): string {
   history.replaceState(null, "", "/");
   var TOKEN_HEADER = ${JSON.stringify(SETTINGS_TOKEN_HEADER)};
   var $ = function (id) { return document.getElementById(id); };
+  // dispatchEnabled from the last rendered state (form render only), so the
+  // provider convenience default below decides against what the user sees.
+  var lastDispatchEnabled = false;
 
   function el(tag, text, cls) {
     var e = document.createElement(tag);
@@ -695,6 +700,7 @@ function renderPage(nonce: string): string {
   // Form state is rendered once per load/save, not on the health poll, so an
   // edit in progress is never overwritten.
   function renderForm(s) {
+    lastDispatchEnabled = s.dispatchEnabled;
     $("enabled").value = s.enabledSource === "page" ? (s.dispatchEnabled ? "on" : "off") : "env";
     $("enabledNote").textContent = "Currently " + (s.dispatchEnabled ? "on" : "off") + " (source: " + s.enabledSource + ").";
 
@@ -708,6 +714,13 @@ function renderPage(nonce: string): string {
       var label = el("label");
       var cb = document.createElement("input");
       cb.type = "checkbox"; cb.value = b.id; cb.checked = !!chosen[b.id]; cb.className = "provider";
+      // Convenience: ticking a provider while Dispatch is still "use the launch
+      // environment" and this session is off would otherwise save providers
+      // without enabling them. Only the tick (never an untick), and only when
+      // the user has not picked "on" or "off" themselves, flips it to "on".
+      cb.addEventListener("change", function () {
+        if (cb.checked && $("enabled").value === "env" && lastDispatchEnabled === false) $("enabled").value = "on";
+      });
       label.appendChild(cb);
       label.appendChild(document.createTextNode(" " + b.id + " "));
       label.appendChild(el("span", "(" + b.tier + ", " + b.capacity + (b.pinOnly ? ", pin only" : "") + ")", "muted"));
@@ -749,7 +762,19 @@ function renderPage(nonce: string): string {
     var t = $("extText"); if (t) t.value = "";
   });
 
-  function render(s) { renderForm(s); renderHealth(s); renderEnv(s); }
+  // Providers ticked from this page, but dispatch off for the session: the
+  // saved settings would leave qwen_dispatch off with nothing on the page
+  // saying so. Say so.
+  function renderDispatchWarning(s) {
+    var w = $("dispatchWarning");
+    if (s.dispatchEnabled === false && s.providersSource === "page" && s.providers.length > 0) {
+      w.textContent = 'Providers are set but dispatch is off for this session. Set Dispatch to "on" and save.';
+    } else {
+      w.textContent = "";
+    }
+  }
+
+  function render(s) { renderForm(s); renderHealth(s); renderEnv(s); renderDispatchWarning(s); }
 
   function collect() {
     var mode = $("enabled").value;

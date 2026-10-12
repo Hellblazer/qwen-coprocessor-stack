@@ -846,6 +846,48 @@ describe("response headers and page content", () => {
   });
 });
 
+describe("dispatch warning and the provider convenience default", () => {
+  const WARNING = 'Providers are set but dispatch is off for this session. Set Dispatch to "on" and save.';
+
+  const pageHtml = async (): Promise<string> => {
+    const h = await harness();
+    const res = await raw(h.port, { path: `/?t=${h.token}` });
+    expect(res.status).toBe(200);
+    return res.body;
+  };
+
+  it("serves an empty #dispatchWarning element carrying the exact warning sentence", async () => {
+    const body = await pageHtml();
+    expect(body).toContain('id="dispatchWarning"');
+    expect(body).toContain(WARNING);
+    // Present from load, empty until renderDispatchWarning fills it in.
+    expect(body).toContain('<p class="warn" id="dispatchWarning"></p>');
+  });
+
+  it("the warning logic keys on providersSource, dispatchEnabled and a non-empty provider list", async () => {
+    const body = await pageHtml();
+    const start = body.indexOf("function renderDispatchWarning");
+    expect(start).toBeGreaterThan(-1);
+    const logic = body.slice(start, body.indexOf("\n  }", start));
+    expect(logic).toContain("s.providersSource");
+    expect(logic).toContain('s.providersSource === "page"');
+    expect(logic).toContain("s.dispatchEnabled");
+    expect(logic).toContain("s.providers.length > 0");
+    expect(logic).toContain(WARNING);
+  });
+
+  it("the provider convenience default flips Dispatch to on only on a tick, while it is still 'env' and the session is off", async () => {
+    const body = await pageHtml();
+    const start = body.indexOf('cb.addEventListener("change"');
+    expect(start).toBeGreaterThan(-1);
+    const handler = body.slice(start, body.indexOf("\n      });", start));
+    expect(handler).toContain("cb.checked &&");
+    expect(handler).toContain('$("enabled").value === "env"');
+    expect(handler).toContain("lastDispatchEnabled === false");
+    expect(handler).toContain('$("enabled").value = "on"');
+  });
+});
+
 describe("qwen_settings MCP tool", () => {
   async function connect(h: Harness) {
     const mcp = new McpServer({ name: "t", version: "0" });
