@@ -449,7 +449,8 @@ The stack is the supervisor; your app wires its dispatch through it. Two pattern
    Claude Code with `QWEN_DISPATCH_ENABLE=1` in the environment (and, to keep
    the provider session-local too, `QWEN_AGENT_PROVIDERS='[...]'`); the
    session's own supervisor inherits that env, other sessions see
-   `dispatch_not_enabled`. For a one-shot agentic task that
+   `dispatch_not_enabled`. The other way in is the
+   [settings page](#recipe-opt-a-session-in-from-the-settings-page). For a one-shot agentic task that
    edits a repo, call the `qwen_dispatch` MCP operator with a `prompt` and either
    a caller-supplied `worktree` (absolute path) or a `repo` slug (the executor
    materializes a throwaway worktree), plus the `base_commit` to diff against. You
@@ -515,6 +516,48 @@ again 2026-09-16 through the env var itself: a session launched with
 no per-call opts, and its spawns had no `nx` tools (the exact-set rule above).
 That is what lets a dogfood run record a real `toolkit=<version>` instead of
 `none`.
+
+---
+
+## Recipe: opt a session in from the settings page
+
+The launch-env route needs the variables set before `claude` starts. The
+settings page does the same job from inside a running session. Type
+`/qwen-stack:dispatch`, or ask the assistant to call `qwen_settings`; it opens a
+page in your browser. There you can:
+
+- turn `qwen_dispatch` on or off for this session, or leave it to the launch
+  environment;
+- tick the backends dispatch may run on. Each ticked text backend becomes a
+  provider pinned to that backend (`{id: <backend>, agentKind: "qwen-local",
+  backend: <backend>}`); with none ticked the providers come from
+  `QWEN_AGENT_PROVIDERS` or `config.json` as before;
+- choose the session's default extension loadout from the installed list, or
+  leave the defaults. It replaces `QWEN_DEFAULT_EXTENSIONS` and the
+  `default_extensions` config field for this session, and applies to every
+  spawn that passes no `opts.extensions` of its own, not only dispatch;
+- see live backend health and what the launch environment currently says.
+
+What it is and is not:
+
+- **Per session, in memory.** The settings live in this session's supervisor
+  process. Nothing is written to `config.json` or any other file, other
+  sessions are unaffected, and a supervisor restart (a new `claude`) resets them.
+  The env vars behave exactly as before when the page has set nothing.
+- **Human-operated.** `qwen_settings` is read-only: it returns the page URL and
+  the current state and takes no argument that changes anything. The only write
+  path is the page's own `POST`. The assistant is told to open the URL for you,
+  not to fetch it.
+- **Local only.** The page listens on `127.0.0.1` on an OS-assigned port, and
+  every request needs the random token in the URL (a new one each time the
+  supervisor starts); the page removes the token from the address bar once
+  loaded, so a reload needs a fresh link from `qwen_settings`. Requests with another `Host` or a foreign `Origin` are
+  refused. Anything on your machine that can read the URL and make HTTP
+  requests, a model with a shell or browser tool included, can use it; the
+  token keeps out other web pages and other local users' casual probes, not a
+  process you have handed the URL to.
+- **Same checks as before.** A page-chosen provider still has to pin a backend
+  in the pool (`backend_unavailable` otherwise).
 
 ---
 

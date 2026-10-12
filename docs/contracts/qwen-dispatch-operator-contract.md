@@ -108,7 +108,7 @@ Structured envelope `{ "error": { "code": <code>, "message": <string> } }`:
 
 | code | meaning | caller fix |
 |------|---------|-----------|
-| `dispatch_not_enabled` | this session's supervisor was not started with `QWEN_DISPATCH_ENABLE=1` | start the session with the opt-in (below); the shared config cannot enable it |
+| `dispatch_not_enabled` | this session has not opted in: its supervisor was not started with `QWEN_DISPATCH_ENABLE=1` and the user has not enabled it on the session's settings page (`qwen_settings`) | start the session with the opt-in (below) or have the user enable it on the settings page; the shared config cannot enable it |
 | `no_provider` | no declared agent-cli provider matches the selector | declare one via `QWEN_AGENT_PROVIDERS` with a `backend` pin (per-session env var) |
 | `missing_agent_kind` | the selected provider declares no `agentKind` | add `agentKind` to its `QWEN_AGENT_PROVIDERS` entry |
 | `unregistered_kind` | the provider's `agentKind` has no registered dispatcher | register a dispatcher for that kind |
@@ -166,7 +166,10 @@ and registers a **dispatcher** for its `agentKind`:
    ```sh
    QWEN_DISPATCH_ENABLE=1 QWEN_AGENT_PROVIDERS='[{"id":"box","agentKind":"qwen-local","backend":"coder-box"}]' claude
    ```
-   Without `QWEN_DISPATCH_ENABLE` the tool returns `dispatch_not_enabled`.
+   Without `QWEN_DISPATCH_ENABLE` the tool returns `dispatch_not_enabled`,
+   unless the user has enabled dispatch for the session on its settings page
+   (the read-only `qwen_settings` tool returns the page URL; only the page can
+   change the setting, and it is held in memory for that supervisor process).
    Declaring the provider in the same env keeps the whole experiment scoped to
    that one session.
 1. **Declare the provider** in `QWEN_AGENT_PROVIDERS` in the same launch env,

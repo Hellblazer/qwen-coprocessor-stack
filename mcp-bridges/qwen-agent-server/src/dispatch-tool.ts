@@ -271,8 +271,9 @@ export interface QwenDispatchDeps {
  *    dispatcher.
  *  - `invalid_worktree_spec` — the request did not supply exactly one of
  *    `worktree` (caller-supplied) or `repo` (executor-managed).
- *  - `dispatch_not_enabled` — this supervisor was not started with the
- *    per-session opt-in (`QWEN_DISPATCH_ENABLE=1`); checked before provider
+ *  - `dispatch_not_enabled` — this session has not opted in: neither started
+ *    with `QWEN_DISPATCH_ENABLE=1` nor enabled on the settings page
+ *    (src/settings-page.ts, bead 9sm2); checked before provider
  *    lookup, so a globally declared provider can never enable dispatch on
  *    its own.
  *  - `backend_unavailable` — the selected provider's `backend` pin names an id
@@ -338,8 +339,10 @@ export async function runQwenDispatch(
   if (deps.enabled !== undefined && !deps.enabled()) {
     throw new QwenDispatchError(
       "dispatch_not_enabled",
-      `qwen_dispatch is opt-in per session: start this session's supervisor with ` +
-        `${DISPATCH_ENABLE_ENV}=1 (e.g. \`${DISPATCH_ENABLE_ENV}=1 QWEN_AGENT_PROVIDERS='[...]' claude\`). ` +
+      `qwen_dispatch is opt-in per session: either start this session's supervisor with ` +
+        `${DISPATCH_ENABLE_ENV}=1 (e.g. \`${DISPATCH_ENABLE_ENV}=1 QWEN_AGENT_PROVIDERS='[...]' claude\`), ` +
+        `or have the user enable it on this session's settings page (call the qwen_settings tool, ` +
+        `or use /qwen-stack:dispatch, and open the returned URL in their browser). ` +
         `Providers in the shared config.json do not enable it.`,
     );
   }

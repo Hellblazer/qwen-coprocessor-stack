@@ -98,7 +98,7 @@ Claude usually picks these for you; you just ask it to delegate.
 | One-shot | `qwen_oneshot` (text, schema-bounded) · `qwen_oneshot_vision` (image+text) |
 | Agentic dispatch | `qwen_dispatch` (one-shot repo task → typed `Artifact[]`) |
 | Direct modality | `qwen_embed` · `qwen_rerank` · `qwen_tokenize` · `qwen_chat` |
-| Operate | `qwen_backends` · `qwen_extensions` · `qwen_reload_extensions` |
+| Operate | `qwen_backends` · `qwen_extensions` · `qwen_reload_extensions` · `qwen_settings` |
 
 ## More info
 

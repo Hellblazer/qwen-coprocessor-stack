@@ -16,6 +16,17 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ### Added
 
+- A per-session settings page for `qwen_dispatch` (bead 9sm2). The new read-only MCP tool
+  `qwen_settings` returns `{url, state}`; the URL is a loopback HTTP page (127.0.0.1, OS-assigned
+  port, random token per supervisor start, Host/Origin checks, CSP) where a person turns dispatch
+  on or off for that session, ticks the backends dispatch may use as pinned providers, and picks
+  the default extension loadout. State is in memory per supervisor process and is never written
+  to disk or `config.json`; with nothing set on the page, `QWEN_DISPATCH_ENABLE`,
+  `QWEN_AGENT_PROVIDERS` and `QWEN_DEFAULT_EXTENSIONS` behave as before. No tool or argument can
+  change a setting; the page's `POST` is the only write path. The `dispatch_not_enabled` message
+  names the page. New skill `/qwen-stack:dispatch` opens it. The settings server closes with the
+  supervisor.
+
 - `scripts/ops/keepalive-mac.sh` holds a second coder, **coder-mac**: Qwen3-Coder-Next
   MLX 4-bit on :8085 (`mlx_lm.server`), served from the manifested snapshot and gated
   by `provenance.py check-path --host mac`. `touch ~/.qwen-coprocessor-stack/coder-mac.off`
