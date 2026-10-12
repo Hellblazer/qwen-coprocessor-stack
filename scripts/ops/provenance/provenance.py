@@ -34,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import tarfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -919,6 +920,35 @@ def hash_zip_members(zip_path: Path) -> list[dict[str, Any]]:
     return members
 
 
+def hash_tar_members(tar_path: Path) -> list[dict[str, Any]]:
+    """Regular files only: a symlink (the macOS release's versioned-dylib
+    aliases) has no content of its own to pin."""
+    members: list[dict[str, Any]] = []
+    with tarfile.open(tar_path) as tf:
+        for info in tf:
+            if not info.isfile():
+                continue
+            fh = tf.extractfile(info)
+            if fh is None:
+                continue
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+            path = info.name[2:] if info.name.startswith("./") else info.name
+            members.append({"path": path, "sha256": digest.hexdigest(), "size": info.size})
+    return members
+
+
+def hash_archive_members(archive_path: Path) -> list[dict[str, Any]]:
+    """Per-member hashes of a release asset. Windows assets are .zip; the
+    macOS and Linux ones are .tar.gz. Either way the whole-asset row keeps
+    the `zip:` path prefix and the entry keeps format "zip": verify, drift
+    and Test-Provenance.ps1 key on that prefix to mean "the archive itself"."""
+    if archive_path.name.endswith((".tar.gz", ".tgz")):
+        return hash_tar_members(archive_path)
+    return hash_zip_members(archive_path)
+
+
 # --------------------------------------------------------------------------
 # add-runtime --overlay-* (patched-DLL overlay on an official release zip)
 # --------------------------------------------------------------------------
@@ -1275,7 +1305,7 @@ def cmd_add_runtime(args: argparse.Namespace) -> int:
     else:
         zip_sha256, zip_size = download_to_path(url, zip_path, {})
 
-    members = hash_zip_members(zip_path)
+    members = hash_archive_members(zip_path)
     overlay_entry = _apply_overlay(args, allowlist, asset, members)
     files = [{"path": f"zip:{asset}", "sha256": zip_sha256, "size": zip_size}] + members
 

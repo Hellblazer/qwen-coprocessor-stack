@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import sys
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -1122,6 +1123,21 @@ def _build_zip(members: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def _build_targz(members: dict[str, bytes], symlinks: dict[str, str]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        for name, target in symlinks.items():
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            tf.addfile(info)
+    return buf.getvalue()
+
+
 class AddRuntimeTests(ProvenanceTestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -1158,6 +1174,35 @@ class AddRuntimeTests(ProvenanceTestCase):
         self.assertEqual(by_path[f"zip:{self.runtime_asset}"]["sha256"], hashlib.sha256(self.runtime_zip_bytes).hexdigest())
         for name, data in self.runtime_members.items():
             self.assertEqual(by_path[name]["sha256"], hashlib.sha256(data).hexdigest())
+
+    def test_add_runtime_hashes_targz_members_and_skips_symlinks(self) -> None:
+        members = {"./llama-bTEST/llama-server": b"SERVER-BYTES", "./llama-bTEST/libllama.0.dylib": b"DYLIB-BYTES"}
+        body = _build_targz(members, {"./llama-bTEST/libllama.dylib": "libllama.0.dylib"})
+        asset = "llama-bTEST-bin-macos-arm64.tar.gz"
+        self.server.routes[f"/ggml-org/llama.cpp/releases/download/bTEST/{asset}"] = lambda: Response(200, {}, body)
+        manifest_path = self.make_manifest_path()
+        rc = self.run_main(
+            [
+                "add-runtime",
+                "--tag",
+                "bTEST",
+                "--asset",
+                asset,
+                "--manifest",
+                manifest_path,
+                "--dest",
+                self.make_dest_dir(),
+                "--gh-base",
+                self.server.base_url,
+            ]
+        )
+        self.assertEqual(rc, 0)
+        entry = prov.load_manifest(manifest_path)["artifacts"][0]
+        by_path = {f["path"]: f for f in entry["files"]}
+        self.assertEqual(by_path[f"zip:{asset}"]["sha256"], hashlib.sha256(body).hexdigest())
+        for name, data in members.items():
+            self.assertEqual(by_path[name[2:]]["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(len(by_path), 3)  # archive row + two regular files; the symlink is not a row
 
     def test_add_runtime_refuses_unlisted_repo(self) -> None:
         manifest_path = self.make_manifest_path()
