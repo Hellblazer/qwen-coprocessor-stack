@@ -270,6 +270,48 @@ export interface QwenSpawnEffects {
    *  until the reaper sweep. Errors are swallowed. Omitted in tests that don't
    *  exercise the path. */
   stop?: (taskId: string) => Promise<void>;
+  /** Optional MCP progress emitter (bead ht9). When supplied, the dispatcher
+   *  emits one notification at start, one per poll iteration while the run is
+   *  in flight, and one at the end — with strictly increasing `progress`
+   *  values. Absent → no emissions (behaviour unchanged). Emissions are
+   *  best-effort: a throwing/rejecting emitter never alters the run's result. */
+  progress?: ProgressEmitter;
+}
+
+/**
+ * MCP progress emitter (bead ht9). Structurally identical to server.ts's
+ * `ProgressEmitter`; declared locally so this module stays free of an import
+ * cycle (server.ts imports this module, not the reverse). A host with no MCP
+ * progress token supplies nothing — every emission is then skipped.
+ */
+export type ProgressEmitter = (event: {
+  progress: number;
+  total?: number;
+  message?: string;
+}) => void;
+
+/**
+ * Emit one MCP progress event, swallowing a synchronous throw or an async
+ * rejection (bead ht9): progress is best-effort and must never fail or alter
+ * the dispatch result. A no-op when no emitter was supplied.
+ */
+function emitProgress(
+  progress: ProgressEmitter | undefined,
+  event: { progress: number; total?: number; message?: string },
+): void {
+  if (progress === undefined) return;
+  try {
+    const ret = progress(event) as unknown;
+    if (
+      ret !== null &&
+      typeof ret === "object" &&
+      typeof (ret as PromiseLike<unknown>).then === "function"
+    ) {
+      void Promise.resolve(ret).catch(() => {});
+    }
+  } catch {
+    // best-effort only
+  }
 }
 
 /** Terminal session states for a one-shot agentic run: the agent has finished
@@ -326,14 +368,32 @@ export function makeQwenSpawnDispatch(
       }
     };
 
+    // Bead ht9: MCP progress. One counter for the whole run so `progress` is
+    // strictly increasing across the start / in-flight / end notifications (the
+    // spec requires monotonic values). `total` is left undefined — the
+    // poll-iteration count has no known bound.
+    let progressSeq = 0;
+    const pin = provider.backend !== undefined ? ` (backend ${provider.backend})` : "";
+    emitProgress(effects.progress, {
+      progress: progressSeq++,
+      message: `dispatch started: provider ${provider.id}${pin}`,
+    });
+
+    // Hoisted so the end notification in `finally` can name the terminal state.
+    let last: QwenPollSnapshot = { state: "running" };
     try {
       // Inside the try: nothing between spawn and here may throw, or the
       // session would leak with no stop.
       const start = effects.now();
-      let last: QwenPollSnapshot = { state: "running" };
       let timedOut = false;
       for (;;) {
         last = await effects.poll(taskId);
+        // Bead ht9: one notification per poll iteration. The loop already wakes
+        // every `pollIntervalMs`, so no second timer is needed.
+        emitProgress(effects.progress, {
+          progress: progressSeq++,
+          message: `state=${last.state} turns=${last.turnsUsed ?? 0}`,
+        });
         if (isTerminal(last.state)) break;
         if (effects.now() - start >= task.timeout) {
           timedOut = true;
@@ -368,6 +428,11 @@ export function makeQwenSpawnDispatch(
       if (outcome === "completed" && refusedWithoutPatch(last, artifacts)) outcome = "error";
       return { artifacts, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
     } finally {
+      // Bead ht9: the end notification, on every exit path (success or throw).
+      emitProgress(effects.progress, {
+        progress: progressSeq++,
+        message: `dispatch finished: state=${last.state}`,
+      });
       // After the harvest, so removing the session cannot disturb it; awaited,
       // so a caller that removes the worktree next never races a live session.
       await stopOnce();

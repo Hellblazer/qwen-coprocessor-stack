@@ -17,8 +17,9 @@ import {
   QwenDispatchError,
   runQwenDispatch,
   type QwenDispatchInput,
+  type SupervisorSpawnPoll,
 } from "../src/dispatch-tool.js";
-import { makeQwenSpawnDispatch, type Dispatch } from "../src/dispatch.js";
+import { makeQwenSpawnDispatch, type Dispatch, type ProgressEmitter } from "../src/dispatch.js";
 import type { AgentProvider, AgentResult, AgentTask } from "../src/types.js";
 
 // Capture the module-level logger (bead 11r WARN assertions). Mirrors
@@ -260,6 +261,101 @@ describe("runQwenDispatch", () => {
     ).rejects.toMatchObject({ code: "missing_agent_kind" });
     // Never reaches the registry — it's a config error, not a registration gap.
     expect(resolveDispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("runQwenDispatch — MCP progress notifications (ht9)", () => {
+  /** Build the real qwen-local dispatcher over fake supervisor handlers, with
+   *  an optional progress emitter — the same wiring server.ts uses. */
+  function realDispatch(
+    qwen_poll: SupervisorSpawnPoll["qwen_poll"],
+    progress?: ProgressEmitter,
+  ): Dispatch {
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn().mockResolvedValue({ task_id: "t-1", chosen_backend: "box" }), qwen_poll },
+      async () => "diff",
+      {
+        // Deterministic clock: the poll loop's sleep resolves immediately.
+        clock: { now: () => 0, sleep: async () => {} },
+        ...(progress !== undefined ? { progress } : {}),
+      },
+    );
+    return makeQwenSpawnDispatch(effects, { baseCommit: "abc123" });
+  }
+
+  /** One in-flight poll, then a terminal one. */
+  const runningThenComplete = () =>
+    vi
+      .fn()
+      .mockResolvedValueOnce({
+        state: "running",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "0",
+        turns_completed: 1,
+      })
+      .mockResolvedValueOnce({
+        state: "complete",
+        recent_events: [],
+        more_events_available: false,
+        latest_event_id: "1",
+        turns_completed: 2,
+      });
+
+  it("emits start, in-flight and end notifications with strictly increasing progress", async () => {
+    const events: Array<{ progress: number; total?: number; message?: string }> = [];
+    const r = await runQwenDispatch(INPUT, {
+      loadProviders: () => [{ ...qwenProvider, backend: "coder-box" }],
+      resolveDispatch: () => realDispatch(runningThenComplete(), (e) => events.push(e)),
+    });
+
+    expect(r.outcome).toBe("completed");
+    expect(r.turns).toBe(2);
+    // start + at least one in-flight + end
+    expect(events.length).toBeGreaterThanOrEqual(3);
+    // the start notification names the provider id and its backend pin
+    expect(events[0]!.message).toContain("qwen-coder-mac");
+    expect(events[0]!.message).toContain("coder-box");
+    // the last notification is the end one
+    expect(events[events.length - 1]!.message).toMatch(/finish/i);
+    // strictly increasing progress values (MCP spec)
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i]!.progress).toBeGreaterThan(events[i - 1]!.progress);
+    }
+    // total is left undefined (unknown)
+    expect(events.every((e) => e.total === undefined)).toBe(true);
+  });
+
+  it("emits nothing when no emitter is supplied (behaviour unchanged)", async () => {
+    const r = await runQwenDispatch(INPUT, {
+      loadProviders: () => [qwenProvider],
+      resolveDispatch: () => realDispatch(runningThenComplete()),
+    });
+    expect(r.outcome).toBe("completed");
+    expect(r.turns).toBe(2);
+    expect(r.artifacts).toEqual([{ kind: "patch", diff: "diff", base: "abc123" }]);
+  });
+
+  it("a throwing emitter never alters the returned AgentResult", async () => {
+    const r = await runQwenDispatch(INPUT, {
+      loadProviders: () => [qwenProvider],
+      resolveDispatch: () =>
+        realDispatch(runningThenComplete(), () => {
+          throw new Error("progress boom");
+        }),
+    });
+    expect(r.outcome).toBe("completed");
+    expect(r.turns).toBe(2);
+    expect(r.artifacts).toEqual([{ kind: "patch", diff: "diff", base: "abc123" }]);
+  });
+
+  it("a rejecting emitter never alters the returned AgentResult", async () => {
+    const r = await runQwenDispatch(INPUT, {
+      loadProviders: () => [qwenProvider],
+      resolveDispatch: () => realDispatch(runningThenComplete(), () => Promise.reject(new Error("progress boom"))),
+    });
+    expect(r.outcome).toBe("completed");
+    expect(r.turns).toBe(2);
   });
 });
 
