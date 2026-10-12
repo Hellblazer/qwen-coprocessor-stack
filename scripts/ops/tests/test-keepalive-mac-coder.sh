@@ -12,7 +12,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 sed -n '/^coder_prov_ok(){$/,/^}$/p' "$ka" > "$tmp/fns.sh"
 grep -q 'check-path' "$tmp/fns.sh" || { echo "FAIL: coder_prov_ok block not found in $ka"; exit 1; }
-grep -E '^(CODER_MANIFEST_ID|CODER_FILE_COUNT|CODER_PAT|REASON_PAT)=' "$ka" | sed 's/[[:space:]]*#.*$//' >> "$tmp/fns.sh"
+grep -E '^(CODER_MANIFEST_ID|CODER_FILE_COUNT|CODER_PAT|REASON_PAT|VISION_PAT)=' "$ka" | sed 's/[[:space:]]*#.*$//' >> "$tmp/fns.sh"
 . "$tmp/fns.sh"
 PROV="$REPO_ROOT/scripts/ops/provenance/provenance.py"
 PYTHON=$(command -v python3)
@@ -74,6 +74,9 @@ expect "reason pattern matches reason-mac"     1 "$(m "$REASON_PAT" "$reason")"
 expect "reason pattern spares coder-mac"       0 "$(m "$REASON_PAT" "$coder")"
 expect "coder pattern spares a bench on :80850" 0 "$(m "$CODER_PAT" "python /v/bin/mlx_lm.server --model /snap --port 80850 --temp 0.7")"
 expect "coder pattern matches a trailing --port" 1 "$(m "$CODER_PAT" "python /v/bin/mlx_lm.server --model /snap --port 8085")"
+# A second mlx_vlm.server (a bench, a trial model) must not read as a vision-mac duplicate.
+expect "vision pattern matches vision-mac"      1 "$(m "$VISION_PAT" "Python /v/bin/mlx_vlm.server --model m/Qwen2.5-VL --host 0.0.0.0 --port 8083")"
+expect "vision pattern spares a trial on :8086" 0 "$(m "$VISION_PAT" "Python /v/bin/mlx_vlm.server --model /snap --host 127.0.0.1 --port 8086")"
 
 # ensure_mlx: a server that still holds its port is not reaped on one failed probe.
 sed -n '/^ensure_mlx() {$/,/^}$/p' "$ka" > "$tmp/ens.sh"

@@ -39,6 +39,7 @@ CODER_MAX_TOKENS="${CODER_MAX_TOKENS:-16384}"   # a low cap truncates tool calls
 CODER_MIN_FREE_GB="${CODER_MIN_FREE_GB:-50}"    # MIN_FREE_GB is sized for the 4.5 GB vision model; this one wires ~45 GB
 CODER_PAT='mlx_lm\.server.*--port 8085( |$)'
 REASON_PAT='mlx_lm\.server.*--port 8084( |$)'  # port-specific and end-anchored: both are mlx_lm.server, a bare pattern makes each reap the other, and an open-ended one takes a bench on :80850 too
+VISION_PAT='mlx_vlm\.server.*--port 8083( |$)'  # same reason: a bare mlx_vlm.server pattern reaped any second mlx_vlm.server (a bench, a trial model) as a vision-mac duplicate
 PROBE_FAILS_MAX="${PROBE_FAILS_MAX:-3}"   # failed probes in a row before a server that still holds its port is reaped
 PROV="$REPO_ROOT/scripts/ops/provenance/provenance.py"
 PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 2>/dev/null || echo python3)
@@ -192,7 +193,7 @@ ensure_mlx() {
 }
 start_vision() {
   log "starting vision-mac (:8083, $VISION_MODEL)"
-  reap_pat 'mlx_vlm\.server' vision-mac   # SIGKILL-escalating; SIGTERM alone is ignored mid-load
+  reap_pat "$VISION_PAT" vision-mac   # SIGKILL-escalating; SIGTERM alone is ignored mid-load
   "$VENV/bin/mlx_vlm.server" --model "$VISION_MODEL" --host 0.0.0.0 --port 8083 \
     > "$LOGDIR/vision-mac.log" 2>&1 & VISION_PID=$!
   VISION_DEADLINE=$(( $(date +%s) + LOAD_BUDGET ))   # non-blocking: loop polls `up` instead of waiting here
@@ -271,7 +272,7 @@ ensure_http() {
     log "$label FAILED to come up on :$port (attempt $fails; retry in ${backoff}s; see $logf)"
   fi
 }
-trap 'log "shutdown; killing servers"; reap_pat "mlx_vlm\.server" vision-mac; reap_pat "$REASON_PAT" reason-mac; reap_pat "$CODER_PAT" coder-mac; kpidfile "$REPO_ROOT/logs/llama-embed.pid"; kpidfile "$REPO_ROOT/logs/llama-rerank.pid"; exit 0' TERM INT
+trap 'log "shutdown; killing servers"; reap_pat "$VISION_PAT" vision-mac; reap_pat "$REASON_PAT" reason-mac; reap_pat "$CODER_PAT" coder-mac; kpidfile "$REPO_ROOT/logs/llama-embed.pid"; kpidfile "$REPO_ROOT/logs/llama-rerank.pid"; exit 0' TERM INT
 log "mac keepalive started (pid $$) — vision-mac + embed-local + rerank-local (reason-mac enabled=$REASON_ENABLED, coder-mac enabled=$CODER_ENABLED)"
 # A coder that outlived the previous keepalive (it was killed, not TERMed) may be mid-request,
 # where the readiness completion cannot answer. Adopt it with a fresh load budget.
@@ -283,7 +284,7 @@ fi
 while true; do
   # Backstop: prune duplicate MLX servers (keep the one serving its port) before the health
   # checks, so a stuck/orphaned instance can't keep failing `up` and stacking respawns.
-  guard_single 'mlx_vlm\.server' 8083 vision-mac
+  guard_single "$VISION_PAT" 8083 vision-mac
   [ "$REASON_ENABLED" = 1 ] && guard_single "$REASON_PAT" 8084 reason-mac
   # Non-blocking ensures: neither MLX load gates the other (hxp) — both proceed concurrently,
   # and the deadline gate inside ensure_mlx prevents respawn-while-loading (the leak/thrash).
