@@ -14,6 +14,21 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-12
+
+Makes paid and local backends a deliberate, per-session choice. The session settings
+page (`qwen_settings`, `/qwen-stack:dispatch`) lets the user opt a session in to
+`qwen_dispatch`, pick its provider backends and its extension loadout from the browser,
+where before that took two environment variables at launch. The `pin_only` backend flag
+keeps a backend out of automatic selection, so a paid remote model is used only when it is
+named, routed to by role, or ticked as a dispatch provider; the OpenRouter example pool
+marks its paid entries that way and adds two DeepSeek entries. On the ops side the Mac
+keepalive now holds a second coder (coder-mac, Qwen3-Coder-Next MLX 4-bit on :8085), and
+`provenance.py fetch` can be re-run after an interruption without starting over.
+
+Upgrade note: a supervisor older than 0.13.0 ignores `pin_only`. Do not add paid
+`pin_only` backends to a shared `config.json` until every session reading it runs 0.13.0.
+
 ### Added
 
 - Backend field `pin_only` (bead 9jui). A `pin_only: true` backend is never chosen by
