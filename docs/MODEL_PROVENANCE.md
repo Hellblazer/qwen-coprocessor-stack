@@ -43,7 +43,10 @@ Everything else is refused. Adding an owner is a PR to
 P="python3 scripts/ops/provenance/provenance.py"
 # 1. plan — sha, per-file verdicts, HF scan status, byte count
 $P fetch Qwen/Qwen3.8-27B --dry-run
-# 2. fetch to the external disk; verifies every file; appends the manifest entry
+# 2. fetch to the external disk; verifies every file; appends the manifest entry.
+#    Re-running after an interruption is cheap: a weight file already in --dest that
+#    hashes to upstream's sha256 is kept, and a .part is continued with a Range
+#    request (--no-resume discards it). Every finished file is still hashed in full.
 $P fetch Qwen/Qwen3.8-27B
 # 3. (recommended) self-quantize on the Mac, then register the output
 python3 <llama.cpp>/convert_hf_to_gguf.py <safetensors dir> --outfile Qwen3.8-27B-BF16.gguf

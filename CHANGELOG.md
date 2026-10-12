@@ -21,6 +21,13 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   by `provenance.py check-path --host mac`. `touch ~/.qwen-coprocessor-stack/coder-mac.off`
   stops it without a keepalive restart; `CODER_MAC_ENABLED=0` removes the slot. Example
   pool: `config/coprocessor-pool-coder-mac.example.json` (bead 4f81).
+- `provenance.py fetch` can be re-run after an interruption without starting over: a
+  weight file already in `--dest` whose sha256 matches upstream is kept, and a `.part` is
+  continued with a Range request (`--no-resume` opts out). A transfer that ends early is
+  now an error that keeps the `.part`, not a short file that fails its hash check and is
+  deleted. The sha256 of every finished file is still compared with upstream (bead cl2p).
+  `fetch` also refuses a file whose upstream metadata carries neither an LFS sha256 nor a
+  blobId; before, such a file was manifested with its own hash and compared with nothing.
 
 ### Fixed
 
