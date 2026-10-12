@@ -26,6 +26,7 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   per mismatch episode. With the field unset or empty, no `/props` request is made and
   behavior is unchanged. `qwen_backends` shows the configured value when set.
   `config/coprocessor-pool-coder-mac.example.json` sets it on `coder-box`.
+- `qwen_dispatch` now sends MCP progress notifications while a run is in flight (bead ht9).
 
 ### Changed
 

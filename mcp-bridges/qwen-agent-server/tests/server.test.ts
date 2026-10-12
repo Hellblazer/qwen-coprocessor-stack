@@ -2240,6 +2240,17 @@ describe("tool registration uses registerTool, not the deprecated .tool(", () =>
     }
   });
 
+  it("wires MCP progress into qwen_dispatch (bead ht9)", () => {
+    // qwen_oneshot's progress wiring is covered behaviourally above (its
+    // createToolHandlers entry takes a progress emitter). qwen_dispatch has no
+    // such entry — its emitter is built inside the unexported main() — so the
+    // analogous assertion is a source-text one: the registration must build the
+    // emitter from `extra` and pass it into the dispatch effects.
+    const block = registrationFor(read("server.ts"), "qwen_dispatch");
+    expect(block).toContain("makeProgressEmitter(extra)");
+    expect(block).toMatch(/makeSupervisorQwenSpawnEffects\([\s\S]*?\bprogress,/);
+  });
+
   it("keeps the pre-existing annotation object on the six annotated tools", () => {
     const server = read("server.ts");
     for (const [name, object] of Object.entries(PRE_ANNOTATED)) {

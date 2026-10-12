@@ -28,7 +28,7 @@ import { createLogger } from "./log.js";
 import { callerSuppliedWorktree, type WorktreeStrategy } from "./worktree.js";
 import { valueHarvester } from "./dispatch.js";
 import { WRITE_TOOLS } from "./permissions.js";
-import type { Dispatch, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
+import type { Dispatch, ProgressEmitter, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
 import { DISPATCHER_KINDS } from "./types.js";
 import type {
   AgentProvider,
@@ -545,6 +545,11 @@ export function makeSupervisorQwenSpawnEffects(
      *  writes denied can never produce a patch; the pre-n8c adapter left this
      *  unset (= false) and every edit came back `permission_denied`. */
     writeAuthority?: boolean;
+    /** Optional MCP progress emitter (bead ht9) — forwarded to the dispatcher,
+     *  which emits one notification at start, one per poll iteration while the
+     *  run is in flight, and one at the end. Absent → no emissions (behaviour
+     *  unchanged). */
+    progress?: ProgressEmitter;
   } = {},
 ): QwenSpawnEffects {
   const clock = opts.clock ?? {
@@ -557,6 +562,7 @@ export function makeSupervisorQwenSpawnEffects(
   let since = "0";
   let deniedWrites = 0;
   return {
+    ...(opts.progress !== undefined ? { progress: opts.progress } : {}),
     spawn: async (task, provider) => {
       // `spawnOpts`, not `opts`: avoid shadowing the outer effects-options
       // parameter (`opts.harvest`/`opts.clock`) within this closure (R2 review).
