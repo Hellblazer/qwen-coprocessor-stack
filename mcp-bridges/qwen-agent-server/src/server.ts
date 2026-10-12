@@ -146,7 +146,7 @@ type NotFoundPollResult = Omit<PollResult, "error"> & {
 //
 // Extracted to a top-level export so tests can parse payloads against it
 // directly without needing a live MCP transport. The same schema is wired
-// into mcpServer.tool registration in main(). Keep these in sync.
+// into mcpServer.registerTool registration in main(). Keep these in sync.
 
 export const qwenSpawnOptsSchema = z.object({
   backend: z.string().optional(),
@@ -1688,12 +1688,14 @@ async function main(): Promise<void> {
 
   // ── Register tools with Zod schemas ───────────────────────
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_spawn",
-    "Spawn a new Qwen Code session. Returns task_id and chosen_backend immediately; inference runs async.",
     {
-      task: z.string().min(1, "task must be non-empty").describe("The task/prompt to run"),
-      opts: qwenSpawnOptsSchema,
+      description: "Spawn a new Qwen Code session. Returns task_id and chosen_backend immediately; inference runs async.",
+      inputSchema: {
+        task: z.string().min(1, "task must be non-empty").describe("The task/prompt to run"),
+        opts: qwenSpawnOptsSchema,
+      },
     },
     async (args) => {
       const spawnOpts = applyCodeIntel(buildSpawnOptsFromRaw(args.opts));
@@ -1702,15 +1704,18 @@ async function main(): Promise<void> {
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_poll",
-    "Poll a session for events and current state. Pass opts.since as the previous latest_event_id for incremental reads.",
     {
-      task_id: z.string().describe("Session task ID returned by qwen_spawn"),
-      opts: z.object({
-        since: z.string().optional().describe("Event cursor: only return events with id > since"),
-        max_events: z.number().int().positive().optional().describe("Cap on events per call (default 16)"),
-      }).optional(),
+      description: "Poll a session for events and current state. Pass opts.since as the previous latest_event_id for incremental reads.",
+      inputSchema: {
+        task_id: z.string().describe("Session task ID returned by qwen_spawn"),
+        opts: z.object({
+          since: z.string().optional().describe("Event cursor: only return events with id > since"),
+          max_events: z.number().int().positive().optional().describe("Cap on events per call (default 16)"),
+        }).optional(),
+      },
+      annotations: { readOnlyHint: true },
     },
     async (args) => {
       const pollOpts: PollOpts = {};
@@ -1724,12 +1729,14 @@ async function main(): Promise<void> {
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_send",
-    "Push the next user message into a running or idle session. Wakes idle sessions for the next turn.",
     {
-      task_id: z.string().describe("Session task ID"),
-      message: z.string().min(1, "message must be non-empty").describe("The answer or message to deliver"),
+      description: "Push the next user message into a running or idle session. Wakes idle sessions for the next turn.",
+      inputSchema: {
+        task_id: z.string().describe("Session task ID"),
+        message: z.string().min(1, "message must be non-empty").describe("The answer or message to deliver"),
+      },
     },
     async (args) => {
       const result = await handlers.qwen_send(args);
@@ -1737,11 +1744,13 @@ async function main(): Promise<void> {
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_stop",
-    "Stop and remove a session. Idempotent — stopping an unknown task_id returns { ack: false }.",
     {
-      task_id: z.string().describe("Session task ID to stop"),
+      description: "Stop and remove a session. Idempotent — stopping an unknown task_id returns { ack: false }.",
+      inputSchema: {
+        task_id: z.string().describe("Session task ID to stop"),
+      },
     },
     async (args) => {
       const result = await handlers.qwen_stop(args);
@@ -1749,46 +1758,57 @@ async function main(): Promise<void> {
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_backends",
-    "List configured backends and their cached health status.",
-    {},
+    {
+      description: "List configured backends and their cached health status.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
     async (_args) => {
       const result = await handlers.qwen_backends({});
       return toWireResult(result);
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_extensions",
-    "List installed Qwen Code extensions with version, path, source, enabled state, and declared commands/skills/agents/MCP servers. Read-only.",
-    {},
+    {
+      description: "List installed Qwen Code extensions with version, path, source, enabled state, and declared commands/skills/agents/MCP servers. Read-only.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
     async (_args) => {
       const result = await handlers.qwen_extensions({});
       return toWireResult(result);
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_sessions",
-    "List live sessions in the pool with state, last-polled timestamp, turns completed, and live budget counters. Read-only operator overview.",
-    {},
+    {
+      description: "List live sessions in the pool with state, last-polled timestamp, turns completed, and live budget counters. Read-only operator overview.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
     async (_args) => {
       const result = await handlers.qwen_sessions({});
       return toWireResult(result);
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_oneshot",
-    "Stateless single-turn dispatch: spawn → wait until idle → optional JSON parse + retry → stop → return. Schema-aware where opts.json_schema is supplied. Drop-in shape for nexus operator dispatch as a Qwen alternative to `claude -p --json-schema`.",
     {
-      task: z.string().describe("Prompt for the inner Qwen"),
-      opts: qwenSpawnOptsSchema.unwrap().extend({
-        timeout_ms: z.number().int().positive().optional().describe("Per-attempt hard limit in ms; default 300000. Note: with max_attempts > 1 the returned OneshotResult.elapsed_ms (total wall-clock across all attempts) can exceed this; do not use elapsed_ms > timeout_ms as a timeout signal."),
-        max_attempts: z.number().int().positive().optional().describe("Retry on JSON-parse failure; default 1"),
-        continuation_id: z.string().optional().describe("Thread id returned by a prior call's OneshotResult.continuation_id; the supervisor prepends prior turns to this task. Omit for a fresh thread. Threads live in-process only (3h TTL, 20-turn cap, no cross-process persistence). The returned continuation_id is always present so callers can chain — even on failure."),
-      }).optional(),
+      description: "Stateless single-turn dispatch: spawn → wait until idle → optional JSON parse + retry → stop → return. Schema-aware where opts.json_schema is supplied. Drop-in shape for nexus operator dispatch as a Qwen alternative to `claude -p --json-schema`.",
+      inputSchema: {
+        task: z.string().describe("Prompt for the inner Qwen"),
+        opts: qwenSpawnOptsSchema.unwrap().extend({
+          timeout_ms: z.number().int().positive().optional().describe("Per-attempt hard limit in ms; default 300000. Note: with max_attempts > 1 the returned OneshotResult.elapsed_ms (total wall-clock across all attempts) can exceed this; do not use elapsed_ms > timeout_ms as a timeout signal."),
+          max_attempts: z.number().int().positive().optional().describe("Retry on JSON-parse failure; default 1"),
+          continuation_id: z.string().optional().describe("Thread id returned by a prior call's OneshotResult.continuation_id; the supervisor prepends prior turns to this task. Omit for a fresh thread. Threads live in-process only (3h TTL, 20-turn cap, no cross-process persistence). The returned continuation_id is always present so callers can chain — even on failure."),
+        }).optional(),
+      },
     },
     async (args, extra) => {
       const baseOpts = applyCodeIntel(buildSpawnOptsFromRaw(args.opts));
@@ -1818,10 +1838,12 @@ async function main(): Promise<void> {
   // base_commit is explicit at this boundary and threaded to the git-diff
   // harvester (which always diffs vs base, never HEAD; source-only). The registry is built
   // per-call because base_commit is per-call (see dispatch-registry.ts).
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_dispatch",
-    "Agentic dispatch (RDR-008/009/010): OPT-IN PER SESSION — the supervisor must have been started with QWEN_DISPATCH_ENABLE=1, or the user must have enabled it on this session's settings page (tool qwen_settings, skill /qwen-stack:dispatch), or this returns error code dispatch_not_enabled. Run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
-    qwenDispatchInputShape,
+    {
+      description: "Agentic dispatch (RDR-008/009/010): OPT-IN PER SESSION — the supervisor must have been started with QWEN_DISPATCH_ENABLE=1, or the user must have enabled it on this session's settings page (tool qwen_settings, skill /qwen-stack:dispatch), or this returns error code dispatch_not_enabled. Run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
+      inputSchema: qwenDispatchInputShape,
+    },
     async (args) => {
       // Mirror the spawn-initiating tools' shutdown envelope (consistent error
       // surface; qwen_dispatch spawns a session under the hood).
@@ -1916,23 +1938,25 @@ async function main(): Promise<void> {
     }),
   ]);
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_oneshot_vision",
-    "Stateless multimodal dispatch: image(s) + text → JSON-or-text response. Bypasses the SDK (which is text-only) and POSTs OpenAI-compat content arrays directly to a backend's /v1/chat/completions. The chosen backend must be running llama-server with --mmproj loaded; otherwise the call fails with error.code='backend_no_mmproj'.",
     {
-      task: z.string().describe("Text prompt accompanying the image(s)."),
-      images: z.array(visionImageInputSchema).min(1).describe("One or more images. Discriminated union of {path}, {url}, or {base64,mime}."),
-      opts: z.object({
-        json_schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema constraint; emitted as response_format.json_schema."),
-        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 300000."),
-        max_tokens: z.number().int().positive().optional().describe("Max tokens to generate; default 2048."),
-        temperature: z.number().min(0).max(2).optional().describe("Sampling temperature; default 0.3."),
-        system: z.string().optional().describe("Optional system-role prefix."),
-        no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen thinking-mode reasoning; default true."),
-        grammar: z.string().optional().describe("GBNF grammar string for token-by-token output enforcement (llama-server `grammar` field). Strictly stronger than json_schema (which is post-hoc validated). Use for non-JSON constrained output or when json_schema validation has been observed to fail. Vision-only — qwen_oneshot's SDK path cannot accept GBNF; this is an architectural constraint, not a gap."),
-        backend: z.string().optional().describe("Pin to a specific backend by id; defaults to chooseBackend selection."),
-        continuation_id: z.string().optional().describe("Thread id from a prior qwen_oneshot or qwen_oneshot_vision call. Prior turns are injected as messages[] entries before the current user turn; images from prior turns are NOT carried forward in v1 (a `[image attached]` placeholder is emitted). Same thread store as qwen_oneshot — cross-tool threading works."),
-      }).optional(),
+      description: "Stateless multimodal dispatch: image(s) + text → JSON-or-text response. Bypasses the SDK (which is text-only) and POSTs OpenAI-compat content arrays directly to a backend's /v1/chat/completions. The chosen backend must be running llama-server with --mmproj loaded; otherwise the call fails with error.code='backend_no_mmproj'.",
+      inputSchema: {
+        task: z.string().describe("Text prompt accompanying the image(s)."),
+        images: z.array(visionImageInputSchema).min(1).describe("One or more images. Discriminated union of {path}, {url}, or {base64,mime}."),
+        opts: z.object({
+          json_schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema constraint; emitted as response_format.json_schema."),
+          timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 300000."),
+          max_tokens: z.number().int().positive().optional().describe("Max tokens to generate; default 2048."),
+          temperature: z.number().min(0).max(2).optional().describe("Sampling temperature; default 0.3."),
+          system: z.string().optional().describe("Optional system-role prefix."),
+          no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen thinking-mode reasoning; default true."),
+          grammar: z.string().optional().describe("GBNF grammar string for token-by-token output enforcement (llama-server `grammar` field). Strictly stronger than json_schema (which is post-hoc validated). Use for non-JSON constrained output or when json_schema validation has been observed to fail. Vision-only — qwen_oneshot's SDK path cannot accept GBNF; this is an architectural constraint, not a gap."),
+          backend: z.string().optional().describe("Pin to a specific backend by id; defaults to chooseBackend selection."),
+          continuation_id: z.string().optional().describe("Thread id from a prior qwen_oneshot or qwen_oneshot_vision call. Prior turns are injected as messages[] entries before the current user turn; images from prior turns are NOT carried forward in v1 (a `[image attached]` placeholder is emitted). Same thread store as qwen_oneshot — cross-tool threading works."),
+        }).optional(),
+      },
     },
     async (args, extra) => {
       const progress = makeProgressEmitter(extra);
@@ -1948,24 +1972,26 @@ async function main(): Promise<void> {
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_chat",
-    "Stateless DIRECT text chat dispatch: system+user → text/JSON response, POSTed straight to a backend's /v1/chat/completions. Bypasses the qwen-code agentic harness entirely — much faster and crash-free for operator/general dispatch (extract, summarize, classify, judge, answer). Routes to a 'text' backend (multimodal fallback); pin a general-instruct model via opts.backend. For actual coding-agent work (file edits, multi-step tools) use qwen_oneshot / qwen_spawn instead.",
     {
-      task: z.string().describe("The prompt / instruction for the model."),
-      opts: z.object({
-        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 120000."),
-        max_tokens: z.number().int().positive().optional().describe("Max tokens to generate; default 2048."),
-        temperature: z.number().min(0).max(2).optional().describe("Sampling temperature; default 0.3."),
-        system: z.string().optional().describe("Optional system-role prefix."),
-        no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen reasoning-mode thinking; default true."),
-        json_schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema constraint; emitted as response_format.json_schema and the content is parsed into result.parsed."),
-        grammar: z.string().optional().describe("GBNF grammar for token-by-token output enforcement (llama-server `grammar`)."),
-        backend: z.string().optional().describe("Pin to a specific backend by id (highest precedence). Default: weighted text-backend selection, multimodal fallback."),
-        role: z.string().optional().describe("Explicit operator role to route by (e.g. 'general'/'reasoning' → a general-instruct model, 'code' → the coding pool). Resolves to a healthy backend whose configured `roles` includes this. Ignored if `backend` is also set. See bead k8j."),
-        continuation_id: z.string().optional().describe("Thread id from a prior qwen_chat / qwen_oneshot / qwen_oneshot_vision call; prior turns are prepended. Same in-process thread store (3h TTL, 20-turn cap)."),
-        model: z.string().optional().describe("Per-request model override. When set to a non-empty string, the outgoing request uses THIS model id instead of the backend's configured model. Lets a single backend URL (e.g. an OpenRouter endpoint) serve many models without separate backend entries."),
-      }).optional(),
+      description: "Stateless DIRECT text chat dispatch: system+user → text/JSON response, POSTed straight to a backend's /v1/chat/completions. Bypasses the qwen-code agentic harness entirely — much faster and crash-free for operator/general dispatch (extract, summarize, classify, judge, answer). Routes to a 'text' backend (multimodal fallback); pin a general-instruct model via opts.backend. For actual coding-agent work (file edits, multi-step tools) use qwen_oneshot / qwen_spawn instead.",
+      inputSchema: {
+        task: z.string().describe("The prompt / instruction for the model."),
+        opts: z.object({
+          timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 120000."),
+          max_tokens: z.number().int().positive().optional().describe("Max tokens to generate; default 2048."),
+          temperature: z.number().min(0).max(2).optional().describe("Sampling temperature; default 0.3."),
+          system: z.string().optional().describe("Optional system-role prefix."),
+          no_think: z.boolean().optional().describe("Prepend /no_think to suppress Qwen reasoning-mode thinking; default true."),
+          json_schema: z.record(z.string(), z.unknown()).optional().describe("JSON Schema constraint; emitted as response_format.json_schema and the content is parsed into result.parsed."),
+          grammar: z.string().optional().describe("GBNF grammar for token-by-token output enforcement (llama-server `grammar`)."),
+          backend: z.string().optional().describe("Pin to a specific backend by id (highest precedence). Default: weighted text-backend selection, multimodal fallback."),
+          role: z.string().optional().describe("Explicit operator role to route by (e.g. 'general'/'reasoning' → a general-instruct model, 'code' → the coding pool). Resolves to a healthy backend whose configured `roles` includes this. Ignored if `backend` is also set. See bead k8j."),
+          continuation_id: z.string().optional().describe("Thread id from a prior qwen_chat / qwen_oneshot / qwen_oneshot_vision call; prior turns are prepended. Same in-process thread store (3h TTL, 20-turn cap)."),
+          model: z.string().optional().describe("Per-request model override. When set to a non-empty string, the outgoing request uses THIS model id instead of the backend's configured model. Lets a single backend URL (e.g. an OpenRouter endpoint) serve many models without separate backend entries."),
+        }).optional(),
+      },
     },
     async (args) => {
       const result = await handlers.qwen_chat({
@@ -1983,16 +2009,19 @@ async function main(): Promise<void> {
   // text-chat only. Backend selection is modality-based — operator
   // declares which loaded model serves which role.
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_embed",
-    "Generate embeddings for one or many text inputs via /v1/embeddings. Routes to a backend declared with modality='embedding' (e.g. bge-m3, qwen3-embedding-0.6b). Order of returned embeddings matches the input order.",
     {
-      texts: z.array(z.string()).min(1).describe("One or more text inputs to embed."),
-      opts: z.object({
-        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 60000."),
-        encoding_format: z.enum(["float", "base64"]).optional().describe("'float' (default) returns number[]; 'base64' is a llama-server passthrough."),
-        backend: z.string().optional().describe("Pin to a specific backend by id; bypasses modality routing."),
-      }).optional(),
+      description: "Generate embeddings for one or many text inputs via /v1/embeddings. Routes to a backend declared with modality='embedding' (e.g. bge-m3, qwen3-embedding-0.6b). Order of returned embeddings matches the input order.",
+      inputSchema: {
+        texts: z.array(z.string()).min(1).describe("One or more text inputs to embed."),
+        opts: z.object({
+          timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 60000."),
+          encoding_format: z.enum(["float", "base64"]).optional().describe("'float' (default) returns number[]; 'base64' is a llama-server passthrough."),
+          backend: z.string().optional().describe("Pin to a specific backend by id; bypasses modality routing."),
+        }).optional(),
+      },
+      annotations: { readOnlyHint: true },
     },
     async (args) => {
       const result = await handlers.qwen_embed({
@@ -2003,18 +2032,21 @@ async function main(): Promise<void> {
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_rerank",
-    "Rerank documents by relevance to a query via /v1/rerank. Routes to a backend declared with modality='rerank' (e.g. qwen3-reranker, bge-reranker). Results are sorted by relevance_score descending; the original input index is preserved on each result.",
     {
-      query: z.string().describe("Query against which documents will be scored."),
-      documents: z.array(z.string()).min(1).describe("Documents to rerank."),
-      opts: z.object({
-        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 60000."),
-        top_n: z.number().int().positive().optional().describe("Return only the top-N results server-side."),
-        return_documents: z.boolean().optional().describe("If true, include each document's text in its result entry; default false."),
-        backend: z.string().optional().describe("Pin to a specific backend by id."),
-      }).optional(),
+      description: "Rerank documents by relevance to a query via /v1/rerank. Routes to a backend declared with modality='rerank' (e.g. qwen3-reranker, bge-reranker). Results are sorted by relevance_score descending; the original input index is preserved on each result.",
+      inputSchema: {
+        query: z.string().describe("Query against which documents will be scored."),
+        documents: z.array(z.string()).min(1).describe("Documents to rerank."),
+        opts: z.object({
+          timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 60000."),
+          top_n: z.number().int().positive().optional().describe("Return only the top-N results server-side."),
+          return_documents: z.boolean().optional().describe("If true, include each document's text in its result entry; default false."),
+          backend: z.string().optional().describe("Pin to a specific backend by id."),
+        }).optional(),
+      },
+      annotations: { readOnlyHint: true },
     },
     async (args) => {
       const result = await handlers.qwen_rerank({
@@ -2026,17 +2058,20 @@ async function main(): Promise<void> {
     },
   );
 
-  mcpServer.tool(
+  mcpServer.registerTool(
     "qwen_tokenize",
-    "Return exact token IDs and count for `content` against a backend's loaded model. Hits llama-server's /tokenize endpoint (sits outside /v1). Used for pre-flight budget arithmetic and chunk sizing. Routes to any healthy text/multimodal backend (embedding/rerank backends are excluded).",
     {
-      content: z.string().describe("Text to tokenize."),
-      opts: z.object({
-        timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 30000."),
-        add_special: z.boolean().optional().describe("Include the model's special tokens (BOS etc) in the output; default false."),
-        with_pieces: z.boolean().optional().describe("Also return token pieces (string form) under result.pieces; default false."),
-        backend: z.string().optional().describe("Pin to a specific backend by id."),
-      }).optional(),
+      description: "Return exact token IDs and count for `content` against a backend's loaded model. Hits llama-server's /tokenize endpoint (sits outside /v1). Used for pre-flight budget arithmetic and chunk sizing. Routes to any healthy text/multimodal backend (embedding/rerank backends are excluded).",
+      inputSchema: {
+        content: z.string().describe("Text to tokenize."),
+        opts: z.object({
+          timeout_ms: z.number().int().positive().optional().describe("Per-request timeout in ms; default 30000."),
+          add_special: z.boolean().optional().describe("Include the model's special tokens (BOS etc) in the output; default false."),
+          with_pieces: z.boolean().optional().describe("Also return token pieces (string form) under result.pieces; default false."),
+          backend: z.string().optional().describe("Pin to a specific backend by id."),
+        }).optional(),
+      },
+      annotations: { readOnlyHint: true },
     },
     async (args) => {
       const result = await handlers.qwen_tokenize({
@@ -2053,10 +2088,12 @@ async function main(): Promise<void> {
   // to protect against.
   if (handlers.qwen_reload_extensions !== undefined) {
     const reloadHandler = handlers.qwen_reload_extensions;
-    mcpServer.tool(
+    mcpServer.registerTool(
       "qwen_reload_extensions",
-      "Reload the supervisor's installed-extensions cache from `qwen extensions list`. Affects future spawns; running sessions are unaffected.",
-      {},
+      {
+        description: "Reload the supervisor's installed-extensions cache from `qwen extensions list`. Affects future spawns; running sessions are unaffected.",
+        inputSchema: {},
+      },
       async (_args) => {
         const result = await reloadHandler({});
         return toWireResult(result);
@@ -2077,14 +2114,16 @@ async function main(): Promise<void> {
 
   if (handlers.qwen_extension_install !== undefined) {
     const installHandler = handlers.qwen_extension_install;
-    mcpServer.tool(
+    mcpServer.registerTool(
       "qwen_extension_install",
-      "Install a Qwen Code extension from a local path, git URL, npm @scope/name, owner/repo shorthand, or marketplace url:name. Local sources are ungated; any remote source is refused unless QWEN_ALLOW_REMOTE_INSTALL=1 is set in the supervisor's environment. Reloads the installed-extensions cache on success.",
       {
-        source: z.string().min(1, "source must be non-empty")
-          .describe("Extension source: local filesystem path, git URL, npm @scope/name, owner/repo, or marketplace url:name."),
+        description: "Install a Qwen Code extension from a local path, git URL, npm @scope/name, owner/repo shorthand, or marketplace url:name. Local sources are ungated; any remote source is refused unless QWEN_ALLOW_REMOTE_INSTALL=1 is set in the supervisor's environment. Reloads the installed-extensions cache on success.",
+        inputSchema: {
+          source: z.string().min(1, "source must be non-empty")
+            .describe("Extension source: local filesystem path, git URL, npm @scope/name, owner/repo, or marketplace url:name."),
+        },
+        annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
       },
-      { destructiveHint: false, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
       async (args) => {
         const result = await installHandler(args);
         return toWireResult(result);
@@ -2095,14 +2134,16 @@ async function main(): Promise<void> {
 
   if (handlers.qwen_extension_remove !== undefined) {
     const removeHandler = handlers.qwen_extension_remove;
-    mcpServer.tool(
+    mcpServer.registerTool(
       "qwen_extension_remove",
-      "Remove (uninstall) an installed Qwen Code extension by name. Reloads the installed-extensions cache on success.",
       {
-        name: z.string().min(1, "name must be non-empty")
-          .describe("Installed extension's config.name (case-insensitive)."),
+        description: "Remove (uninstall) an installed Qwen Code extension by name. Reloads the installed-extensions cache on success.",
+        inputSchema: {
+          name: z.string().min(1, "name must be non-empty")
+            .describe("Installed extension's config.name (case-insensitive)."),
+        },
+        annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
       },
-      { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
       async (args) => {
         const result = await removeHandler(args);
         return toWireResult(result);
@@ -2113,16 +2154,18 @@ async function main(): Promise<void> {
 
   if (handlers.qwen_extension_enable !== undefined) {
     const enableHandler = handlers.qwen_extension_enable;
-    mcpServer.tool(
+    mcpServer.registerTool(
       "qwen_extension_enable",
-      "Enable an installed Qwen Code extension. scope defaults to 'user' when omitted — an explicit supervisor default, NOT upstream's own default (upstream defaults enable to ALL scopes). Only 'user'/'workspace' are accepted; 'system'/'systemdefaults' are rejected (upstream silently downgrades them to 'user'). Reloads the installed-extensions cache on success.",
       {
-        name: z.string().min(1, "name must be non-empty")
-          .describe("Installed extension's config.name (case-insensitive)."),
-        scope: z.enum(["user", "workspace"]).optional()
-          .describe("Defaults to 'user' when omitted."),
+        description: "Enable an installed Qwen Code extension. scope defaults to 'user' when omitted — an explicit supervisor default, NOT upstream's own default (upstream defaults enable to ALL scopes). Only 'user'/'workspace' are accepted; 'system'/'systemdefaults' are rejected (upstream silently downgrades them to 'user'). Reloads the installed-extensions cache on success.",
+        inputSchema: {
+          name: z.string().min(1, "name must be non-empty")
+            .describe("Installed extension's config.name (case-insensitive)."),
+          scope: z.enum(["user", "workspace"]).optional()
+            .describe("Defaults to 'user' when omitted."),
+        },
+        annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
       },
-      { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
       async (args) => {
         const handlerArgs: { name: string; scope?: string } = { name: args.name };
         if (args.scope !== undefined) handlerArgs.scope = args.scope;
@@ -2135,16 +2178,18 @@ async function main(): Promise<void> {
 
   if (handlers.qwen_extension_disable !== undefined) {
     const disableHandler = handlers.qwen_extension_disable;
-    mcpServer.tool(
+    mcpServer.registerTool(
       "qwen_extension_disable",
-      "Disable an installed Qwen Code extension. scope defaults to 'user' when omitted (matches upstream's own default for disable, made explicit rather than inherited). Only 'user'/'workspace' are accepted; 'system'/'systemdefaults' are rejected (upstream silently downgrades them to 'user'). Reloads the installed-extensions cache on success.",
       {
-        name: z.string().min(1, "name must be non-empty")
-          .describe("Installed extension's config.name (case-insensitive)."),
-        scope: z.enum(["user", "workspace"]).optional()
-          .describe("Defaults to 'user' when omitted."),
+        description: "Disable an installed Qwen Code extension. scope defaults to 'user' when omitted (matches upstream's own default for disable, made explicit rather than inherited). Only 'user'/'workspace' are accepted; 'system'/'systemdefaults' are rejected (upstream silently downgrades them to 'user'). Reloads the installed-extensions cache on success.",
+        inputSchema: {
+          name: z.string().min(1, "name must be non-empty")
+            .describe("Installed extension's config.name (case-insensitive)."),
+          scope: z.enum(["user", "workspace"]).optional()
+            .describe("Defaults to 'user' when omitted."),
+        },
+        annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
       },
-      { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
       async (args) => {
         const handlerArgs: { name: string; scope?: string } = { name: args.name };
         if (args.scope !== undefined) handlerArgs.scope = args.scope;
@@ -2157,14 +2202,16 @@ async function main(): Promise<void> {
 
   if (handlers.qwen_extension_update !== undefined) {
     const updateHandler = handlers.qwen_extension_update;
-    mcpServer.tool(
+    mcpServer.registerTool(
       "qwen_extension_update",
-      "Update one or more installed Qwen Code extensions. Omit names to update every installed extension — still executed one at a time per extension (never a raw --all). Each target is classified via its .qwen-extension-install.json before any exec; missing/unrecognized metadata and ungated remote sources are reported as per-item refusals in the response, not thrown. Reloads the installed-extensions cache when at least one item updates successfully.",
       {
-        names: z.array(z.string().min(1)).optional()
-          .describe("Extension names to update; omit to update every installed extension."),
+        description: "Update one or more installed Qwen Code extensions. Omit names to update every installed extension — still executed one at a time per extension (never a raw --all). Each target is classified via its .qwen-extension-install.json before any exec; missing/unrecognized metadata and ungated remote sources are reported as per-item refusals in the response, not thrown. Reloads the installed-extensions cache when at least one item updates successfully.",
+        inputSchema: {
+          names: z.array(z.string().min(1)).optional()
+            .describe("Extension names to update; omit to update every installed extension."),
+        },
+        annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
       },
-      { destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false },
       async (args) => {
         const handlerArgs: { names?: string[] } = {};
         if (args.names !== undefined) handlerArgs.names = args.names;

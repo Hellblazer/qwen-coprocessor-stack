@@ -560,12 +560,14 @@ export async function toSettingsBackendRows(
  * or change any setting whatever it is called with. The URL (with its token) is
  * for the assistant to open in the HUMAN's browser.
  */
-export function registerSettingsTool(mcpServer: Pick<McpServer, "tool">, page: SettingsPage): void {
-  mcpServer.tool(
+export function registerSettingsTool(mcpServer: Pick<McpServer, "registerTool">, page: SettingsPage): void {
+  mcpServer.registerTool(
     "qwen_settings",
-    "Read-only. Returns {url, state}: the URL of this session's human-operated settings page (it carries a one-time access token) and the current effective settings. Open the URL in the user's browser (`open <url>`) so THEY can opt this session in to qwen_dispatch, pick providers and a default extension loadout. This tool cannot change any setting; do not fetch or POST to the URL yourself.",
-    {},
-    { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    {
+      description: "Read-only. Returns {url, state}: the URL of this session's human-operated settings page (it carries a one-time access token) and the current effective settings. Open the URL in the user's browser (`open <url>`) so THEY can opt this session in to qwen_dispatch, pick providers and a default extension loadout. This tool cannot change any setting; do not fetch or POST to the URL yourself.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
     async () => {
       const url = await page.url();
       const state = await page.state();
