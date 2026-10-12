@@ -27,6 +27,13 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   behavior is unchanged. `qwen_backends` shows the configured value when set.
   `config/coprocessor-pool-coder-mac.example.json` sets it on `coder-box`.
 
+### Changed
+
+- CI no longer runs on pushes to main: pull requests are the gate, and the merge
+  push re-tested the same tree. The suite can still be run by hand with
+  `workflow_dispatch`, and superseded runs on the same ref are cancelled.
+  `release.yml` gains a non-cancelling concurrency group (bead eoy).
+
 ## [0.13.0] - 2026-10-12
 
 Makes paid and local backends a deliberate, per-session choice. The session settings

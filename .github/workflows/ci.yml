@@ -1,7 +1,11 @@
-# MCP supervisor build + unit-test gate. Triggered on every push to main
-# and every PR targeting main. Integration tests under tests/integration/
+# MCP supervisor build + unit-test gate. Triggered on every PR targeting main,
+# and on demand via workflow_dispatch. Integration tests under tests/integration/
 # require a live llama-server backend and are excluded by the supervisor's
 # `npm test` script (see package.json:scripts.test).
+#
+# There is no push trigger: PRs are the gate, and a merge push would re-run the
+# identical suite on a tree already proven green by its PR's checks. Superseded
+# runs on the same ref are cancelled (concurrency below).
 #
 # Bead: qwen-coprocessor-stack-rg6. Motivated by the gbi poll-cursor
 # regression — a numeric/lexicographic boundary bug that the test suite
@@ -11,10 +15,13 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   supervisor:
