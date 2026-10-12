@@ -807,6 +807,7 @@ export function createToolHandlers(
           active_sessions: sessionsByBackend.get(b.id) ?? 0,
           ...(b.modality !== undefined ? { modality: b.modality } : {}),
           ...(b.pin_only !== undefined ? { pin_only: b.pin_only } : {}),
+          ...(b.expected_build !== undefined ? { expected_build: b.expected_build } : {}),
         };
         return info;
       }),
