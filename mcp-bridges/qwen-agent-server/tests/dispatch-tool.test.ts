@@ -19,7 +19,7 @@ import {
   type QwenDispatchInput,
   type SupervisorSpawnPoll,
 } from "../src/dispatch-tool.js";
-import { makeQwenSpawnDispatch, type Dispatch, type ProgressEmitter } from "../src/dispatch.js";
+import { makeQwenSpawnDispatch, DISPATCH_ONE_SHOT_PREAMBLE, type Dispatch, type ProgressEmitter } from "../src/dispatch.js";
 import type { AgentProvider, AgentResult, AgentTask } from "../src/types.js";
 
 // Capture the module-level logger (bead 11r WARN assertions). Mirrors
@@ -440,7 +440,8 @@ describe("makeSupervisorQwenSpawnEffects", () => {
     const id = await effects.spawn(TASK, qwenProvider);
     expect(id).toBe("t-9");
     expect(qwen_spawn).toHaveBeenCalledWith({
-      task: "do",
+      // Bead q5mj: the standing one-shot preamble is prefixed by default.
+      task: `${DISPATCH_ONE_SHOT_PREAMBLE}\n\ndo`,
       opts: { cwd: "/wt", max_output_tokens: 8192, write_authority: true },
     });
   });
@@ -738,5 +739,132 @@ describe("makeSupervisorQwenSpawnEffects stop effect (qad)", () => {
   it("has no stop effect when the host wires no qwen_stop", () => {
     const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll: vi.fn() }, async () => "");
     expect(effects.stop).toBeUndefined();
+  });
+});
+
+// ── bead q5mj: the no-change nudge wiring ──────────────────────────────────
+
+describe("makeSupervisorQwenSpawnEffects — no-change nudge wiring (q5mj)", () => {
+  const TASK: AgentTask = {
+    prompt: "do",
+    worktree: "/wt",
+    maxTurns: 5,
+    minTokens: 8192,
+    timeout: 1000,
+  };
+  const probe = async () => true;
+
+  it("forwards worktreeChanged for a write-authorised run", () => {
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn() },
+      async () => "",
+      { worktreeChanged: probe },
+    );
+    expect(effects.worktreeChanged).toBe(probe);
+  });
+
+  it("never forwards worktreeChanged for a read-only run (write_authority:false)", () => {
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn() },
+      async () => "",
+      { worktreeChanged: probe, writeAuthority: false },
+    );
+    expect(effects.worktreeChanged).toBeUndefined();
+  });
+
+  it("maps qwen_send to send — true only on ack === true", async () => {
+    const ok = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn(), qwen_send: vi.fn().mockResolvedValue({ ack: true }) },
+      async () => "",
+    );
+    await expect(ok.send!("t", "msg")).resolves.toBe(true);
+
+    const ackedFalse = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn(), qwen_send: vi.fn().mockResolvedValue({ ack: false }) },
+      async () => "",
+    );
+    await expect(ackedFalse.send!("t", "msg")).resolves.toBe(false);
+
+    const errored = makeSupervisorQwenSpawnEffects(
+      {
+        qwen_spawn: vi.fn(),
+        qwen_poll: vi.fn(),
+        qwen_send: vi.fn().mockResolvedValue({ error: { code: "task_id_not_found", message: "gone" } }),
+      },
+      async () => "",
+    );
+    await expect(errored.send!("t", "msg")).resolves.toBe(false);
+  });
+
+  it("forwards the task id and message to qwen_send", async () => {
+    const qwen_send = vi.fn().mockResolvedValue({ ack: true });
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn: vi.fn(), qwen_poll: vi.fn(), qwen_send },
+      async () => "",
+    );
+    await effects.send!("task-7", "nudge text");
+    expect(qwen_send).toHaveBeenCalledWith({ task_id: "task-7", message: "nudge text" });
+  });
+
+  it("has no send effect when the host wires no qwen_send", () => {
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn: vi.fn(), qwen_poll: vi.fn() }, async () => "");
+    expect(effects.send).toBeUndefined();
+  });
+
+  it("a read-only run is never nudged even with the probe + qwen_send supplied (10)", async () => {
+    const qwen_send = vi.fn().mockResolvedValue({ ack: true });
+    const worktreeChanged = vi.fn().mockResolvedValue(false);
+    const qwen_poll = vi.fn().mockResolvedValue({
+      state: "idle",
+      recent_events: [],
+      more_events_available: false,
+      latest_event_id: "1",
+      turns_completed: 1,
+      last_message: "here is my plan",
+    });
+    const effects = makeSupervisorQwenSpawnEffects(
+      {
+        qwen_spawn: vi.fn().mockResolvedValue({ task_id: "t", chosen_backend: "box" }),
+        qwen_poll,
+        qwen_send,
+      },
+      async () => "",
+      { writeAuthority: false, worktreeChanged, clock: { now: () => 0, sleep: async () => {} } },
+    );
+    const dispatch = makeQwenSpawnDispatch(effects, { baseCommit: "base" });
+    const r = await dispatch(TASK, qwenProvider);
+    expect(qwen_send).not.toHaveBeenCalled();
+    expect(worktreeChanged).not.toHaveBeenCalled();
+    expect(r.outcome).toBe("completed");
+  });
+});
+
+// ── bead q5mj: the standing one-shot preamble ──────────────────────────────
+
+describe("makeSupervisorQwenSpawnEffects — one-shot preamble (q5mj)", () => {
+  const TASK: AgentTask = {
+    prompt: "do",
+    worktree: "/wt",
+    maxTurns: 5,
+    minTokens: 8192,
+    timeout: 1000,
+  };
+
+  it("prefixes the preamble, a blank line, then the caller's prompt by default (11)", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t", chosen_backend: "box" });
+    const effects = makeSupervisorQwenSpawnEffects({ qwen_spawn, qwen_poll: vi.fn() }, async () => "");
+    await effects.spawn(TASK, qwenProvider);
+    expect(qwen_spawn.mock.calls[0]![0].task).toBe(`${DISPATCH_ONE_SHOT_PREAMBLE}\n\ndo`);
+  });
+
+  it("omits the preamble with oneShotPreamble:false (11)", async () => {
+    const qwen_spawn = vi.fn().mockResolvedValue({ task_id: "t", chosen_backend: "box" });
+    const effects = makeSupervisorQwenSpawnEffects(
+      { qwen_spawn, qwen_poll: vi.fn() },
+      async () => "",
+      { oneShotPreamble: false },
+    );
+    await effects.spawn(TASK, qwenProvider);
+    expect(qwen_spawn.mock.calls[0]![0].task).toBe("do");
   });
 });

@@ -15,6 +15,7 @@
 // paths (qwen_oneshot/embed/rerank); they do NOT implement dispatch() and are
 // rejected here at runtime (gate Critical-3).
 
+import { createLogger } from "./log.js";
 import type {
   AgentOutcome,
   AgentProvider,
@@ -25,6 +26,8 @@ import type {
   RunContext,
   SessionState,
 } from "./types.js";
+
+const log = createLogger("qwen-dispatch");
 
 /**
  * Shared, host-uniform classification of a COMPLETED (non-timeout) run — a
@@ -270,6 +273,17 @@ export interface QwenSpawnEffects {
    *  until the reaper sweep. Errors are swallowed. Omitted in tests that don't
    *  exercise the path. */
   stop?: (taskId: string) => Promise<void>;
+  /** Optional (bead q5mj): true when the dispatch worktree differs from
+   *  `baseCommit` in any way — tracked or staged modifications, non-ignored
+   *  untracked files, or `HEAD` no longer equal to the base commit. Supplying
+   *  this TOGETHER with `send` arms the no-change nudge and the honest
+   *  `completed`/`error` classification; supplying neither is today's
+   *  dispatcher, bit for bit. A read-only dispatch must not supply it. */
+  worktreeChanged?: () => Promise<boolean>;
+  /** Optional (bead q5mj): push a follow-up user message into the session;
+   *  resolves true when the session accepted it. Only used to deliver the
+   *  one no-change nudge; a false/throwing result is never retried. */
+  send?: (taskId: string, message: string) => Promise<boolean>;
   /** Optional MCP progress emitter (bead ht9). When supplied, the dispatcher
    *  emits one notification at start, one per poll iteration while the run is
    *  in flight, and one at the end — with strictly increasing `progress`
@@ -335,6 +349,62 @@ export function refusedWithoutPatch(
 }
 
 /**
+ * The follow-up message sent ONCE to a write-authorised run that ended its turn
+ * without touching the worktree (bead q5mj). Exported so callers and tests can
+ * name the exact text.
+ */
+export const DISPATCH_NO_CHANGE_NUDGE =
+  "You ended your turn without changing any file in the worktree. This is a one-shot run: nobody can answer questions or confirm a plan. If the task needs changes, make them now and verify them; where the task is ambiguous choose the smallest reasonable option and say what you chose. If you are certain no change is needed, reply with exactly NO_CHANGES_NEEDED followed by one sentence saying why.";
+
+/** Sentinel a run replies with to declare it deliberately made no change
+ *  (bead q5mj). Matched against the START of the trimmed terminal message; when
+ *  present the nudge is suppressed and the outcome stays `completed`. */
+const NO_CHANGES_NEEDED = "NO_CHANGES_NEEDED";
+
+/**
+ * Standing preamble prefixed to the task text a `qwen_dispatch` run is spawned
+ * with (bead q5mj). Kept in one exported constant so the wire prompt and its
+ * tests cannot drift. `makeSupervisorQwenSpawnEffects` prepends it unless the
+ * caller passes `oneShotPreamble: false`.
+ */
+export const DISPATCH_ONE_SHOT_PREAMBLE =
+  "This is a one-shot dispatched run. Nobody can answer questions or confirm a plan, and your first reply that contains no tool call ends the run. Do not stop to ask and do not end your turn on an announcement of what you will do. Where the task is ambiguous, choose the smallest reasonable option, do the work, verify it, and say what you chose in your final message.";
+
+/** Terminal polls to tolerate after a successful nudge before giving up on the
+ *  session picking up the follow-up, and classifying the last snapshot
+ *  (bead q5mj). */
+const NO_CHANGE_STALE_TERMINAL_POLLS = 30;
+
+/** Read the injected worktree-change probe, treating a throw as `true` —
+ *  fail open, so a broken check can never invent an "empty run" (bead q5mj). */
+async function worktreeChangedSafely(effects: QwenSpawnEffects): Promise<boolean> {
+  try {
+    return await effects.worktreeChanged!();
+  } catch {
+    return true;
+  }
+}
+
+/** Deliver the nudge, treating a throw as "not accepted" so the dispatcher
+ *  never retries it (bead q5mj). */
+async function sendSafely(
+  effects: QwenSpawnEffects,
+  taskId: string,
+  message: string,
+): Promise<boolean> {
+  try {
+    return await effects.send!(taskId, message);
+  } catch {
+    return false;
+  }
+}
+
+/** True when `message` (trimmed) starts with `sentinel` (bead q5mj). */
+function messageStartsWith(message: string | undefined, sentinel: string): boolean {
+  return (message ?? "").trim().startsWith(sentinel);
+}
+
+/**
  * Build a `qwen_spawn` dispatcher. Spawns, then POLLS TO COMPLETION INTERNALLY
  * — it resolves only once the session reaches a terminal state or the
  * wall-clock deadline fires — matching the blocking semantics of `claude -p`
@@ -343,9 +413,10 @@ export function refusedWithoutPatch(
  */
 export function makeQwenSpawnDispatch(
   effects: QwenSpawnEffects,
-  opts: DispatchBaseOpts & { pollIntervalMs?: number },
+  opts: DispatchBaseOpts & { pollIntervalMs?: number; noChangeNudges?: number },
 ): Dispatch {
   const pollIntervalMs = opts.pollIntervalMs ?? 1_000;
+  const noChangeNudges = opts.noChangeNudges ?? 1;
   return async (task, provider) => {
     assertAgentCli(provider);
     const taskId = await effects.spawn(task, provider);
@@ -386,6 +457,19 @@ export function makeQwenSpawnDispatch(
       // session would leak with no stop.
       const start = effects.now();
       let timedOut = false;
+
+      // Bead q5mj: the no-change nudge is armed only when BOTH new effects are
+      // supplied — a host that wires neither gets today's dispatcher exactly.
+      const nudgeEnabled = effects.worktreeChanged !== undefined && effects.send !== undefined;
+      // At most ONE nudge per dispatch (the spec's ceiling); `noChangeNudges: 0`
+      // disables nudging entirely.
+      let nudgeBudget = nudgeEnabled ? Math.max(0, noChangeNudges) : 0;
+      // Non-null once a nudge was accepted: while set, a terminal snapshot is
+      // not trusted until the session has moved past the nudge (a non-terminal
+      // poll, or a higher `turnsUsed`), bounded by the stale cap.
+      let afterNudge: { turnsAt: number | undefined; sawNonTerminal: boolean; stalePolls: number } | null =
+        null;
+
       for (;;) {
         last = await effects.poll(taskId);
         // Bead ht9: one notification per poll iteration. The loop already wakes
@@ -394,7 +478,64 @@ export function makeQwenSpawnDispatch(
           progress: progressSeq++,
           message: `state=${last.state} turns=${last.turnsUsed ?? 0}`,
         });
-        if (isTerminal(last.state)) break;
+
+        if (isTerminal(last.state)) {
+          if (afterNudge !== null) {
+            // Stale-terminal guard: the session can keep reporting its previous
+            // terminal state for a poll or two before it picks up the nudge.
+            const progressed =
+              afterNudge.sawNonTerminal ||
+              (afterNudge.turnsAt !== undefined &&
+                last.turnsUsed !== undefined &&
+                last.turnsUsed > afterNudge.turnsAt);
+            if (!progressed) {
+              if (++afterNudge.stalePolls >= NO_CHANGE_STALE_TERMINAL_POLLS) break;
+              if (effects.now() - start >= task.timeout) {
+                timedOut = true;
+                break;
+              }
+              await effects.sleep(pollIntervalMs);
+              continue;
+            }
+          } else if (
+            nudgeBudget > 0 &&
+            last.state !== "error" &&
+            !messageStartsWith(last.lastMessage, NO_CHANGES_NEEDED)
+          ) {
+            // Terminal, non-error, and the agent did not declare the task needs
+            // no change. Did it actually change anything?
+            if (!(await worktreeChangedSafely(effects))) {
+              const turnsAt = last.turnsUsed;
+              const accepted = await sendSafely(effects, taskId, DISPATCH_NO_CHANGE_NUDGE);
+              // Bead q5mj: one structured line per nudge, with the task id and
+              // whether the send was accepted. Logged here (see the module
+              // logger) because the classification event below must be logged
+              // from here too, so one logger covers both.
+              log.info(
+                { event_type: "dispatch_no_change_nudge", task_id: taskId, accepted },
+                "qwen_dispatch: the run ended without changing the worktree",
+              );
+              if (accepted) {
+                nudgeBudget--;
+                afterNudge = { turnsAt, sawNonTerminal: false, stalePolls: 0 };
+                emitProgress(effects.progress, {
+                  progress: progressSeq++,
+                  message: "no changes yet: nudging the agent once",
+                });
+                if (effects.now() - start >= task.timeout) {
+                  timedOut = true;
+                  break;
+                }
+                await effects.sleep(pollIntervalMs);
+                continue;
+              }
+              // send refused or threw: no retry, fall through to classification.
+            }
+          }
+          break;
+        }
+
+        if (afterNudge !== null) afterNudge.sawNonTerminal = true;
         if (effects.now() - start >= task.timeout) {
           timedOut = true;
           break;
@@ -426,6 +567,29 @@ export function makeQwenSpawnDispatch(
       // Scoped to patch-bearing harvests: a value-only run (no patch artifact)
       // may legitimately be read-only and still complete.
       if (outcome === "completed" && refusedWithoutPatch(last, artifacts)) outcome = "error";
+
+      // Bead q5mj: a write-authorised run that ended without changing the
+      // worktree (checked AGAIN after the nudge round) is a silent zero — report
+      // `error` instead of `completed`, unless the agent declared
+      // NO_CHANGES_NEEDED. Only when the host wired the check; a read-only
+      // dispatch never supplies it, so it is never nudged or reclassified here.
+      if (
+        effects.worktreeChanged !== undefined &&
+        !timedOut &&
+        outcome !== "error" &&
+        !(await worktreeChangedSafely(effects)) &&
+        !messageStartsWith(last.lastMessage, NO_CHANGES_NEEDED)
+      ) {
+        outcome = "error";
+        log.warn(
+          {
+            event_type: "dispatch_no_changes",
+            task_id: taskId,
+            last_message: (last.lastMessage ?? "").slice(0, 500),
+          },
+          "qwen_dispatch: run ended without changing the worktree",
+        );
+      }
       return { artifacts, turns: last.turnsUsed ?? 0, outcome, cost: last.cost ?? 0 };
     } finally {
       // Bead ht9: the end notification, on every exit path (success or throw).

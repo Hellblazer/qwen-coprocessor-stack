@@ -26,7 +26,7 @@ import { z } from "zod";
 import { selectAgentProvider } from "./backends.js";
 import { createLogger } from "./log.js";
 import { callerSuppliedWorktree, type WorktreeStrategy } from "./worktree.js";
-import { valueHarvester } from "./dispatch.js";
+import { DISPATCH_ONE_SHOT_PREAMBLE, valueHarvester } from "./dispatch.js";
 import { WRITE_TOOLS } from "./permissions.js";
 import type { Dispatch, ProgressEmitter, QwenPollSnapshot, QwenSpawnEffects } from "./dispatch.js";
 import { DISPATCHER_KINDS } from "./types.js";
@@ -513,6 +513,12 @@ export interface SupervisorSpawnPoll {
    *  Optional so the adapter degrades gracefully if a host wires only
    *  spawn/poll. */
   qwen_stop?: (args: { task_id: string }) => Promise<{ ack: boolean }>;
+  /** Push a follow-up user message into a session (bead q5mj). Optional: only
+   *  wired when the host supplies it, and only used to deliver the one no-change
+   *  nudge. Matches the real `qwen_send` handler's return type in server.ts. */
+  qwen_send?: (
+    args: { task_id: string; message: string },
+  ) => Promise<{ ack: boolean } | { error: { code: string; message: string } }>;
 }
 
 /**
@@ -550,6 +556,14 @@ export function makeSupervisorQwenSpawnEffects(
      *  run is in flight, and one at the end. Absent → no emissions (behaviour
      *  unchanged). */
     progress?: ProgressEmitter;
+    /** Optional worktree-change probe (bead q5mj) — forwarded to the effects
+     *  ONLY when `writeAuthority` is true (a read-only dispatch must never be
+     *  nudged or reclassified). Together with `handlers.qwen_send` it arms the
+     *  no-change nudge. Absent → the dispatcher is today's. */
+    worktreeChanged?: () => Promise<boolean>;
+    /** Prefix the task text sent to `qwen_spawn` with the standing one-shot
+     *  preamble (bead q5mj). Default true; `false` restores the bare prompt. */
+    oneShotPreamble?: boolean;
   } = {},
 ): QwenSpawnEffects {
   const clock = opts.clock ?? {
@@ -585,7 +599,14 @@ export function makeSupervisorQwenSpawnEffects(
           "agent provider declares no backend; dispatch spawns round-robin across every healthy text backend (pin_only backends excluded)",
         );
       }
-      const r = await handlers.qwen_spawn({ task: task.prompt, opts: spawnOpts });
+      // Bead q5mj: prefix the standing one-shot preamble (unless the caller
+      // opted out) so a dispatched leaf knows it cannot ask a question and must
+      // not end its turn on an announcement of what it will do.
+      const taskText =
+        (opts.oneShotPreamble ?? true)
+          ? `${DISPATCH_ONE_SHOT_PREAMBLE}\n\n${task.prompt}`
+          : task.prompt;
+      const r = await handlers.qwen_spawn({ task: taskText, opts: spawnOpts });
       if ("error" in r) {
         throw new Error(`qwen_dispatch spawn failed (${r.error.code}): ${r.error.message}`);
       }
@@ -651,6 +672,22 @@ export function makeSupervisorQwenSpawnEffects(
             }
           },
         }
+      : {}),
+    // Bead q5mj: deliver the one no-change nudge into the session; resolves
+    // true only on an explicit ack (an error envelope or a throw is "not
+    // accepted", which the dispatcher never retries).
+    ...(handlers.qwen_send !== undefined
+      ? {
+          send: async (taskId: string, message: string) => {
+            const r = await handlers.qwen_send!({ task_id: taskId, message });
+            return !("error" in r) && r.ack === true;
+          },
+        }
+      : {}),
+    // Bead q5mj: the worktree-change probe, forwarded ONLY for a write-authorised
+    // run — a read-only dispatch must never be nudged or reclassified.
+    ...(opts.worktreeChanged !== undefined && (opts.writeAuthority ?? true)
+      ? { worktreeChanged: opts.worktreeChanged }
       : {}),
   };
 }

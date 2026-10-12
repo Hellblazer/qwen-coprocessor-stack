@@ -34,6 +34,11 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   push re-tested the same tree. The suite can still be run by hand with
   `workflow_dispatch`, and superseded runs on the same ref are cancelled.
   `release.yml` gains a non-cancelling concurrency group (bead eoy).
+- `qwen_dispatch` no longer reports `outcome: "completed"` for a write-authorised run that ended
+  without changing its worktree (bead q5mj): such a run gets one follow-up nudge message, and if the
+  worktree is still unchanged afterwards and the agent did not reply with the `NO_CHANGES_NEEDED`
+  sentinel the outcome is `error`. Every dispatched prompt now carries a standing one-shot preamble
+  telling the agent nobody can answer questions and not to end its turn on an announcement.
 
 ## [0.13.0] - 2026-10-12
 

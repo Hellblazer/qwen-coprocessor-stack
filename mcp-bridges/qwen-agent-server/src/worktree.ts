@@ -55,6 +55,40 @@ export function callerSuppliedWorktree(worktree: string): WorktreeStrategy {
   return { prepare: async () => ({ worktree, cleanup: async () => {} }) };
 }
 
+/**
+ * True when `worktreePath` differs from `baseCommit` in any way (bead q5mj):
+ * `git status --porcelain` prints anything (tracked/staged modifications or
+ * non-ignored untracked files — ignored files are invisible to it), OR `git
+ * rev-parse HEAD` differs from the RESOLVED base commit (the agent committed).
+ *
+ * FAILS OPEN: any git failure returns true, so a tooling error can never be
+ * mistaken for an "empty run" (which would misreport a completed dispatch as an
+ * error). Uses the same `execFile` + `git -C` shape as the rest of this module
+ * and the git-diff harvester.
+ */
+export async function worktreeDiffersFromBase(
+  worktreePath: string,
+  baseCommit: string,
+): Promise<boolean> {
+  try {
+    const { stdout: status } = await execFileP("git", ["-C", worktreePath, "status", "--porcelain"]);
+    if (status.trim() !== "") return true;
+    const { stdout: head } = await execFileP("git", ["-C", worktreePath, "rev-parse", "HEAD"]);
+    const { stdout: base } = await execFileP("git", ["-C", worktreePath, "rev-parse", baseCommit]);
+    return head.trim() !== base.trim();
+  } catch (err) {
+    log.warn(
+      {
+        event_type: "worktree_diff_check_error",
+        worktree: worktreePath,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      "worktree change check failed — treating the worktree as changed (fail open)",
+    );
+    return true;
+  }
+}
+
 /** Cache-key path of the bare mirror for `repo` (an `owner/name` slug). */
 export function mirrorPath(repo: string, cacheRoot: string): string {
   return join(cacheRoot, repo.replace(/\//g, "__") + ".git");
