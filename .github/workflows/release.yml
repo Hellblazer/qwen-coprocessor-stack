@@ -24,6 +24,11 @@ on:
     tags:
       - "v*"
 
+# A publish in progress must never be cancelled by a second push of the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   id-token: write # OIDC token for npm Trusted Publishing
   contents: write # create the GitHub Release
