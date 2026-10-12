@@ -156,8 +156,8 @@ export function selectHarvester(
 }
 
 /** Zod shape for the `qwen_dispatch` MCP tool input. Kept as a raw shape object
- *  so it plugs into `mcpServer.tool(name, desc, shape, cb)` like the other
- *  qwen_* tools. */
+ *  so it plugs into `mcpServer.registerTool(name, { inputSchema }, cb)` like the
+ *  other qwen_* tools. */
 export const qwenDispatchInputShape = {
   prompt: z.string().min(1).describe("The task/problem statement for the agent."),
   worktree: z
