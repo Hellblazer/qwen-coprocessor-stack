@@ -158,9 +158,45 @@ describe("toSettingsBackendRows", () => {
       emb: false,
       rr: false,
     });
+    expect(rows.map((r) => r.pinOnly)).toEqual([false, false, false, false, false, false]);
     const t = rows.find((r) => r.id === "t-text")!;
     expect(t).toMatchObject({ healthy: true, tier: "local", capacity: "heavy", roles: ["code"], modality: "text" });
     expect(rows.find((r) => r.id === "t-unset")).toMatchObject({ healthy: null, roles: [], modality: "text" });
+  });
+});
+
+describe("toSettingsBackendRows — pin_only (bead 9jui)", () => {
+  it("exposes the flag and keeps a pin_only text backend selectable as a provider", async () => {
+    const rows = await toSettingsBackendRows(
+      [
+        { id: "plain", url: "http://x/v1", model: "m", tier: "remote", capacity: "heavy" },
+        { id: "paid", url: "http://x/v1", model: "m", tier: "remote", capacity: "heavy", pin_only: true },
+        { id: "paid-false", url: "http://x/v1", model: "m", tier: "remote", capacity: "heavy", pin_only: false },
+      ],
+      async () => true,
+    );
+    expect(rows.map((r) => [r.id, r.pinOnly, r.suitable])).toEqual([
+      ["plain", false, true],
+      ["paid", true, true],
+      ["paid-false", false, true],
+    ]);
+  });
+
+  it("the served page script labels pin_only backends", async () => {
+    const settings = createSessionSettings();
+    const page = createSettingsPage({
+      view: settings.view,
+      writer: settings.writer,
+      env: {},
+      loadProviders: () => [],
+      listBackends: async () => BACKENDS,
+    });
+    open.push(page);
+    const url = new URL(await page.url());
+    const res = await raw(Number(url.port), { path: `/?t=${url.searchParams.get("t")}` });
+    expect(res.status).toBe(200);
+    expect(res.body).toContain("b.pinOnly");
+    expect(res.body).toContain("pin only");
   });
 });
 
@@ -400,6 +436,27 @@ describe("backend suitability is enforced on POST", () => {
     expect(settings.view.get().providers).toBeUndefined();
     expect((await post("text-ok")).status).toBe(200);
     expect(settings.view.get().providers![0]!.backend).toBe("text-ok");
+  });
+
+  it("accepts a pin_only text backend as a provider: that is the session opt-in", async () => {
+    const settings = createSessionSettings();
+    const page = createSettingsPage({
+      view: settings.view,
+      writer: settings.writer,
+      env: {},
+      loadProviders: () => [],
+      listBackends: () => toSettingsBackendRows([...POOL, mk({ id: "paid", modality: "text", pin_only: true })], async () => true),
+    });
+    open.push(page);
+    const url = new URL(await page.url());
+    const res = await raw(Number(url.port), {
+      method: "POST",
+      path: "/api/state",
+      headers: { [SETTINGS_TOKEN_HEADER]: url.searchParams.get("t")!, "Content-Type": "application/json" },
+      body: JSON.stringify({ providers: [{ id: "p", agentKind: "qwen-local", backend: "paid" }] }),
+    });
+    expect(res.status).toBe(200);
+    expect(settings.view.get().providers![0]!.backend).toBe("paid");
   });
 });
 
