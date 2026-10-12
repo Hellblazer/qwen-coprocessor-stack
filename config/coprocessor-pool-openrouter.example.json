@@ -50,14 +50,14 @@
       }
     },
     {
-      "_comment": "DeepSeek V4 Pro via OpenRouter (deepseek/deepseek-v4-pro-0813). pin_only: never chosen automatically; select it with opts.backend='deepseek-pro-openrouter', role 'deepseek' (qwen_chat), or a dispatch provider pinned to it. Measured 2026-10-12, agentic battery control arm (3 tasks x 3 runs) through this supervisor: 9/9 passed, median 16.8 s. Provider shakeout 4/4. OpenRouter list price per million tokens in/out: $0.66 / $1.98. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). no_tokenize: OpenRouter has no /tokenize. role 'deepseek' is shared with the other deepseek-* backend, so role routing rotates between them; pin by id to choose one.",
+      "_comment": "DeepSeek V4 Pro via OpenRouter (deepseek/deepseek-v4-pro-0813). pin_only: never chosen automatically; select it with opts.backend='deepseek-pro-openrouter', role 'deepseek' (qwen_chat), or a dispatch provider pinned to it. Measured 2026-10-12, agentic battery control arm (3 tasks x 3 runs) through this supervisor: 9/9 passed, median 16.8 s. Provider shakeout 4/4. OpenRouter list price per million tokens in/out: $0.66 / $1.98. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). no_tokenize: OpenRouter has no /tokenize. role 'deepseek' is shared with the other deepseek-* backend, so role routing rotates between them; pin by id to choose one. ctx_size is the model's 1,048,576-token window; the supervisor's default session budget is 85% of it, so pass a lower max_context_tokens for cost control.",
       "id": "deepseek-pro-openrouter",
       "url": "https://openrouter.ai/api/v1",
       "model": "deepseek/deepseek-v4-pro-0813",
       "tier": "remote",
       "capacity": "heavy",
       "weight": 1,
-      "ctx_size": 200000,
+      "ctx_size": 1048576,
       "modality": "text",
       "roles": ["deepseek"],
       "api_key_env": "OPENROUTER_API_KEY",
@@ -69,14 +69,14 @@
       }
     },
     {
-      "_comment": "DeepSeek V4.1 Flash via OpenRouter (deepseek/deepseek-v4.1-flash). pin_only: never chosen automatically; select it with opts.backend='deepseek-flash-openrouter', role 'deepseek' (qwen_chat), or a dispatch provider pinned to it. Measured 2026-10-12, agentic battery control arm (3 tasks x 3 runs) through this supervisor: 8/9 passed, median 13.3 s (the miss exceeded a 50-line ceiling with all tests passing). Provider shakeout 4/4. OpenRouter list price per million tokens in/out: $0.15 / $0.60. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). no_tokenize: OpenRouter has no /tokenize. role 'deepseek' is shared with the other deepseek-* backend, so role routing rotates between them; pin by id to choose one.",
+      "_comment": "DeepSeek V4.1 Flash via OpenRouter (deepseek/deepseek-v4.1-flash). pin_only: never chosen automatically; select it with opts.backend='deepseek-flash-openrouter', role 'deepseek' (qwen_chat), or a dispatch provider pinned to it. Measured 2026-10-12, agentic battery control arm (3 tasks x 3 runs) through this supervisor: 8/9 passed, median 13.3 s (the miss exceeded a 50-line ceiling with all tests passing). Provider shakeout 4/4. OpenRouter list price per million tokens in/out: $0.15 / $0.60. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). no_tokenize: OpenRouter has no /tokenize. role 'deepseek' is shared with the other deepseek-* backend, so role routing rotates between them; pin by id to choose one. ctx_size is the model's 1,048,576-token window; the supervisor's default session budget is 85% of it, so pass a lower max_context_tokens for cost control.",
       "id": "deepseek-flash-openrouter",
       "url": "https://openrouter.ai/api/v1",
       "model": "deepseek/deepseek-v4.1-flash",
       "tier": "remote",
       "capacity": "heavy",
       "weight": 1,
-      "ctx_size": 200000,
+      "ctx_size": 1048576,
       "modality": "text",
       "roles": ["deepseek"],
       "api_key_env": "OPENROUTER_API_KEY",
