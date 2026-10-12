@@ -494,10 +494,19 @@ interface HealthEntry {
 const healthCache = new Map<string, HealthEntry>();
 const refreshInFlight = new Set<string>();
 
+/**
+ * Backend ids whose build-identity check is currently KNOWN to be failing and
+ * has already been logged. Keeps the `backend_build_mismatch` warning from
+ * firing on every probe forever: it logs on the first mismatch, then only
+ * again after the backend has been healthy in between (see `probeHealth`).
+ */
+const buildMismatchLogged = new Set<string>();
+
 /** Test-only helper to clear all health state. */
 export function resetHealthCache(): void {
   healthCache.clear();
   refreshInFlight.clear();
+  buildMismatchLogged.clear();
   rrCounters.clear();
 }
 
@@ -507,30 +516,90 @@ export function resetHealthCache(): void {
  *  derive a host base by stripping the /v1 suffix. The OpenAI-compat
  *  /v1/models endpoint is the secondary probe — works across more
  *  backends but is heavier than /health.
+ *
+ *  Optional build-identity check (bead 55q): when `backend.expected_build`
+ *  is a non-empty string, a liveness OK is not enough — the server's
+ *  `/props` `build_info` must CONTAIN the expected value, so a DIFFERENT
+ *  llama-server build answering on the port is reported unhealthy. With the
+ *  field unset or empty no `/props` request is made at all.
  */
 export async function probeHealth(backend: Backend): Promise<boolean> {
-  const probeUrl = async (url: string, timeoutMs: number): Promise<boolean> => {
+  const fetchWithTimeout = async (url: string, timeoutMs: number): Promise<Response | null> => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), timeoutMs);
     try {
-      const r = await fetch(url, { method: "GET", signal: ac.signal });
-      return r.ok;
+      return await fetch(url, { method: "GET", signal: ac.signal });
     } catch {
-      return false;
+      return null;
     } finally {
       clearTimeout(t);
     }
+  };
+
+  const probeUrl = async (url: string, timeoutMs: number): Promise<boolean> => {
+    const r = await fetchWithTimeout(url, timeoutMs);
+    return r !== null && r.ok;
   };
 
   const baseUrl = stripTrailingSlash(backend.url);
   const hostBase = baseUrl.replace(/\/v1$/, "");
 
   // Prefer llama-server /health at the host root.
-  if (await probeUrl(`${hostBase}/health`, COLD_PROBE_TIMEOUT_MS)) return true;
-  // Fall back to OpenAI-compat /v1/models — universally available on any
-  // OpenAI-shaped backend.
-  if (await probeUrl(`${baseUrl}/models`, COLD_PROBE_TIMEOUT_MS)) return true;
-  return false;
+  const alive =
+    (await probeUrl(`${hostBase}/health`, COLD_PROBE_TIMEOUT_MS)) ||
+    // Fall back to OpenAI-compat /v1/models — universally available on any
+    // OpenAI-shaped backend.
+    (await probeUrl(`${baseUrl}/models`, COLD_PROBE_TIMEOUT_MS));
+  if (!alive) return false;
+
+  const expected =
+    typeof backend.expected_build === "string" && backend.expected_build !== ""
+      ? backend.expected_build
+      : "";
+  if (expected === "") {
+    buildMismatchLogged.delete(backend.id);
+    return true;
+  }
+
+  // Build-identity check against llama-server's /props. Any failure to read a
+  // matching build_info (unreachable/non-OK, non-JSON body, missing or
+  // non-string field, no substring match) is a mismatch.
+  let reported: string | null = null;
+  let matched = false;
+  const props = await fetchWithTimeout(`${hostBase}/props`, COLD_PROBE_TIMEOUT_MS);
+  if (props !== null && props.ok) {
+    try {
+      const body = (await props.json()) as { build_info?: unknown } | null;
+      const buildInfo = body?.build_info;
+      if (typeof buildInfo === "string") {
+        reported = buildInfo;
+        matched = buildInfo.includes(expected);
+      }
+    } catch {
+      // Non-JSON body — reported stays null, matched stays false.
+    }
+  }
+
+  if (!matched) {
+    // One warning per mismatch episode (first mismatch, and again only after
+    // the backend has been healthy in between).
+    if (!buildMismatchLogged.has(backend.id)) {
+      buildMismatchLogged.add(backend.id);
+      log.warn(
+        {
+          event_type: "backend_build_mismatch",
+          backend_id: backend.id,
+          expected_build: expected,
+          reported_build: reported,
+        },
+        "backend reported a different llama-server build than expected_build",
+      );
+    }
+    return false;
+  }
+
+  buildMismatchLogged.delete(backend.id);
+  return true;
 }
 
 function stripTrailingSlash(s: string): string {

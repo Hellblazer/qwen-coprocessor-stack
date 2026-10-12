@@ -14,6 +14,19 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+### Added
+
+- Backend field `expected_build` (bead 55q). The health probe only checked liveness, so a
+  backend was reported healthy while a DIFFERENT llama-server build was answering on its
+  port. When `expected_build` is set, `probeHealth` additionally GETs the server's `/props`
+  endpoint and requires the reported `build_info` to contain that substring (llama-server
+  reports e.g. `b11541-f2918cabb`; an operator sets `b11541`). A mismatch — or an
+  unreadable, non-OK, or non-JSON `/props`, a missing/non-string `build_info`, or no
+  substring match — makes the backend unhealthy, with one `backend_build_mismatch` warning
+  per mismatch episode. With the field unset or empty, no `/props` request is made and
+  behavior is unchanged. `qwen_backends` shows the configured value when set.
+  `config/coprocessor-pool-coder-mac.example.json` sets it on `coder-box`.
+
 ### Changed
 
 - CI no longer runs on pushes to main: pull requests are the gate, and the merge

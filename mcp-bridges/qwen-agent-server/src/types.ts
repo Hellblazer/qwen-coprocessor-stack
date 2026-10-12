@@ -35,6 +35,21 @@ export interface Backend {
    */
   ctx_size?: number;
   /**
+   * Operator-declared build identity of the llama-server on this backend
+   * (bead 55q). When set, the health probe additionally GETs the server's
+   * `/props` endpoint and requires its `build_info` string to CONTAIN this
+   * value as a substring; llama-server reports e.g. `"b11541-f2918cabb"`,
+   * so an operator sets `"b11541"`. A mismatch (or an unreadable `/props`)
+   * makes the backend report UNHEALTHY, catching the case where a
+   * DIFFERENT llama-server build has taken over the port — where a bare
+   * `/health` OK would otherwise report it healthy.
+   *
+   * Optional. When unset or empty behavior is unchanged: `/props` is never
+   * requested. Non-string values are ignored (treated as absent); the
+   * supervisor does not validate at config load.
+   */
+  expected_build?: string;
+  /**
    * Operator-declared modality of the loaded model on this backend.
    *
    * - `'text'` (default when unset) — text completion via /v1/chat/completions.
@@ -560,6 +575,8 @@ export interface BackendInfo {
   modality?: "text" | "multimodal" | "embedding" | "rerank";
   /** Mirrors `Backend.pin_only`: present when the config declares it. */
   pin_only?: boolean;
+  /** Mirrors `Backend.expected_build`: present when the config declares it. */
+  expected_build?: string;
   /**
    * Number of sessions currently in the supervisor's pool for this
    * backend (includes `complete`/`error` sessions that have not yet

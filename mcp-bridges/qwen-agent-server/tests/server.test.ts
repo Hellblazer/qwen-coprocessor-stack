@@ -6,7 +6,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Backend, SpawnOpts, PollOpts, PollResult, BackendInfo } from "../src/types.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -2139,5 +2140,114 @@ describe("MCP tool handlers", () => {
         fetchSpy.mockRestore();
       }
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Tool-registration shape (bead bpv): every MCP tool is declared with
+// `registerTool(name, config, cb)`, not the SDK-deprecated `.tool(...)`
+// form. Source-text assertions, following the precedent in
+// tests/settings-page.test.ts — the registrations live inside the
+// unexported `main()`, so there is no importable surface to assert on.
+// Each registration is parsed by slicing the source from one
+// `registerTool(` to the next, so an assertion about one tool cannot be
+// satisfied by another tool's text.
+
+describe("tool registration uses registerTool, not the deprecated .tool(", () => {
+  const srcDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+  const read = (f: string) => readFileSync(join(srcDir, f), "utf8");
+
+  /** The seven read-only tools: readOnlyHint: true, nothing else added. */
+  const READ_ONLY_TOOLS = [
+    "qwen_poll",
+    "qwen_backends",
+    "qwen_sessions",
+    "qwen_extensions",
+    "qwen_tokenize",
+    "qwen_embed",
+    "qwen_rerank",
+  ];
+
+  /** The tools that carried annotations before the migration; each one's
+   *  annotation object must survive the move into `config.annotations`
+   *  verbatim. */
+  const PRE_ANNOTATED: Record<string, string> = {
+    "qwen_extension_install": "{ destructiveHint: false, idempotentHint: false, openWorldHint: true, readOnlyHint: false }",
+    "qwen_extension_remove": "{ destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false }",
+    "qwen_extension_enable": "{ destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false }",
+    "qwen_extension_disable": "{ destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false }",
+    "qwen_extension_update": "{ destructiveHint: true, idempotentHint: false, openWorldHint: true, readOnlyHint: false }",
+  };
+
+  /** The tools that get no annotations at all. */
+  const UNANNOTATED_TOOLS = [
+    "qwen_spawn",
+    "qwen_send",
+    "qwen_stop",
+    "qwen_oneshot",
+    "qwen_dispatch",
+    "qwen_oneshot_vision",
+    "qwen_chat",
+    "qwen_reload_extensions",
+  ];
+
+  /** Slice the source from one `mcpServer.registerTool(` to the next. */
+  function registrations(src: string): string[] {
+    const starts: number[] = [];
+    const re = /mcpServer\.registerTool\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) starts.push(m.index);
+    return starts.map((s, i) => src.slice(s, starts[i + 1] ?? src.length));
+  }
+
+  /** The registration block for `name`, and only that block. */
+  function registrationFor(src: string, name: string): string {
+    const found = registrations(src).filter((b) => b.includes(`"${name}"`));
+    expect(found, `expected exactly one registerTool call for ${name}`).toHaveLength(1);
+    return found[0]!;
+  }
+
+  it("no source file still calls the deprecated .tool(", () => {
+    for (const f of ["server.ts", "settings-page.ts"]) {
+      expect(read(f), f).not.toContain(".tool(");
+    }
+  });
+
+  it("registers all 21 tools via registerTool", () => {
+    expect(read("server.ts").match(/registerTool\(/g) ?? []).toHaveLength(20);
+    expect(read("settings-page.ts").match(/registerTool\(/g) ?? []).toHaveLength(1);
+    expect(registrations(read("server.ts"))).toHaveLength(20);
+    expect(registrations(read("settings-page.ts"))).toHaveLength(1);
+  });
+
+  it("marks exactly the seven read-only tools with readOnlyHint: true", () => {
+    const server = read("server.ts");
+    for (const name of READ_ONLY_TOOLS) {
+      const block = registrationFor(server, name);
+      expect(block, name).toContain("annotations: { readOnlyHint: true }");
+    }
+  });
+
+  it("leaves every other tool without a readOnlyHint", () => {
+    const server = read("server.ts");
+    for (const name of [...UNANNOTATED_TOOLS, ...Object.keys(PRE_ANNOTATED)]) {
+      if (READ_ONLY_TOOLS.includes(name)) continue;
+      const block = registrationFor(server, name);
+      expect(block, name).not.toContain("readOnlyHint: true");
+    }
+    for (const name of UNANNOTATED_TOOLS) {
+      expect(registrationFor(server, name), name).not.toContain("annotations:");
+    }
+  });
+
+  it("keeps the pre-existing annotation object on the six annotated tools", () => {
+    const server = read("server.ts");
+    for (const [name, object] of Object.entries(PRE_ANNOTATED)) {
+      expect(registrationFor(server, name), name).toContain(`annotations: ${object}`);
+    }
+    // qwen_settings (registered from settings-page.ts) keeps its own object.
+    expect(registrationFor(read("settings-page.ts"), "qwen_settings")).toContain(
+      "annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }",
+    );
   });
 });
