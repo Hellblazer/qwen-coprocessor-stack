@@ -14,6 +14,18 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-12
+
+Makes one-shot dispatch dependable with models that narrate before they act. A dispatched
+run that ends without changing its worktree now gets one follow-up and is reported as an
+error if it is still empty, where before it came back `completed`; every dispatch carries a
+standing one-shot preamble; and `qwen_dispatch` sends progress notifications while it runs.
+Also: an optional build-identity check in the backend health probe, a settings-page warning
+for the providers-set-but-dispatch-off trap, all tools registered through `registerTool()`
+with read-only annotations, and CI that no longer re-tests a tree its pull request gated.
+Most of this release was written by `qwen_dispatch` runs on DeepSeek V4.1 Flash and reviewed
+before merge.
+
 ### Added
 
 - Backend field `expected_build` (bead 55q). The health probe only checked liveness, so a
@@ -27,9 +39,16 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   behavior is unchanged. `qwen_backends` shows the configured value when set.
   `config/coprocessor-pool-coder-mac.example.json` sets it on `coder-box`.
 - `qwen_dispatch` now sends MCP progress notifications while a run is in flight (bead ht9).
+- The session settings page warns when providers are set but dispatch is off for the
+  session, and ticking a provider while Dispatch is still on "use the launch environment"
+  switches it to "on". An explicit "on" or "off" is never overridden (bead 9jui).
+- `readOnlyHint` annotations on `qwen_poll`, `qwen_backends`, `qwen_sessions`,
+  `qwen_extensions`, `qwen_tokenize`, `qwen_embed` and `qwen_rerank` (bead bpv).
 
 ### Changed
 
+- All 21 MCP tools are registered with `registerTool()` in place of the deprecated
+  `.tool()` form. Names, descriptions, input schemas and behaviour are unchanged (bead bpv).
 - CI no longer runs on pushes to main: pull requests are the gate, and the merge
   push re-tested the same tree. The suite can still be run by hand with
   `workflow_dispatch`, and superseded runs on the same ref are cancelled.
@@ -39,6 +58,11 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   worktree is still unchanged afterwards and the agent did not reply with the `NO_CHANGES_NEEDED`
   sentinel the outcome is `error`. Every dispatched prompt now carries a standing one-shot preamble
   telling the agent nobody can answer questions and not to end its turn on an announcement.
+
+### Fixed
+
+- `config/coprocessor-pool-openrouter.example.json`: both DeepSeek entries declared a
+  200,000-token context; the models have 1,048,576 (bead 9jui).
 
 ## [0.13.0] - 2026-10-12
 
