@@ -14,9 +14,11 @@ import {
   makeClaudeCliDispatch,
   makeQwenSpawnDispatch,
   refusedWithoutPatch,
+  DISPATCH_NO_CHANGE_NUDGE,
 } from "../src/dispatch.js";
 import { patchArtifact } from "../src/types.js";
 import type { AgentProvider, AgentTask, Artifact, RunContext } from "../src/types.js";
+import type { QwenPollSnapshot } from "../src/dispatch.js";
 
 /** A harvest stub returning a single patch artifact with the given diff (the
  *  P1 git-diff harvester's output shape). */
@@ -480,5 +482,247 @@ describe("makeQwenSpawnDispatch", () => {
     }, OPTS);
     await expect(dispatch(TASK, endpointProvider)).rejects.toThrow(/model-endpoint/);
     expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+// ── bead q5mj: the no-change nudge + honest empty-run classification ───────
+
+describe("makeQwenSpawnDispatch — no-change nudge (q5mj)", () => {
+  /** Effects with BOTH new hooks wired (the nudge arms only then), plus the
+   *  deterministic clock the other dispatcher tests use. */
+  function nudgeEffects(over: {
+    poll: (taskId: string) => Promise<QwenPollSnapshot>;
+    worktreeChanged: () => Promise<boolean>;
+    send: (taskId: string, message: string) => Promise<boolean>;
+    harvest?: ReturnType<typeof patchHarvest>;
+  }) {
+    return {
+      spawn: async () => "t-nudge",
+      poll: over.poll,
+      harvest: over.harvest ?? patchHarvest("diff"),
+      sleep: async () => {},
+      now: () => 0,
+      worktreeChanged: over.worktreeChanged,
+      send: over.send,
+    };
+  }
+
+  it("unchanged on the first terminal → one nudge with the exact text; changed after → completed (1)", async () => {
+    const send = vi.fn().mockResolvedValue(true);
+    // trigger call (unchanged) → nudge; classification call (changed) → completed.
+    const worktreeChanged = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const poll = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 1, lastMessage: "I will now fix the bug." })
+      .mockResolvedValueOnce({ state: "running", turnsUsed: 1 })
+      .mockResolvedValueOnce({ state: "complete", turnsUsed: 1, cost: 0 });
+    const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send }), OPTS);
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("t-nudge", DISPATCH_NO_CHANGE_NUDGE);
+    expect(poll).toHaveBeenCalledTimes(3); // resumed after the nudge
+    expect(worktreeChanged).toHaveBeenCalledTimes(2);
+    expect(r.outcome).toBe("completed");
+  });
+
+  it("unchanged both before and after the nudge → error, exactly one nudge (2)", async () => {
+    const send = vi.fn().mockResolvedValue(true);
+    const worktreeChanged = vi.fn().mockResolvedValue(false);
+    const poll = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 1, lastMessage: "here is my plan" })
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 2 });
+    const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send }), OPTS);
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(r.outcome).toBe("error");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(poll).toHaveBeenCalledTimes(2);
+  });
+
+  it("a NO_CHANGES_NEEDED reply (also with leading whitespace) suppresses the nudge → completed (3)", async () => {
+    for (const lastMessage of [
+      "NO_CHANGES_NEEDED — the fix already landed on the base commit.",
+      "  \n\t NO_CHANGES_NEEDED: nothing to change.",
+    ]) {
+      const send = vi.fn();
+      const worktreeChanged = vi.fn().mockResolvedValue(false);
+      const poll = vi.fn().mockResolvedValue({ state: "idle", turnsUsed: 3, lastMessage });
+      const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send }), OPTS);
+
+      const r = await dispatch(TASK, qwenProvider);
+
+      expect(r.outcome).toBe("completed");
+      expect(send).not.toHaveBeenCalled();
+      expect(poll).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("a worktree changed on the first terminal state is not nudged (today's behaviour) (4)", async () => {
+    const send = vi.fn();
+    const worktreeChanged = vi.fn().mockResolvedValue(true);
+    const poll = vi.fn().mockResolvedValue({ state: "idle", turnsUsed: 1, cost: 0 });
+    const harvest = patchHarvest("qwen-diff");
+    const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send, harvest }), OPTS);
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(r).toEqual({
+      artifacts: [{ kind: "patch", diff: "qwen-diff", base: BASE }],
+      turns: 1,
+      outcome: "completed",
+      cost: 0,
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(poll).toHaveBeenCalledTimes(1);
+  });
+
+  it("a send that resolves false, and one that throws, are never retried and fall through (5)", async () => {
+    for (const send of [
+      vi.fn().mockResolvedValue(false),
+      vi.fn().mockRejectedValue(new Error("send refused")),
+    ]) {
+      const worktreeChanged = vi.fn().mockResolvedValue(false);
+      const poll = vi.fn().mockResolvedValue({ state: "idle", turnsUsed: 1, lastMessage: "a plan" });
+      const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send }), OPTS);
+
+      const r = await dispatch(TASK, qwenProvider);
+
+      expect(r.outcome).toBe("error");
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(poll).toHaveBeenCalledTimes(1); // no retry, no resumed polling
+    }
+  });
+
+  it("noChangeNudges:0 disables nudging but still classifies an unchanged run as error (6)", async () => {
+    const send = vi.fn();
+    const worktreeChanged = vi.fn().mockResolvedValue(false);
+    const poll = vi.fn().mockResolvedValue({ state: "idle", turnsUsed: 1, lastMessage: "a plan" });
+    const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send }), {
+      ...OPTS,
+      noChangeNudges: 0,
+    });
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(r.outcome).toBe("error");
+    expect(send).not.toHaveBeenCalled();
+    expect(poll).toHaveBeenCalledTimes(1);
+  });
+
+  it("effects without worktreeChanged/send keep today's behaviour (7)", async () => {
+    const poll = vi.fn().mockResolvedValue({ state: "idle", turnsUsed: 4, cost: 0 });
+    const harvest = patchHarvest("p");
+    const dispatch = makeQwenSpawnDispatch(
+      { spawn: async () => "t", poll, harvest, sleep: async () => {}, now: () => 0 },
+      OPTS,
+    );
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(r).toEqual({
+      artifacts: [{ kind: "patch", diff: "p", base: BASE }],
+      turns: 4,
+      outcome: "completed",
+      cost: 0,
+    });
+  });
+
+  it("a timeout run is never nudged and keeps outcome timeout (8)", async () => {
+    const send = vi.fn();
+    const worktreeChanged = vi.fn();
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValue(TASK.timeout + 1);
+    const dispatch = makeQwenSpawnDispatch(
+      {
+        spawn: async () => "t",
+        poll: async () => ({ state: "running" }),
+        harvest: patchHarvest("partial"),
+        sleep: async () => {},
+        now,
+        worktreeChanged,
+        send,
+      },
+      OPTS,
+    );
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(r.outcome).toBe("timeout");
+    expect(send).not.toHaveBeenCalled();
+    expect(worktreeChanged).not.toHaveBeenCalled();
+  });
+
+  it("a state:error run is never nudged and keeps outcome error (8)", async () => {
+    const send = vi.fn();
+    const worktreeChanged = vi.fn();
+    const dispatch = makeQwenSpawnDispatch(
+      {
+        spawn: async () => "t",
+        poll: async () => ({ state: "error", turnsUsed: 2 }),
+        harvest: patchHarvest(""),
+        sleep: async () => {},
+        now: () => 0,
+        worktreeChanged,
+        send,
+      },
+      OPTS,
+    );
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(r.outcome).toBe("error");
+    expect(send).not.toHaveBeenCalled();
+    expect(worktreeChanged).not.toHaveBeenCalled();
+  });
+
+  it("stale-terminal guard: same-turns terminal does not end the run, a higher turnsUsed does (9)", async () => {
+    const send = vi.fn().mockResolvedValue(true);
+    const worktreeChanged = vi.fn().mockResolvedValue(false);
+    const poll = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 5, lastMessage: "I will do it" }) // first terminal → nudge
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 5 }) // stale: same turns, no non-terminal seen
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 6 }); // moved past the nudge
+    const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send }), OPTS);
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    expect(poll).toHaveBeenCalledTimes(3); // the stale snapshot did NOT end the run
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(r.outcome).toBe("error"); // unchanged before and after
+  });
+
+  it("gives up after the stale cap when the session never moves past the nudge", async () => {
+    const send = vi.fn().mockResolvedValue(true);
+    const worktreeChanged = vi.fn().mockResolvedValue(false);
+    const poll = vi.fn().mockResolvedValue({ state: "idle", turnsUsed: 1, lastMessage: "a plan" });
+    const dispatch = makeQwenSpawnDispatch(nudgeEffects({ poll, worktreeChanged, send }), OPTS);
+
+    const r = await dispatch(TASK, qwenProvider);
+
+    // 1 first terminal + 30 stale terminal polls, then fall through.
+    expect(poll).toHaveBeenCalledTimes(31);
+    expect(r.outcome).toBe("error");
+  });
+
+  it("emits the nudge progress notification", async () => {
+    const events: Array<{ progress: number; message?: string }> = [];
+    const send = vi.fn().mockResolvedValue(true);
+    const worktreeChanged = vi.fn().mockResolvedValue(false);
+    const poll = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 1, lastMessage: "a plan" })
+      .mockResolvedValueOnce({ state: "idle", turnsUsed: 2 });
+    const dispatch = makeQwenSpawnDispatch(
+      { ...nudgeEffects({ poll, worktreeChanged, send }), progress: (e) => events.push(e) },
+      OPTS,
+    );
+
+    await dispatch(TASK, qwenProvider);
+
+    expect(events.map((e) => e.message)).toContain("no changes yet: nudging the agent once");
   });
 });

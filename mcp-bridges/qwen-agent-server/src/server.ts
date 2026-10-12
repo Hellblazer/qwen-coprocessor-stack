@@ -52,7 +52,7 @@ import {
   runQwenDispatch,
   selectHarvester,
 } from "./dispatch-tool.js";
-import { callerSuppliedWorktree, executorManagedWorktree } from "./worktree.js";
+import { callerSuppliedWorktree, executorManagedWorktree, worktreeDiffersFromBase, worktreePath } from "./worktree.js";
 import { QwenSession } from "./session.js";
 import {
   createPool,
@@ -1841,7 +1841,7 @@ async function main(): Promise<void> {
   mcpServer.registerTool(
     "qwen_dispatch",
     {
-      description: "Agentic dispatch (RDR-008/009/010): OPT-IN PER SESSION — the supervisor must have been started with QWEN_DISPATCH_ENABLE=1, or the user must have enabled it on this session's settings page (tool qwen_settings, skill /qwen-stack:dispatch), or this returns error code dispatch_not_enabled. Run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up).",
+      description: "Agentic dispatch (RDR-008/009/010): OPT-IN PER SESSION — the supervisor must have been started with QWEN_DISPATCH_ENABLE=1, or the user must have enabled it on this session's settings page (tool qwen_settings, skill /qwen-stack:dispatch), or this returns error code dispatch_not_enabled. Run a one-shot agentic task on a local-Qwen agent, return {artifacts: Artifact[], turns, outcome, cost} (artifacts kinds: patch|value|entity|tier). base_commit is required. Select `harvest` (default 'patch'): 'patch' = the source git-diff (coding runs; the git-diff harvester diffs base_commit, never HEAD, source-only); 'value' = the leaf's structured finalMessage as one {kind:'value'} (non-code leaves, e.g. a planner returning JSON); 'both' = git-diff + value. Resolves a dispatcher by the agent-cli provider's agentKind. Supply exactly ONE worktree spec: `worktree` (caller-supplied path; caller owns lifecycle) OR `repo` (owner/name; the executor materializes a per-instance worktree at base_commit and cleans it up). A write-authorised run that ends without changing the worktree gets one follow-up message; if it is still unchanged and did not reply NO_CHANGES_NEEDED the outcome is 'error'.",
       inputSchema: qwenDispatchInputShape,
     },
     async (args, extra) => {
@@ -1859,6 +1859,13 @@ async function main(): Promise<void> {
       // RDR-010 P2: select the harvester from the `harvest` input (default
       // "patch" — coding runs unchanged). Resolved here at the tool layer and
       // injected; AgentTask / Dispatch stay untouched.
+      //
+      // Bead q5mj: the worktree the run edits is only known when the strategy
+      // resolver below picks it (caller-supplied path, or the executor-managed
+      // per-instance path). `effectiveWorktree` is filled there; the
+      // `worktreeChanged` probe reads it lazily (the dispatcher only calls the
+      // probe after the worktree is prepared). Undefined → true, fail open.
+      let effectiveWorktree: string | undefined;
       const effects = makeSupervisorQwenSpawnEffects(
         {
           qwen_spawn: handlers.qwen_spawn,
@@ -1866,6 +1873,8 @@ async function main(): Promise<void> {
           // The dispatch removes its session on every exit path (bead qad)
           // instead of leaving it idle/running until the periodic reaper sweep.
           qwen_stop: handlers.qwen_stop,
+          // Bead q5mj: the one no-change nudge is delivered through qwen_send.
+          qwen_send: handlers.qwen_send,
         },
         gitExtractPatch,
         {
@@ -1875,6 +1884,12 @@ async function main(): Promise<void> {
           writeAuthority: args.write_authority ?? true,
           // Bead ht9: the dispatcher emits start / in-flight / end progress.
           progress,
+          // Bead q5mj: honest empty-run detection. Forwarded to the effects only
+          // for a write-authorised run (makeSupervisorQwenSpawnEffects gates it).
+          worktreeChanged: () =>
+            effectiveWorktree === undefined
+              ? Promise.resolve(true)
+              : worktreeDiffersFromBase(effectiveWorktree, args.base_commit),
         },
       );
       // Worktree strategy selection (RDR-008 dps): `repo` → executor-managed
@@ -1892,10 +1907,15 @@ async function main(): Promise<void> {
             createDefaultDispatcherRegistry({ qwenSpawn: effects, baseCommit }).resolve(provider),
           resolveWorktree: (input) => {
             if (input.repo !== undefined) {
+              // Bead q5mj: the per-instance worktree path is deterministic given
+              // the id, so record it here for the `worktreeChanged` probe before
+              // prepare() materializes it.
+              const instanceId = randomUUID();
+              effectiveWorktree = worktreePath(instanceId, wtWorkRoot);
               return executorManagedWorktree({
                 repo: input.repo,
                 baseCommit: input.base_commit,
-                instanceId: randomUUID(),
+                instanceId,
                 cacheRoot: wtCacheRoot,
                 workRoot: wtWorkRoot,
                 ...(input.repo_url !== undefined ? { repoUrl: input.repo_url } : {}),
@@ -1911,6 +1931,7 @@ async function main(): Promise<void> {
                 `qwen_dispatch requires exactly one of "worktree" or "repo"; got neither.`,
               );
             }
+            effectiveWorktree = input.worktree;
             return callerSuppliedWorktree(input.worktree);
           },
         });
