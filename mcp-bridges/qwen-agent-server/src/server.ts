@@ -34,6 +34,7 @@ import type {
   SpawnResult,
 } from "./types.js";
 import { classifyTask } from "./types.js";
+import { pinOnlyHint } from "./pin-only.js";
 import {
   chooseBackendByModality,
   chooseBackendByRole,
@@ -805,6 +806,7 @@ export function createToolHandlers(
           healthy,
           active_sessions: sessionsByBackend.get(b.id) ?? 0,
           ...(b.modality !== undefined ? { modality: b.modality } : {}),
+          ...(b.pin_only !== undefined ? { pin_only: b.pin_only } : {}),
         };
         return info;
       }),
@@ -1063,7 +1065,8 @@ export function createToolHandlers(
           code: "backend_error",
           message: opts?.backend
             ? `no backend matches pin "${opts.backend}"`
-            : "no multimodal backends configured (need modality:'multimodal')",
+            : "no multimodal backends configured (need modality:'multimodal')" +
+              pinOnlyHint(pool.backends, "opts.backend", ["multimodal"]),
         },
       };
     }
@@ -1206,7 +1209,8 @@ export function createToolHandlers(
             ? `no backend matches pin "${opts.backend}"`
             : opts?.role
               ? `no healthy backend advertises role "${opts.role}"`
-              : "no healthy text/multimodal backend available",
+              : "no healthy text/multimodal backend available" +
+                pinOnlyHint(pool.backends, "opts.backend or opts.role"),
         },
       };
     }
@@ -1258,7 +1262,8 @@ export function createToolHandlers(
           code: "backend_error",
           message: opts?.backend
             ? `no backend matches pin "${opts.backend}"`
-            : "no backend declared with modality='embedding'",
+            : "no backend declared with modality='embedding'" +
+              pinOnlyHint(pool.backends, "opts.backend", ["embedding"]),
         },
       };
     }
@@ -1318,7 +1323,8 @@ export function createToolHandlers(
           code: "backend_error",
           message: opts?.backend
             ? `no backend matches pin "${opts.backend}"`
-            : "no backend declared with modality='rerank'",
+            : "no backend declared with modality='rerank'" +
+              pinOnlyHint(pool.backends, "opts.backend", ["rerank"]),
         },
       };
     }
@@ -1374,7 +1380,8 @@ export function createToolHandlers(
           code: "backend_error",
           message: opts?.backend
             ? `no backend matches pin "${opts.backend}"`
-            : "no healthy text/multimodal backend with /tokenize available",
+            : "no healthy text/multimodal backend with /tokenize available" +
+              pinOnlyHint(pool.backends.filter((b) => b.no_tokenize !== true), "opts.backend"),
         },
       };
     }

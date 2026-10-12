@@ -16,6 +16,18 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
 
 ### Added
 
+- Backend field `pin_only` (bead 9jui). A `pin_only: true` backend is never chosen by
+  automatic selection: not by `qwen_spawn`/`qwen_oneshot` without `opts.backend`, not by
+  `qwen_chat` without a backend or role, not by embed/rerank/tokenize, and not by a
+  dispatch provider without a `backend` pin. It is chosen by `opts.backend`, a provider
+  that pins it (settings page included), or an explicit `opts.role` its `roles` contains.
+  A weight of 0 cannot do this (it is clamped to 1). The no-backend errors now name the
+  pin-only backends and how to select one; `qwen_backends` and the settings page show the
+  flag. A non-boolean `pin_only` skips that backend at load with a `config_invalid`
+  warning. `config/coprocessor-pool-openrouter.example.json` adds `deepseek-pro-openrouter`
+  and `deepseek-flash-openrouter` (both `pin_only`, role `deepseek`); docs: "Using a paid
+  remote model deliberately" in `docs/USER_GUIDE.md`.
+
 - A per-session settings page for `qwen_dispatch` (bead 9sm2). The new read-only MCP tool
   `qwen_settings` returns `{url, state}`; the URL is a loopback HTTP page (127.0.0.1, OS-assigned
   port, random token per supervisor start, Host/Origin checks, CSP) where a person turns dispatch
@@ -43,6 +55,11 @@ the **Claude Code plugin** at `.claude-plugin/plugin.json`.
   is refused while the first runs (flock on `.<dest>.fetch.lock` beside the directory,
   released when the process exits). It also re-reads the manifest just before writing
   its entry, so an entry recorded by another command during a long download is kept.
+
+### Changed
+
+- A pool that sets `pin_only` on `glm-openrouter` (as the OpenRouter example now does)
+  stops routing unpinned work to it. Pools that do not set the flag route as before.
 
 ### Fixed
 

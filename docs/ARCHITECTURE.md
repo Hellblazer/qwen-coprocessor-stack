@@ -217,8 +217,11 @@ flowchart TB
   weighting rather than starving the pool.
 - **Control flags** carve a backend out of one path each: `vision_only` (kept out
   of the text pool), `no_agentic` (out of `qwen_spawn`/`qwen_oneshot`),
-  `no_tokenize`, `no_schema`. A caller can also route by **`roles`** (a soft hint,
-  `chooseBackendByRole`) or pin an id outright with `opts.backend`.
+  `no_tokenize`, `no_schema`, and `pin_only` (out of every automatic selection;
+  chosen only by `opts.backend`, a provider pin, or an explicit role it
+  advertises). A caller can also route by **`roles`** (a soft hint,
+  `chooseBackendByRole`; the one selector that may return a `pin_only` backend) or
+  pin an id outright with `opts.backend`.
 - **Remote authed backends** ([RDR-012](rdr/RDR-012-agentic-path-remote-credentials.md))
   carry `api_key`/`api_key_env` and `headers`. Credentials reach both the direct
   and agentic paths; `headers` reach only the direct-HTTP tools (the agentic SDK

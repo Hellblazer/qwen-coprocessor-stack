@@ -77,6 +77,8 @@ export interface SettingsBackendRow {
   roles: string[];
   modality: string;
   suitable: boolean;
+  /** The backend is `pin_only`: never chosen automatically, only when named. */
+  pinOnly?: boolean;
 }
 
 export interface SettingsProviderRow {
@@ -545,6 +547,7 @@ export async function toSettingsBackendRows(
       roles: b.roles ?? [],
       modality: b.modality ?? "text",
       suitable: (b.modality === undefined || b.modality === "text") && b.vision_only !== true,
+      pinOnly: b.pin_only === true,
     })),
   );
 }
@@ -668,7 +671,7 @@ function renderPage(nonce: string): string {
     body.appendChild(head);
     s.backends.forEach(function (b) {
       var tr = el("tr");
-      tr.appendChild(el("td", b.id));
+      tr.appendChild(el("td", b.id + (b.pinOnly ? " (pin only)" : "")));
       var td = el("td"); td.appendChild(healthCell(b.healthy)); tr.appendChild(td);
       tr.appendChild(el("td", b.tier));
       tr.appendChild(el("td", b.capacity));
@@ -707,7 +710,7 @@ function renderPage(nonce: string): string {
       cb.type = "checkbox"; cb.value = b.id; cb.checked = !!chosen[b.id]; cb.className = "provider";
       label.appendChild(cb);
       label.appendChild(document.createTextNode(" " + b.id + " "));
-      label.appendChild(el("span", "(" + b.tier + ", " + b.capacity + ")", "muted"));
+      label.appendChild(el("span", "(" + b.tier + ", " + b.capacity + (b.pinOnly ? ", pin only" : "") + ")", "muted"));
       box.appendChild(label);
     });
     var names = s.providers.map(function (p) { return p.id + (p.backend ? " -> " + p.backend : " (unpinned)"); });

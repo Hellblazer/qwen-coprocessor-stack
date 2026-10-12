@@ -150,7 +150,27 @@ export function readConfig(): ConfigFileShape | null {
 function readConfigBackends(): Backend[] | null {
   const cfg = readConfig();
   if (!cfg || !Array.isArray(cfg.backends) || cfg.backends.length === 0) return null;
-  return cfg.backends;
+  const valid = dropInvalidPinOnly(cfg.backends, "config");
+  return valid.length > 0 ? valid : null;
+}
+
+/**
+ * Drop backends whose `pin_only` is present but not a boolean (bead 9jui). A
+ * cost-control flag must fail closed: `"true"` read as "not true" would put a
+ * paid backend back in the rotation, so the entry is skipped (and logged)
+ * instead, which also makes the typo visible in `qwen_backends`. Other backend
+ * fields are not validated here.
+ */
+function dropInvalidPinOnly(backends: Backend[], source: "env" | "config"): Backend[] {
+  return backends.filter((b) => {
+    const v = (b as { pin_only?: unknown }).pin_only;
+    if (v === undefined || typeof v === "boolean") return true;
+    log.warn(
+      { event_type: "config_invalid", source, backend_id: b.id, field: "pin_only" },
+      "backend skipped: pin_only must be a boolean",
+    );
+    return false;
+  });
 }
 
 /**
@@ -294,7 +314,8 @@ export function loadBackends(): Backend[] {
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed as Backend[];
+        const valid = dropInvalidPinOnly(parsed as Backend[], "env");
+        if (valid.length > 0) return valid;
       }
     } catch {
       log.warn(
@@ -730,6 +751,9 @@ export async function chooseBackend(
     // serves qwen_spawn/qwen_oneshot). They crash on the qwen-code agentic
     // request shape but serve direct qwen_chat / tokenize fine. See bead 081.
     if (b.no_agentic === true) return false;
+    // pin_only backends are reached by an explicit opts.backend pin (handled
+    // above) and never by automatic selection. See Backend.pin_only.
+    if (b.pin_only === true) return false;
     return m === "text" || m === "multimodal";
   });
   if (chatPool.length === 0) return null;
@@ -796,7 +820,8 @@ export async function chooseBackendByModality(
   // RR). `kind` is the caller-supplied `taskKind` when given (e.g. schemaSynth
   // from qwen_chat), else derived from the wanted modality (embed/rerank/chat).
   const byId = indexById(pool);
-  const candidates = pool.filter((b) => (b.modality ?? "text") === wanted);
+  // pin_only backends are skipped here: only a pin (above) reaches them.
+  const candidates = pool.filter((b) => (b.modality ?? "text") === wanted && b.pin_only !== true);
   const kind = taskKind ?? classifyTask({ modality: wanted });
 
   return select(candidates.map(backendToAgentProvider), kind, `modality:${wanted}`, healthy_lookup, byId);
@@ -812,6 +837,11 @@ export async function chooseBackendByModality(
  *
  * `pinned_id` short-circuits to that backend verbatim (caller authority
  * over the role hint), mirroring chooseBackendByModality.
+ *
+ * An explicit role IS a request for a class of backend, so a `pin_only`
+ * backend whose `roles` contains `wanted` is eligible here (and only here, bar
+ * an id pin). Tag pin_only backends with a role of their own, not one shared
+ * with the pooled backends, or role routing will rotate through them too.
  *
  * This is a soft routing hint, NOT a capability gate: it does not check
  * modality. A caller asking for role "general" gets whatever backend the

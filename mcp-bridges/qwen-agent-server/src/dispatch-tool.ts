@@ -576,7 +576,7 @@ export function makeSupervisorQwenSpawnEffects(
         warnedUnpinned.add(provider.id);
         log.warn(
           { event_type: "dispatch_backend_unpinned", provider_id: provider.id },
-          "agent provider declares no backend; dispatch spawns round-robin across every healthy text backend",
+          "agent provider declares no backend; dispatch spawns round-robin across every healthy text backend (pin_only backends excluded)",
         );
       }
       const r = await handlers.qwen_spawn({ task: task.prompt, opts: spawnOpts });

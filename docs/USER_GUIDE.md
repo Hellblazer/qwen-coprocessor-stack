@@ -212,7 +212,8 @@ worth knowing:
   `qwen_oneshot_vision`), `no_agentic` (excluded from `qwen_spawn`/`qwen_oneshot`;
   use for endpoints that choke on the agentic request shape), `no_tokenize`
   (excluded from unpinned `qwen_tokenize`), `no_schema` (excluded from
-  schema-bounded oneshots).
+  schema-bounded oneshots), and `pin_only` (never chosen automatically; reached
+  only when named — see [Using a paid remote model deliberately](#recipe-using-a-paid-remote-model-deliberately)).
 
 ### Remote, authed backends (RDR-012)
 
@@ -250,6 +251,54 @@ Two things to know:
   prompt-size capacity heuristic isn't meaningful for a remote heavy endpoint —
   pin it with `opts.backend` or route by `role` rather than leaning on
   auto-capacity.
+
+---
+
+## Recipe: using a paid remote model deliberately
+
+A text backend with `tier: remote` and `capacity: heavy` joins the weighted
+rotation for unpinned heavy work, alongside your local coder. A `weight` of 0 does
+not opt out; it is clamped to 1. To keep a paid backend out of the rotation, set
+`pin_only: true` on it:
+
+```jsonc
+{ "id": "deepseek-pro-openrouter", "url": "https://openrouter.ai/api/v1",
+  "model": "deepseek/deepseek-v4-pro-0813", "tier": "remote", "capacity": "heavy",
+  "modality": "text", "roles": ["deepseek"], "api_key_env": "OPENROUTER_API_KEY",
+  "pin_only": true }
+```
+
+A `pin_only` backend is never picked by automatic selection: not by `qwen_spawn` /
+`qwen_oneshot` without `opts.backend`, not by `qwen_chat` without a backend or role,
+not by embed, rerank or tokenize, and not by a dispatch provider that has no
+`backend`. If nothing else is healthy the call fails with the usual "no backend
+available" error, which names the pin-only backends and how to select one; it never
+falls back to one. `qwen_backends` and the settings page still list it and show
+`pin_only`, and health probing still covers it. The flag must be a boolean; a
+backend with `"pin_only": "true"` is skipped at load with a `config_invalid`
+warning, so a typo cannot put a paid backend back in the rotation.
+
+You reach it in three ways:
+
+- **Pin it.** `opts.backend: "deepseek-pro-openrouter"` on `qwen_spawn`,
+  `qwen_oneshot`, `qwen_chat` or any direct-HTTP tool. A pin bypasses every
+  filter, health included.
+- **Route by role.** `qwen_chat` with `opts.role: "deepseek"` picks a healthy
+  backend whose `roles` contains it, `pin_only` or not. Asking for a role is asking
+  for that class of backend, so this is allowed. The role has to come from the
+  caller: a call with no role takes the ordinary path and skips `pin_only`
+  backends. Give a `pin_only` backend a role no pooled backend shares (here
+  `deepseek`, not `code`), or role routing will rotate through both. Two
+  backends that share a role rotate between them; pin by id to choose one.
+  `qwen_spawn` and `qwen_oneshot` take no role.
+- **Make it a dispatch provider.** Pin the provider's `backend` in
+  `QWEN_AGENT_PROVIDERS`, or tick the backend on the settings page (see below;
+  it is listed as "pin only" and stays selectable). Ticking it is the opt-in for
+  that session.
+
+The DeepSeek and GLM entries in
+[`config/coprocessor-pool-openrouter.example.json`](../config/coprocessor-pool-openrouter.example.json)
+are `pin_only`. They are reasoning models, so give them generous `max_tokens`.
 
 ---
 
@@ -528,8 +577,8 @@ page in your browser. There you can:
 
 - turn `qwen_dispatch` on or off for this session, or leave it to the launch
   environment;
-- tick the backends dispatch may run on. Each ticked text backend becomes a
-  provider pinned to that backend (`{id: <backend>, agentKind: "qwen-local",
+- tick the backends dispatch may run on (`pin_only` backends are labelled and
+  selectable here). Each ticked text backend becomes a provider pinned to that backend (`{id: <backend>, agentKind: "qwen-local",
   backend: <backend>}`); with none ticked the providers come from
   `QWEN_AGENT_PROVIDERS` or `config.json` as before;
 - choose the session's default extension loadout from the installed list, or

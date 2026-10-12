@@ -13,6 +13,7 @@ import { createLogger } from "./log.js";
 import type { Backend, SpawnOpts } from "./types.js";
 import { QwenSession } from "./session.js";
 import { chooseBackend, getSessionBudgetDefaults, loadBackends } from "./backends.js";
+import { pinOnlyHint } from "./pin-only.js";
 import type { ResolveExtensionsResult } from "./extensions.js";
 
 const log = createLogger("qwen-pool");
@@ -225,7 +226,11 @@ export async function spawnSession(
 
   const backend = await chooseBackend(pool.backends, spawnOpts, task);
   if (!backend) {
-    throw new Error("no backend available");
+    // An unpinned call that failed only because the remaining candidates are
+    // pin_only gets told how to select one (bead 9jui).
+    throw new Error(
+      "no backend available" + (spawnOpts.backend ? "" : pinOnlyHint(pool.backends, "opts.backend")),
+    );
   }
 
   // RDR-012 Item2: surface (once per backend) that any declared custom headers

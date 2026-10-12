@@ -1,8 +1,8 @@
 {
-  "_comment": "OpenRouter / remote-provider example pool (RDR-012). Shows how to add authenticated remote OpenAI-compatible backends alongside the local fleet. Credentials resolve from env at request time via api_key_env (preferred over a literal api_key — keeps secrets out of any tree the supervisor reads). Set OPENROUTER_API_KEY / TOGETHER_API_KEY in the supervisor's environment. NOTE (RDR-012): the `headers` field (OpenRouter HTTP-Referer/X-Title attribution) is honored on the DIRECT-HTTP tools (qwen_chat / qwen_oneshot_vision / qwen_embed / qwen_rerank / qwen_tokenize) but NOT on the agentic path (qwen_spawn / qwen_oneshot) — the @qwen-code SDK has no header channel. OpenRouter works without them; only dashboard attribution is affected. Remote agentic backends bypass the prompt-size capacity heuristic by design: pin them via opts.backend or route by role, don't expect the size heuristic to pick them.",
+  "_comment": "OpenRouter / remote-provider example pool (RDR-012). Shows how to add authenticated remote OpenAI-compatible backends alongside the local fleet. Credentials resolve from env at request time via api_key_env (preferred over a literal api_key — keeps secrets out of any tree the supervisor reads). Set OPENROUTER_API_KEY / TOGETHER_API_KEY in the supervisor's environment. NOTE (RDR-012): the `headers` field (OpenRouter HTTP-Referer/X-Title attribution) is honored on the DIRECT-HTTP tools (qwen_chat / qwen_oneshot_vision / qwen_embed / qwen_rerank / qwen_tokenize) but NOT on the agentic path (qwen_spawn / qwen_oneshot) — the @qwen-code SDK has no header channel. OpenRouter works without them; only dashboard attribution is affected. Remote agentic backends bypass the prompt-size capacity heuristic by design: pin them via opts.backend or route by role, don't expect the size heuristic to pick them. POOLING: a text backend with tier=remote/capacity=heavy joins the weighted rotation for UNPINNED heavy work, and a weight of 0 is clamped to 1, so it cannot opt out. Set `pin_only: true` on a paid backend to keep it out of automatic selection: it is then chosen only by opts.backend, by an explicit role it advertises (qwen_chat opts.role), or by a dispatch provider whose `backend` pins it. In this example every paid agentic backend (openrouter-sonnet, glm-openrouter and the two deepseek-* entries) is pin_only, each with a role of its own, so unpinned agentic work stays on coder-box.",
   "backends": [
     {
-      "_comment": "THE local coder (box, llama.cpp). Unchanged from the vision pool — agentic coding default. No auth (local llama-server). Pooled with the remote agentic backend below by tier=remote/capacity=heavy IF you want weighted round-robin across them; otherwise pin per call.",
+      "_comment": "THE local coder (box, llama.cpp). Unchanged from the vision pool — agentic coding default. No auth (local llama-server). Shares the tier=remote/capacity=heavy rotation with openrouter-sonnet below (weight 3 vs 1); the pin_only backends are not in it.",
       "id": "coder-box",
       "url": "http://qwentescence:1235/v1",
       "model": "qwen",
@@ -14,7 +14,7 @@
       "roles": ["code"]
     },
     {
-      "_comment": "Remote AGENTIC backend via OpenRouter — a frontier model for the hard tail. RDR-012 lets qwen_spawn/qwen_oneshot carry this backend's api_key. Pin via opts.backend='openrouter-sonnet' for the hard SWE-bench tail, or give it a low weight to pool it with coder-box. capacity=heavy + tier=remote so it sits in the heavy/remote pool. The headers below apply only to direct-HTTP tools (see top comment).",
+      "_comment": "Remote AGENTIC backend via OpenRouter — a frontier model for the hard tail. RDR-012 lets qwen_spawn/qwen_oneshot carry this backend's api_key. pin_only: chosen only by opts.backend='openrouter-sonnet', by qwen_chat opts.role='sonnet', or as a dispatch provider; never by automatic selection. Remove pin_only (and give it a low weight) only if you want it pooled with coder-box. The headers below apply only to direct-HTTP tools (see top comment).",
       "id": "openrouter-sonnet",
       "url": "https://openrouter.ai/api/v1",
       "model": "anthropic/claude-sonnet-4.5",
@@ -23,7 +23,8 @@
       "weight": 1,
       "ctx_size": 200000,
       "modality": "text",
-      "roles": ["reasoning", "code"],
+      "roles": ["sonnet"],
+      "pin_only": true,
       "api_key_env": "OPENROUTER_API_KEY",
       "headers": {
         "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
@@ -31,7 +32,7 @@
       }
     },
     {
-      "_comment": "GLM 5.2 via OpenRouter (z-ai/glm-5.2) — reasoning-first coding model, 1M ctx, validated 4/4 by scripts/shakeout-openrouter.py incl. clean OpenAI-shape tool-calling. Dedicated role 'glm' + explicit pin (opts.backend='glm-openrouter') so it does NOT absorb coder-box/reason-mac traffic. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). Direct-HTTP (qwen_chat) works on supervisor >=0.11.8; agentic qwen_spawn needs >=0.11.11 (RDR-012 release).",
+      "_comment": "GLM 5.2 via OpenRouter (z-ai/glm-5.2) — reasoning-first coding model, 1M ctx, validated 4/4 by scripts/shakeout-openrouter.py incl. clean OpenAI-shape tool-calling. pin_only: never chosen automatically, so it does NOT absorb coder-box/reason-mac traffic. Select it with opts.backend='glm-openrouter', role 'glm' (qwen_chat), or a dispatch provider pinned to it. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). Direct-HTTP (qwen_chat) works on supervisor >=0.11.8; agentic qwen_spawn needs >=0.11.11 (RDR-012 release).",
       "id": "glm-openrouter",
       "url": "https://openrouter.ai/api/v1",
       "model": "z-ai/glm-5.2",
@@ -41,7 +42,46 @@
       "ctx_size": 200000,
       "modality": "text",
       "roles": ["glm"],
+      "pin_only": true,
       "api_key_env": "OPENROUTER_API_KEY",
+      "headers": {
+        "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
+        "X-Title": "qwen-coprocessor-stack"
+      }
+    },
+    {
+      "_comment": "DeepSeek V4 Pro via OpenRouter (deepseek/deepseek-v4-pro-0813). pin_only: never chosen automatically; select it with opts.backend='deepseek-pro-openrouter', role 'deepseek' (qwen_chat), or a dispatch provider pinned to it. Measured 2026-10-12, agentic battery control arm (3 tasks x 3 runs) through this supervisor: 9/9 passed, median 16.8 s. Provider shakeout 4/4. OpenRouter list price per million tokens in/out: $0.66 / $1.98. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). no_tokenize: OpenRouter has no /tokenize. role 'deepseek' is shared with the other deepseek-* backend, so role routing rotates between them; pin by id to choose one.",
+      "id": "deepseek-pro-openrouter",
+      "url": "https://openrouter.ai/api/v1",
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 200000,
+      "modality": "text",
+      "roles": ["deepseek"],
+      "api_key_env": "OPENROUTER_API_KEY",
+      "no_tokenize": true,
+      "pin_only": true,
+      "headers": {
+        "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
+        "X-Title": "qwen-coprocessor-stack"
+      }
+    },
+    {
+      "_comment": "DeepSeek V4.1 Flash via OpenRouter (deepseek/deepseek-v4.1-flash). pin_only: never chosen automatically; select it with opts.backend='deepseek-flash-openrouter', role 'deepseek' (qwen_chat), or a dispatch provider pinned to it. Measured 2026-10-12, agentic battery control arm (3 tasks x 3 runs) through this supervisor: 8/9 passed, median 13.3 s (the miss exceeded a 50-line ceiling with all tests passing). Provider shakeout 4/4. OpenRouter list price per million tokens in/out: $0.15 / $0.60. REASONING MODEL: give generous max_tokens (think block precedes content; small budgets => empty content / finish=length). no_tokenize: OpenRouter has no /tokenize. role 'deepseek' is shared with the other deepseek-* backend, so role routing rotates between them; pin by id to choose one.",
+      "id": "deepseek-flash-openrouter",
+      "url": "https://openrouter.ai/api/v1",
+      "model": "deepseek/deepseek-v4.1-flash",
+      "tier": "remote",
+      "capacity": "heavy",
+      "weight": 1,
+      "ctx_size": 200000,
+      "modality": "text",
+      "roles": ["deepseek"],
+      "api_key_env": "OPENROUTER_API_KEY",
+      "no_tokenize": true,
+      "pin_only": true,
       "headers": {
         "HTTP-Referer": "https://github.com/Hellblazer/qwen-coprocessor-stack",
         "X-Title": "qwen-coprocessor-stack"

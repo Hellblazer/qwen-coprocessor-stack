@@ -1218,6 +1218,19 @@ describe("MCP tool handlers", () => {
       expect(result[0]!.modality).toBeUndefined();
     });
 
+    it("pin_only surfaces when declared on the backend, and is omitted otherwise (bead 9jui)", async () => {
+      mockLoadBackends.mockReturnValue([
+        { ...MOCK_BACKEND, id: "paid", pin_only: true },
+        { ...MOCK_BACKEND, id: "free", pin_only: false },
+        { ...MOCK_BACKEND, id: "plain" },
+      ]);
+      const localHandlers = createToolHandlers();
+      const result = await callTool(localHandlers, "qwen_backends", {}) as BackendInfo[];
+      expect(result.find((r) => r.id === "paid")!.pin_only).toBe(true);
+      expect(result.find((r) => r.id === "free")!.pin_only).toBe(false);
+      expect(result.find((r) => r.id === "plain")).not.toHaveProperty("pin_only");
+    });
+
     it("modality surfaces when declared on the backend", async () => {
       mockLoadBackends.mockReturnValue([{ ...MOCK_BACKEND, modality: "multimodal" }]);
       const localHandlers = createToolHandlers();
@@ -1847,6 +1860,26 @@ describe("MCP tool handlers", () => {
       // classifyTask({modality:"text"}) → "chat" (NOT agenticLoop, which a bare
       // {opts:{}} would yield); positive pin catches a future misclassification.
       expect(call?.[4]).toBe("chat");
+    });
+  });
+
+  describe("qwen_chat — pin_only hint in the no-backend error (bead 9jui)", () => {
+    it("names the pin-only backends and how to select one when an unpinned chat finds nothing", async () => {
+      mockLoadBackends.mockReturnValue([{ ...MOCK_BACKEND, id: "paid", pin_only: true }]);
+      mockChooseBackendByModality.mockResolvedValue(null);
+      const localHandlers = createToolHandlers();
+      const r = await callTool(localHandlers, "qwen_chat", { task: "hello" }) as { ok: boolean; error?: { code: string; message: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe("backend_error");
+      expect(r.error?.message).toMatch(/no healthy text\/multimodal backend available/);
+      expect(r.error?.message).toMatch(/pin-only backends exist \[paid\]/);
+      expect(r.error?.message).toContain("opts.backend");
+    });
+
+    it("keeps the plain message when the pool has no pin_only backend", async () => {
+      mockChooseBackendByModality.mockResolvedValue(null);
+      const r = await callTool(handlers, "qwen_chat", { task: "hello" }) as { error?: { message: string } };
+      expect(r.error?.message).toBe("no healthy text/multimodal backend available");
     });
   });
 

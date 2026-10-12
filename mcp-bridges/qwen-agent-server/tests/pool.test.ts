@@ -420,6 +420,26 @@ describe("SessionPool", () => {
     });
   });
 
+  // ── pin_only hint in the no-backend error (bead 9jui) ──────
+
+  describe("no backend available", () => {
+    it("tells an unpinned caller that pin-only backends exist and how to select one", async () => {
+      backendHolder.current = null;
+      const pool = createPool();
+      pool.backends.splice(0, pool.backends.length, { ...LOCAL_BACKEND, id: "paid", pin_only: true });
+      await expect(spawnSession(pool, "task", {})).rejects.toThrow(/^no backend available; pin-only backends exist \[paid\].*opts\.backend/);
+    });
+
+    it("keeps the plain message without pin_only backends, and for a failed explicit pin", async () => {
+      backendHolder.current = null;
+      const pool = createPool();
+      pool.backends.splice(0, pool.backends.length, { ...LOCAL_BACKEND });
+      await expect(spawnSession(pool, "task", {})).rejects.toThrow(/^no backend available$/);
+      pool.backends.splice(0, pool.backends.length, { ...LOCAL_BACKEND, id: "paid", pin_only: true });
+      await expect(spawnSession(pool, "task", { backend: "nope" })).rejects.toThrow(/^no backend available$/);
+    });
+  });
+
   // used only to suppress TS unused-var warning
   void LOCAL_BACKEND;
   void getMockCounter;

@@ -75,6 +75,22 @@ export interface Backend {
    */
   vision_only?: boolean;
   /**
+   * When true, automatic selection NEVER picks this backend (bead 9jui). It is
+   * reached only when the caller asks for it by name: `opts.backend` (any tool),
+   * a dispatch provider whose `backend` pins it, or an explicit `opts.role` that
+   * this backend's `roles` contains (`qwen_chat`; role is a request for a class
+   * of backend, so a role-routed call may select a `pin_only` backend). Every
+   * unpinned path skips it: the agentic pool (`chooseBackend`), the modality
+   * selector (`qwen_chat` without a pin or role, embed, rerank, tokenize), and a
+   * dispatch provider with no `backend`. A weight of 0 cannot do this
+   * (`roundRobin` clamps weights to >= 1), so this is the way to keep a paid
+   * remote backend out of the rotation. If no other candidate exists the
+   * unpinned call fails with the usual no-backend error, never falling back to
+   * a `pin_only` backend. Health probing and `qwen_backends` still list it.
+   * Must be a boolean; a non-boolean drops the backend at config load.
+   */
+  pin_only?: boolean;
+  /**
    * When true, exclude this backend from the AGENTIC text pool
    * (`chooseBackend`, used by `qwen_spawn` / `qwen_oneshot`) while
    * keeping it available for DIRECT dispatch (`qwen_chat` via modality
@@ -542,6 +558,8 @@ export interface BackendInfo {
    * dispatch (no `backend_no_mmproj` / `wrong_modality` at request time).
    */
   modality?: "text" | "multimodal" | "embedding" | "rerank";
+  /** Mirrors `Backend.pin_only`: present when the config declares it. */
+  pin_only?: boolean;
   /**
    * Number of sessions currently in the supervisor's pool for this
    * backend (includes `complete`/`error` sessions that have not yet
