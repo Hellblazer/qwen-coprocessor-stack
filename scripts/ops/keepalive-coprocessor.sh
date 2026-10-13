@@ -381,14 +381,36 @@ PROV="$REPO_DIR/scripts/ops/provenance/provenance.py"
 # present so the gate does not silently depend on the oldest interpreter on the box.
 PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 2>/dev/null || echo python3)
 PROVENANCE_ENFORCE=${QWEN_PROVENANCE_ENFORCE:-1}
+PROV_PY_TIMEOUT=${QWEN_PROV_PY_TIMEOUT:-20}   # per-$PYTHON wall-clock bound in prov_gate (bead b1y)
 PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_REFUSED=0
 boxlen() {  # $1 = windows path -> byte length (empty on failure)
   local b64
   b64=$(printf "(Get-Item -LiteralPath '%s' -ErrorAction SilentlyContinue).Length" "$1" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" 2>/dev/null | tr -d '\r' | grep -E '^[0-9]+$' | head -1
 }
+# Bead b1y. EVERY "$PYTHON" call in prov_gate() goes through py_bounded. On
+# 2026-09-13 the manifest read blocked forever inside open(): macOS TCC had no
+# Full Disk Access grant for Homebrew's Python.app on the external volume, so
+# there was no error and no log line, just 28 minutes of a dead server. `timeout`
+# / `gtimeout` is Homebrew coreutils and is NOT on launchd's PATH, so the bound is
+# /usr/bin/perl's alarm, which stays armed across exec (the child dies with
+# SIGALRM, shell status 142 -> 124; cause written up in CLAUDE.md's Mac/MLX TCC
+# note). stdout/stderr pass straight through, so the callers' $(...) captures and
+# 2>/tmp/prov-gate.err redirects keep working.
+py_bounded() {  # "$PYTHON" "$@" bounded by PROV_PY_TIMEOUT s; python's own status, or 124
+  local rc
+  /usr/bin/perl -e 'alarm shift; exec @ARGV; exit 127' "$PROV_PY_TIMEOUT" "$PYTHON" "$@"
+  rc=$?
+  [ "$rc" -eq 142 ] && rc=124
+  return "$rc"
+}
+# One place for the timeout reason, so prov_gate()'s six call sites cannot drift
+# apart -- and so the text names the actual cause instead of "it hung" (bead b1y).
+prov_timeout() {  # $1 = short step name; sets PROV_REASON
+  PROV_REASON="$1 timed out after ${PROV_PY_TIMEOUT}s — $PYTHON is probably blocked by macOS TCC reading $REPO_DIR (grant Full Disk Access to Homebrew's Python.app; see CLAUDE.md Mac/MLX TCC note)"
+}
 prov_gate() {  # sets PROV_MODEL_ID / PROV_RUNTIME_ID; returns 1 with PROV_REASON on refusal
-  local len rt
+  local len rt pyrc
   PROV_REASON=""
   if [ ! -f "$PROV" ]; then PROV_REASON="provenance tool missing at $PROV"; return 1; fi
   # Bootstrap: an EMPTY manifest is the not-yet-populated state (RDR-016 Approach
@@ -397,11 +419,13 @@ prov_gate() {  # sets PROV_MODEL_ID / PROV_RUNTIME_ID; returns 1 with PROV_REASO
   # Only a well-formed manifest with zero artifacts is "empty"; a missing python3,
   # a missing/unreadable file, or malformed JSON is a gate FAILURE (fail closed).
   local n
-  n=$("$PYTHON" -c 'import json,sys
+  n=$(py_bounded -c 'import json,sys
 try:
     print(len(json.load(open(sys.argv[1])).get("artifacts",[])))
 except Exception as e:
-    print("ERR " + type(e).__name__); sys.exit(3)' "$REPO_DIR/models/MANIFEST.json" 2>/dev/null)
+    print("ERR " + type(e).__name__); sys.exit(3)' "$REPO_DIR/models/MANIFEST.json" 2>/dev/null); pyrc=$?
+  # This call used to switch on $n alone, so a hang read as "manifest unreadable".
+  if [ "$pyrc" -eq 124 ]; then prov_timeout "manifest read"; return 1; fi
   case "$n" in
     0) log "provenance gate UNARMED — models/MANIFEST.json has no artifacts yet (bootstrap); launching unverified"
        PROV_MODEL_ID="unarmed:empty-manifest"; PROV_RUNTIME_ID="unarmed:empty-manifest"; PROV_MMPROJ_ID="unarmed:empty-manifest"; return 0 ;;
@@ -410,21 +434,24 @@ except Exception as e:
   esac
   len=$(boxlen "$CODER_MODEL")
   if [ -z "$len" ]; then PROV_REASON="could not stat $CODER_MODEL on box"; return 1; fi
-  PROV_MODEL_ID=$("$PYTHON" "$PROV" check-path "$CODER_MODEL" --host box --size "$len" --print-id ${CODER_MANIFEST_ID:+--id "$CODER_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
-    || { PROV_REASON="model not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  PROV_MODEL_ID=$(py_bounded "$PROV" check-path "$CODER_MODEL" --host box --size "$len" --print-id ${CODER_MANIFEST_ID:+--id "$CODER_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
+    || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "model check-path"; return 1; }
+         PROV_REASON="model not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   # The mmproj on the CODER line is loaded by llama-server the same as the model;
   # RDR-016's invariant covers it identically (substantive-critic finding, PR #86).
   if [ -n "${MMPROJ_MODEL:-}" ]; then
     len=$(boxlen "$MMPROJ_MODEL")
     if [ -z "$len" ]; then PROV_REASON="could not stat $MMPROJ_MODEL on box"; return 1; fi
-    PROV_MMPROJ_ID=$("$PYTHON" "$PROV" check-path "$MMPROJ_MODEL" --host box --size "$len" --print-id ${MMPROJ_MANIFEST_ID:+--id "$MMPROJ_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
-      || { PROV_REASON="mmproj not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+    PROV_MMPROJ_ID=$(py_bounded "$PROV" check-path "$MMPROJ_MODEL" --host box --size "$len" --print-id ${MMPROJ_MANIFEST_ID:+--id "$MMPROJ_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
+      || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "mmproj check-path"; return 1; }
+           PROV_REASON="mmproj not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   fi
   rt="llama.cpp@${EXPECTED_BUILD:-unknown}"
   len=$(boxlen "$LL")
   if [ -z "$len" ]; then PROV_REASON="could not stat $LL on box"; return 1; fi
-  PROV_RUNTIME_ID=$("$PYTHON" "$PROV" check-path llama-server.exe --host box --id "$rt" --size "$len" --print-id 2>/tmp/prov-gate.err) \
-    || { PROV_REASON="runtime not verified ($rt): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+  PROV_RUNTIME_ID=$(py_bounded "$PROV" check-path llama-server.exe --host box --id "$rt" --size "$len" --print-id 2>/tmp/prov-gate.err) \
+    || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "runtime check-path"; return 1; }
+         PROV_REASON="runtime not verified ($rt): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   # Overlay runtimes (RDR-016 overlay add-runtime) swap ONE file inside the
   # official release tree (e.g. ggml-vulkan.dll) without touching
   # llama-server.exe's own hash/size, so the check above alone would pass a
@@ -444,7 +471,7 @@ except Exception as e:
   # function -- an `except Exception: pass` that let a lookup error look
   # identical to "no overlay" would silently skip the DLL check instead.
   local overlay_file overlay_rc
-  overlay_file=$("$PYTHON" -c 'import json, sys
+  overlay_file=$(py_bounded -c 'import json, sys
 try:
     m = json.load(open(sys.argv[1]))
     entry = None
@@ -467,6 +494,7 @@ except Exception as e:
     print(type(e).__name__ + ": " + str(e), file=sys.stderr)
     sys.exit(1)' "$REPO_DIR/models/MANIFEST.json" "$rt" 2>/tmp/prov-gate.err)
   overlay_rc=$?
+  if [ "$overlay_rc" -eq 124 ]; then prov_timeout "overlay lookup"; return 1; fi
   if [ "$overlay_rc" -ne 0 ]; then
     PROV_REASON="overlay lookup failed for $rt: $(tr -d '\n' </tmp/prov-gate.err)"
     return 1
@@ -476,8 +504,9 @@ except Exception as e:
     overlay_path="${LL%\\*}\\$overlay_file"
     len=$(boxlen "$overlay_path")
     if [ -z "$len" ]; then PROV_REASON="could not stat overlay file $overlay_path on box"; return 1; fi
-    "$PYTHON" "$PROV" check-path "$overlay_path" --host box --id "$rt" --size "$len" >/tmp/prov-gate.err 2>&1 \
-      || { PROV_REASON="overlay file not verified ($rt $overlay_file): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
+    py_bounded "$PROV" check-path "$overlay_path" --host box --id "$rt" --size "$len" >/tmp/prov-gate.err 2>&1 \
+      || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "overlay check-path"; return 1; }
+           PROV_REASON="overlay file not verified ($rt $overlay_file): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   fi
   return 0
 }
