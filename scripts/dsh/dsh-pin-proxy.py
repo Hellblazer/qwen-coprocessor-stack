@@ -13,12 +13,14 @@ appends one JSON line per request to USAGE with the usage OpenRouter reported
 Usage: printf '%s\n' "$KEY" | DSH_MODEL=... python3 dsh-pin-proxy.py USAGE PORTFILE
        (listens on 127.0.0.1, port 0)
 """
-import http.client, json, os, ssl, sys, threading, time
+import http.client, json, os, ssl, sys, threading, time, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 USAGE, PORTFILE = sys.argv[1], sys.argv[2]
-UPSTREAM_HOST = os.environ.get("DSH_UPSTREAM_HOST", "openrouter.ai")
-UPSTREAM_PATH = "/api"
+# DSH_UPSTREAM exists for the offline tests (a local http server); the default is the only
+# production value.
+UPSTREAM = urllib.parse.urlsplit(os.environ.get("DSH_UPSTREAM", "https://openrouter.ai/api"))
+UPSTREAM_PATH = UPSTREAM.path.rstrip("/")
 KEY = sys.stdin.readline().strip()
 MODEL = os.environ.get("DSH_MODEL", "")
 PIN = [p.strip() for p in os.environ.get("DSH_PROVIDER", "DeepInfra").split(",") if p.strip()]
@@ -110,8 +112,11 @@ class H(BaseHTTPRequestHandler):
             raw = json.dumps(body).encode()
         t0 = time.time()
         try:
-            c = http.client.HTTPSConnection(UPSTREAM_HOST, 443, timeout=900,
-                                            context=ssl.create_default_context())
+            if UPSTREAM.scheme == "https":
+                c = http.client.HTTPSConnection(UPSTREAM.hostname, UPSTREAM.port or 443, timeout=900,
+                                                context=ssl.create_default_context())
+            else:
+                c = http.client.HTTPConnection(UPSTREAM.hostname, UPSTREAM.port or 80, timeout=900)
             c.request(method, UPSTREAM_PATH + self.path, body=raw, headers=hdrs)
             r = c.getresponse()
         except (OSError, http.client.HTTPException) as e:

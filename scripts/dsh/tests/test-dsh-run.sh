@@ -21,6 +21,14 @@ echo "do the thing" > "$tmp/task.md"
 cat > "$tmp/fake-dsh" <<'SH'
 #!/bin/bash
 env > "$FAKE_ENV_OUT"
+if [ -n "${FAKE_BG:-}" ]; then
+  sleep 3001 &                                                          # stays in dsh's group
+  rm -f "$FAKE_ENV_OUT.detached"
+  python3 -c 'import os,sys,time; os.setsid(); open(sys.argv[1], "w").close(); time.sleep(3002)' \
+    "$FAKE_ENV_OUT.detached" < /dev/null > /dev/null 2>&1 &                    # leaves it
+  for _ in $(seq 1 100); do [ -e "$FAKE_ENV_OUT.detached" ] && break; sleep 0.05; done
+fi
+[ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
 cat "$FAKE_EVENTS"
 exit "${FAKE_RC:-0}"
 SH
@@ -93,7 +101,7 @@ echo k | DSH_MODEL=m DSH_PROVIDER=" , " python3 "$here/../dsh-pin-proxy.py" "$tm
 check "proxy empty pin" "$?" 1
 # Path filter and error replies, with the upstream pointed at a closed local port (no network).
 rm -f "$tmp/pp"
-echo k | DSH_MODEL=m DSH_UPSTREAM_HOST=127.0.0.1 python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null &
+echo k | DSH_MODEL=m DSH_UPSTREAM=http://127.0.0.1:1 python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null &
 px=$!; for _ in $(seq 1 50); do [ -s "$tmp/pp" ] && break; sleep 0.1; done
 pu="http://127.0.0.1:$(cat "$tmp/pp")"
 check "proxy refuses GET /v1/key" "$(curl -s -o /dev/null -w '%{http_code}' "$pu/v1/key")" 403
@@ -117,6 +125,56 @@ check "test wrote worktree" "$([ -f "$tmp/wt/ok.txt" ] && echo yes || echo no)" 
 check "test could not escape" "$([ -e "$HOME/.dsh-relay-escape-test" ] && echo yes || echo no)" no
 rm -f "$HOME/.dsh-relay-escape-test"
 check "test has no key" "$(jget "$out" '"unset" in d["test"]["tail"].splitlines() and "sk-test" not in d["test"]["tail"]')" True
+
+# 9. Leftover jobs: dsh's group is killed, a job that left the group but runs in the worktree
+#    is reaped, and a process started in the worktree before the run is left alone.
+# Start times have 1 s resolution and reap.py allows 1 s, so this starts well before the run.
+(cd "$tmp/wt" && exec sleep 3003) & pre=$!
+sleep 2.5
+out=$(FAKE_BG=1 FAKE_EVENTS="$tmp/good.ndjson" "$run" "$tmp/wt" "$tmp/task.md" "$o/o9")
+check "group job killed" "$(pgrep -f 'sleep 3001' | wc -l | tr -d ' ')" 0
+check "detached job reaped" "$(pgrep -f 'time.sleep\(3002\)' | wc -l | tr -d ' ')" 0
+check "reaped reported" "$(jget "$out" 'len(d["reaped"])')" 1
+check "earlier process kept" "$(kill -0 "$pre" 2>/dev/null && echo alive || echo gone)" alive
+kill "$pre" 2>/dev/null; wait "$pre" 2>/dev/null
+
+# 10. The proxy exits when the launcher is SIGKILLed.
+FAKE_SLEEP=30 FAKE_EVENTS="$tmp/good.ndjson" "$run" "$tmp/wt" "$tmp/task.md" "$o/o10" > /dev/null &
+lp=$!
+for _ in $(seq 1 50); do [ -s "$o/o10/port" ] && break; sleep 0.1; done
+kill -KILL "$lp"; wait "$lp" 2>/dev/null
+for _ in $(seq 1 40); do pgrep -f "dsh-pin-proxy.py $o/o10" > /dev/null || break; sleep 0.25; done
+check "proxy exits with launcher" "$(pgrep -f "dsh-pin-proxy.py $o/o10" | wc -l | tr -d ' ')" 0
+pkill -f 'sleep 30$' 2>/dev/null
+
+# 11. Proxy against a local fake upstream: auth swapped, pin and model forced, and the usage
+#     record already on disk when the client has read the end of the stream.
+python3 "$here/fake_upstream.py" "$tmp/up.port" "$tmp/up.req" & up=$!
+for _ in $(seq 1 50); do [ -s "$tmp/up.port" ] && break; sleep 0.1; done
+rm -f "$tmp/pp" "$tmp/pu"
+echo real-key | DSH_MODEL=forced/model DSH_UPSTREAM="http://127.0.0.1:$(cat "$tmp/up.port")/api" \
+  python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null & px=$!
+for _ in $(seq 1 50); do [ -s "$tmp/pp" ] && break; sleep 0.1; done
+out=$(python3 - "$(cat "$tmp/pp")" "$tmp/pu" <<'PY'
+import http.client, json, sys
+c = http.client.HTTPConnection("127.0.0.1", int(sys.argv[1]), timeout=10)
+c.request("POST", "/v1/messages", body=json.dumps({"model": "other", "stream": True}),
+          headers={"x-api-key": "dummy", "content-type": "application/json"})
+r = c.getresponse(); r.read()
+n = sum(1 for _ in open(sys.argv[2]))
+print(json.dumps({"status": r.status, "usage_lines_at_end": n}))
+PY
+)
+kill "$px" "$up" 2>/dev/null; wait "$px" "$up" 2>/dev/null
+check "stream status" "$(jget "$out" 'd["status"]')" 200
+check "usage logged before stream end" "$(jget "$out" 'd["usage_lines_at_end"]')" 1
+req=$(cat "$tmp/up.req")
+check "upstream path" "$(jget "$req" 'd["path"]')" /api/v1/messages
+check "auth swapped" "$(jget "$req" 'd["auth"]')" "Bearer real-key"
+check "dummy key dropped" "$(jget "$req" 'd["x_api_key"]')" None
+check "model forced" "$(jget "$req" 'd["body"]["model"]')" forced/model
+check "pin set" "$(jget "$req" 'd["body"]["provider"]')" "{'order': ['DeepInfra'], 'allow_fallbacks': False}"
+check "usage parsed" "$(jget "$(head -1 "$tmp/pu")" '(d["usage"]["output_tokens"], d["usage"]["cost"], d["provider"])')" "(7, 0.5, 'FakeInfra')"
 
 git -C "$tmp/main" worktree remove --force "$tmp/wt"
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
