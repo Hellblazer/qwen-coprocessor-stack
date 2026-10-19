@@ -1,0 +1,13 @@
+(version 1)
+(allow default)
+; For running a session's TEST command after the session (dsh-relay): the code under test was
+; written by the model, so it may write only to the worktree, temp and tool caches.
+(deny file-write* (require-not (require-any
+  (subpath (param "WT"))
+  (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/dev")
+  (subpath (string-append (param "HOME") "/.npm"))
+  (subpath (string-append (param "HOME") "/.cache"))
+  (subpath (string-append (param "HOME") "/Library/Caches")))))
+; The run dir (~/.cache/dsh-run, ~/.cache/dsh-relay) holds the patch and logs under review.
+(deny file-write* (subpath (string-append (param "HOME") "/.cache/dsh-run")))
+(deny file-write* (subpath (string-append (param "HOME") "/.cache/dsh-relay")))
