@@ -302,6 +302,39 @@ are `pin_only`. They are reasoning models, so give them generous `max_tokens`.
 
 ---
 
+## Recipe: hand a coding task to DeepSeek in DeepSeek Harness
+
+DeepSeek coding work runs in DeepSeek Harness (`dsh`), not through the supervisor.
+On the bead-replay battery (four merged beads, scored by the tests their PRs
+added) DeepSeek v4.1-flash in dsh gained a mean of 7.4 tests over the no-op floor;
+the same model in Claude Code gained 0.4 to 1.4 (T2
+`deepseek-bead-replay-isolated-2026-10-18`). The supervisor's DeepSeek backends
+stay available for `qwen_chat` and pinned use.
+
+`scripts/dsh/dsh-run.sh WORKTREE TASK_FILE [OUTDIR]` runs one headless dsh
+session in a linked worktree and prints one JSON line (`turns`, `is_error`,
+`usage` with `cost` in USD, `result`, `outdir`):
+
+- The model comes from OpenRouter's Anthropic-format endpoint through
+  `scripts/dsh/dsh-pin-proxy.py`, a loopback proxy that pins routing to
+  `DSH_PROVIDER` (default `DeepInfra`, no fallbacks) and logs per-request usage
+  to `OUTDIR/usage.jsonl`. It never writes request bodies or keys.
+- dsh runs in its stock `workspace-write` mode with cwd = the worktree, so its
+  shell can write only there. Headless dsh cannot be granted wider access: an
+  escalation request fails closed (checked 2026-10-19).
+- The main checkout is refused; so is an `OUTDIR` inside the worktree.
+- The key comes from `OPENROUTER_API_KEY` or the Keychain item `ds-openrouter`.
+  `DSH_MODEL` picks the model (default `deepseek/deepseek-v4.1-flash-1017`) and
+  `DSH_TIMEOUT` the wall limit in seconds (default 1500).
+
+From a Claude session, the `dsh-relay` agent wraps the launcher the way
+`qwen-relay` wraps `qwen_dispatch`: the caller creates the worktree, the agent
+runs one session, builds the patch, checks scope and an optional test command,
+and reports cost; the caller reviews and applies the patch. The agent caps a
+session at 570 s (one Bash call); for longer work run `dsh-run.sh` directly.
+
+---
+
 ## Recipe: tune the session budget
 
 If long tasks crash with `ECONNRESET`, the inner Qwen is overrunning its context
