@@ -1,6 +1,7 @@
 # Overlay for `dsh --profile headless`: send the agent through dsh-pin-proxy.py (OpenRouter
-# provider pin, usage log) to OpenRouter's Anthropic-format endpoint. DSH_PROXY_BASE,
-# OPENROUTER_API_KEY and DSH_MODEL come from the process env (dsh-run.sh); no secret lives here.
+# provider pin, auth, usage log) to OpenRouter's Anthropic-format endpoint. DSH_PROXY_BASE,
+# DSH_PROXY_DUMMY_KEY (a placeholder; the proxy adds the real key) and DSH_MODEL come from the
+# process env (dsh-run.sh). No secret lives here or in dsh's environment.
 - id: llm-pi-ai
   name: '@deepseek-ai/dsh-llm-pi-ai'
   config:
@@ -9,7 +10,7 @@
         displayName: DeepSeek via OpenRouter
         api: anthropic-messages
         baseURL: !!js process.env.DSH_PROXY_BASE
-        apiKeyEnv: OPENROUTER_API_KEY
+        apiKeyEnv: DSH_PROXY_DUMMY_KEY
         models:
           - id: !!js process.env.DSH_MODEL
             name: !!js process.env.DSH_MODEL

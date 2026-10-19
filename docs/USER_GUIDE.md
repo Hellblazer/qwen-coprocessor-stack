@@ -304,34 +304,53 @@ are `pin_only`. They are reasoning models, so give them generous `max_tokens`.
 
 ## Recipe: hand a coding task to DeepSeek in DeepSeek Harness
 
-DeepSeek coding work runs in DeepSeek Harness (`dsh`), not through the supervisor.
-On the bead-replay battery (four merged beads, scored by the tests their PRs
-added) DeepSeek v4.1-flash in dsh gained a mean of 7.4 tests over the no-op floor;
-the same model in Claude Code gained 0.4 to 1.4 (T2
-`deepseek-bead-replay-isolated-2026-10-18`). The supervisor's DeepSeek backends
-stay available for `qwen_chat` and pinned use.
+DeepSeek coding work is routed through DeepSeek Harness (`dsh`). The evidence is
+one battery: four merged beads replayed from their base commit and scored by the
+tests their PRs added, 20 sessions, one session per bead and arm except bpv (two).
+DeepSeek v4.1-flash in dsh gained a mean of 7.4 tests over the no-op floor, and the
+same model in Claude Code 0.4 to 1.4. Most of the gap is two beads (55q, q5mj), on
+which the Claude Code arms also broke tests that already passed; dsh's two bpv
+sessions scored +5 and +0. dsh sends no reasoning-effort setting and thought about
+three times as much per session, so harness and reasoning budget are not separated.
+dsh cost 1.5 to 2 times as much per session (USD 0.02 to 0.05). DeepSeek through
+`qwen_dispatch` was not measured. Records: T2
+`deepseek-bead-replay-isolated-2026-10-18`,
+`deepseek-harness-headless-bead-replay-2026-10-18`. The supervisor's DeepSeek
+backends stay available for `qwen_chat` and pinned use.
 
 `scripts/dsh/dsh-run.sh WORKTREE TASK_FILE [OUTDIR]` runs one headless dsh
 session in a linked worktree and prints one JSON line (`turns`, `is_error`,
-`usage` with `cost` in USD, `result`, `outdir`):
+`usage` with `cost` in USD, `result`, `outdir`); it exits 1 when `is_error` is
+true. It needs DeepSeek Harness in `/Applications` (or `DSH_BIN`) and `timeout`
+from coreutils.
 
-- The model comes from OpenRouter's Anthropic-format endpoint through
-  `scripts/dsh/dsh-pin-proxy.py`, a loopback proxy that pins routing to
-  `DSH_PROVIDER` (default `DeepInfra`, no fallbacks) and logs per-request usage
-  to `OUTDIR/usage.jsonl`. It never writes request bodies or keys.
-- dsh runs in its stock `workspace-write` mode with cwd = the worktree, so its
-  shell can write only there. Headless dsh cannot be granted wider access: an
-  escalation request fails closed (checked 2026-10-19).
-- The main checkout is refused; so is an `OUTDIR` inside the worktree.
+- The model is reached through `scripts/dsh/dsh-pin-proxy.py`, a loopback proxy
+  to OpenRouter's Anthropic-format endpoint. It pins routing to `DSH_PROVIDER`
+  (default `DeepInfra`, no fallbacks) and refuses any other POST path, so nothing
+  goes out unpinned. It holds the OpenRouter key: dsh gets a dummy key, and the
+  session's shell has no OpenRouter variable (checked 2026-10-19). It logs
+  per-request usage, cost and the serving provider to `OUTDIR/usage.jsonl`, never
+  request bodies or keys.
+- dsh runs in `workspace-write` mode, set by the launcher whatever the caller's
+  environment says, with a private `TMPDIR` and telemetry off. Its writes go only
+  to the worktree, `/tmp` and that temp dir. Its reads and network are not
+  restricted, and what it reads goes to OpenRouter and the pinned provider. An
+  escalation request fails closed in headless mode (checked 2026-10-19).
+- The main checkout is refused, and so is an `OUTDIR` inside the worktree or in
+  a temp directory. The default `OUTDIR` is under `~/.cache/dsh-run`.
 - The key comes from `OPENROUTER_API_KEY` or the Keychain item `ds-openrouter`.
   `DSH_MODEL` picks the model (default `deepseek/deepseek-v4.1-flash-1017`) and
   `DSH_TIMEOUT` the wall limit in seconds (default 1500).
 
 From a Claude session, the `dsh-relay` agent wraps the launcher the way
-`qwen-relay` wraps `qwen_dispatch`: the caller creates the worktree, the agent
-runs one session, builds the patch, checks scope and an optional test command,
-and reports cost; the caller reviews and applies the patch. The agent caps a
-session at 570 s (one Bash call); for longer work run `dsh-run.sh` directly.
+`qwen-relay` wraps `qwen_dispatch`. The caller creates the worktree (outside
+`/tmp`), the agent runs one session, and `scripts/dsh/relay-check.py` builds the
+patch, checks its scope and runs an optional test command. The caller reviews and
+applies the patch. The test command runs under `scripts/dsh/test-sandbox.sb`
+(writes only to the worktree, temp and tool caches) without the key, but it is
+still model-written code running before review. The agent caps a session at
+570 s; for longer work run `dsh-run.sh` directly. Offline tests:
+`/bin/bash scripts/dsh/tests/test-dsh-run.sh`.
 
 ---
 
