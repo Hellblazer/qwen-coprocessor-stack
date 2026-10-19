@@ -40,17 +40,18 @@ GD=$(cd "$GD" && pwd -P) || fail "cannot resolve git dir"
 if [ -n "$3" ]; then
   # realpath of a path that does not exist yet resolves its existing ancestors, so this is
   # checked before mkdir creates anything.
-  case "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$3")/" in
-    "$WT"/*) fail "OUTDIR is inside the worktree";;
-  esac
+  # APFS ignores case, so compare case-folded.
+  python3 -c 'import os,sys; o=os.path.realpath(sys.argv[1]).lower()+"/"; sys.exit(o.startswith(sys.argv[2].lower()+"/"))' \
+    "$3" "$WT" || fail "OUTDIR is inside the worktree"
   mkdir -p "$3" || fail "cannot create $3"
   OUT=$(cd "$3" && pwd -P) || fail "cannot resolve $3"
 else
   mkdir -p "$HOME/.cache/dsh-run" && OUT=$(mktemp -d "$HOME/.cache/dsh-run/run.XXXXXX") || fail "cannot create a run dir"
   OUT=$(cd "$OUT" && pwd -P)
 fi
+python3 -c 'import sys; sys.exit((sys.argv[1].lower()+"/").startswith(sys.argv[2].lower()+"/"))' "$OUT" "$WT" \
+  || fail "OUTDIR is inside the worktree"
 case "$OUT/" in
-  "$WT"/*) fail "OUTDIR is inside the worktree";;
   /private/tmp/*|/tmp/*|/private/var/folders/*|/var/folders/*) fail "OUTDIR is in a temp dir the session can write";;
 esac
 rm -f "$OUT/port" "$OUT/usage.jsonl" "$OUT/events.ndjson" "$OUT/events.ndjson.stderr" "$OUT/summary.json"
@@ -60,8 +61,9 @@ K="${OPENROUTER_API_KEY:-}"
 [ -n "$K" ] || fail "no OpenRouter key (env OPENROUTER_API_KEY or Keychain ds-openrouter)"
 
 PP=""; DP=""; DTMP=""
-# timeout (coreutils) puts itself and dsh in a new process group whose id is its pid, so
-# killing that group also takes the background jobs dsh started.
+# timeout (coreutils) puts itself and dsh in a new process group whose id is its pid. Killing
+# that group takes dsh and anything it started without detaching; its shell tool runs
+# detached, so jobs started there are orphaned and left to reap.py.
 kill_dsh() {
   [ -n "$DP" ] || return 0
   kill -TERM -- "-$DP" 2>/dev/null && sleep 1
@@ -71,7 +73,7 @@ kill_dsh() {
 cleanup() { kill_dsh; [ -n "$PP" ] && kill "$PP" 2>/dev/null; [ -n "$DTMP" ] && rm -rf "$DTMP"; }
 trap cleanup EXIT
 MODEL="${DSH_MODEL:-deepseek/deepseek-v4.1-flash-1017}"
-printf '%s\n' "$K" | env -u OPENROUTER_API_KEY DSH_MODEL="$MODEL" \
+printf '%s\n' "$K" | env -u OPENROUTER_API_KEY -u DSH_UPSTREAM DSH_MODEL="$MODEL" \
   python3 "$HERE/dsh-pin-proxy.py" "$OUT/usage.jsonl" "$OUT/port" 2> "$OUT/proxy.stderr" &
 PP=$!
 disown "$PP"
@@ -81,7 +83,7 @@ for _ in $(seq 1 50); do [ -s "$OUT/port" ] && break; sleep 0.1; done
 
 DTMP=$(mktemp -d /private/tmp/dsh-tmp.XXXXXX) || fail "cannot create a temp dir for dsh"
 cd "$WT" || fail "cannot enter $WT"
-T0=$(date +%s)
+T0=$(date +%s)   # reap.py compares at one-second resolution
 # Mode pinned here, not inherited: DSH_PERMISSION_MODE=danger-full-access in the caller's env would
 # turn dsh's sandbox off.
 env -u OPENROUTER_API_KEY DSH_PERMISSION_MODE=workspace-write TMPDIR="$DTMP" DSH_TELEMETRY_DISABLED=1 \
@@ -94,7 +96,7 @@ wait "$DP"
 rc=$?
 kill_dsh
 # Jobs that left the group but still run in the worktree; after this the tree is quiescent.
-REAPED=$(python3 "$HERE/reap.py" "$WT" "$T0" "$$" "$PP" 2>/dev/null || echo '[]')
+REAPED=$(python3 "$HERE/reap.py" "$T0" "$$" "$WT" "$DTMP" 2>&1)
 python3 "$HERE/dsh_summary.py" "$OUT/events.ndjson" "$OUT/usage.jsonl" "$rc" > "$OUT/summary.json"
 python3 -c 'import json,sys
 try:
@@ -104,8 +106,11 @@ except Exception as e:
          "result": "summary unreadable: %s" % e}
 d["outdir"] = sys.argv[2]
 try:
-    d["reaped"] = json.loads(sys.argv[4])
-except ValueError:
-    d["reaped"] = []
+    r = json.loads(sys.argv[4])
+    d["reaped"] = r.get("reaped", [])
+    if "error" in r:
+        d["reap_error"] = r["error"]
+except (ValueError, AttributeError):
+    d["reaped"], d["reap_error"] = [], "reap.py output unreadable: " + sys.argv[4][:200]
 print(json.dumps(d))
 sys.exit(1 if d.get("is_error") else 0)' "$OUT/summary.json" "$OUT" "$rc" "$REAPED"

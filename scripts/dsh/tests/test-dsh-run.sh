@@ -99,6 +99,8 @@ echo k | python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
 check "proxy no model" "$?" 1
 echo k | DSH_MODEL=m DSH_PROVIDER=" , " python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
 check "proxy empty pin" "$?" 1
+echo k | DSH_MODEL=m DSH_UPSTREAM=http://example.com/api python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
+check "proxy refuses cleartext non-loopback" "$?" 1
 # Path filter and error replies, with the upstream pointed at a closed local port (no network).
 rm -f "$tmp/pp"
 echo k | DSH_MODEL=m DSH_UPSTREAM=http://127.0.0.1:1 python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null &
@@ -137,15 +139,31 @@ check "detached job reaped" "$(pgrep -f 'time.sleep\(3002\)' | wc -l | tr -d ' '
 check "reaped reported" "$(jget "$out" 'len(d["reaped"])')" 1
 check "earlier process kept" "$(kill -0 "$pre" 2>/dev/null && echo alive || echo gone)" alive
 kill "$pre" 2>/dev/null; wait "$pre" 2>/dev/null
+# During a run: a shell-like child of ours in the worktree (live parent) and an orphan in a
+# sibling directory are both left alone.
+mkdir -p "$tmp/wt2"
+FAKE_SLEEP=2 FAKE_EVENTS="$tmp/good.ndjson" "$run" "$tmp/wt" "$tmp/task.md" "$o/o9b" > "$tmp/o9b.out" & lr=$!
+sleep 0.7
+(cd "$tmp/wt" && exec sleep 3006) & during=$!
+(cd "$tmp/wt2" && python3 -c 'import os,time; os.setsid(); time.sleep(3007)' < /dev/null > /dev/null 2>&1 &)
+wait "$lr"
+check "user process during run kept" "$(kill -0 "$during" 2>/dev/null && echo alive || echo gone)" alive
+check "orphan outside worktree kept" "$(pgrep -f 'time.sleep\(3007\)' | wc -l | tr -d ' ')" 1
+check "nothing reaped" "$(jget "$(cat "$tmp/o9b.out")" 'd["reaped"]')" "[]"
+kill "$during" 2>/dev/null; wait "$during" 2>/dev/null; pkill -f 'time.sleep\(3007\)'
+out=$(python3 "$here/../reap.py" notanumber 1 "$tmp/wt"); rc=$?
+check "reap error reported" "$(jget "$out" '"error" in d')" True
+check "reap error exit" "$rc" 1
 
 # 10. The proxy exits when the launcher is SIGKILLed.
-FAKE_SLEEP=30 FAKE_EVENTS="$tmp/good.ndjson" "$run" "$tmp/wt" "$tmp/task.md" "$o/o10" > /dev/null &
+FAKE_SLEEP=3010 FAKE_EVENTS="$tmp/good.ndjson" "$run" "$tmp/wt" "$tmp/task.md" "$o/o10" > /dev/null &
 lp=$!
 for _ in $(seq 1 50); do [ -s "$o/o10/port" ] && break; sleep 0.1; done
+check "proxy up before kill" "$(pgrep -f "dsh-pin-proxy.py $o/o10" | wc -l | tr -d ' ')" 1
 kill -KILL "$lp"; wait "$lp" 2>/dev/null
 for _ in $(seq 1 40); do pgrep -f "dsh-pin-proxy.py $o/o10" > /dev/null || break; sleep 0.25; done
 check "proxy exits with launcher" "$(pgrep -f "dsh-pin-proxy.py $o/o10" | wc -l | tr -d ' ')" 0
-pkill -f 'sleep 30$' 2>/dev/null
+pkill -f '^sleep 3010$' 2>/dev/null
 
 # 11. Proxy against a local fake upstream: auth swapped, pin and model forced, and the usage
 #     record already on disk when the client has read the end of the stream.

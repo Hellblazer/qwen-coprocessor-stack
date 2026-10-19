@@ -21,6 +21,8 @@ USAGE, PORTFILE = sys.argv[1], sys.argv[2]
 # production value.
 UPSTREAM = urllib.parse.urlsplit(os.environ.get("DSH_UPSTREAM", "https://openrouter.ai/api"))
 UPSTREAM_PATH = UPSTREAM.path.rstrip("/")
+if UPSTREAM.scheme != "https" and UPSTREAM.hostname not in ("127.0.0.1", "localhost", "::1"):
+    sys.exit("dsh-pin-proxy: DSH_UPSTREAM must be https unless it is loopback")
 KEY = sys.stdin.readline().strip()
 MODEL = os.environ.get("DSH_MODEL", "")
 PIN = [p.strip() for p in os.environ.get("DSH_PROVIDER", "DeepInfra").split(",") if p.strip()]
@@ -119,7 +121,7 @@ class H(BaseHTTPRequestHandler):
                 c = http.client.HTTPConnection(UPSTREAM.hostname, UPSTREAM.port or 80, timeout=900)
             c.request(method, UPSTREAM_PATH + self.path, body=raw, headers=hdrs)
             r = c.getresponse()
-        except (OSError, http.client.HTTPException) as e:
+        except (OSError, ValueError, http.client.HTTPException) as e:
             if is_msg:
                 self._log({"t": round(t0, 2), "status": 502, "error": type(e).__name__, "usage": {}})
             return self._error(502, f"upstream unreachable: {type(e).__name__}")

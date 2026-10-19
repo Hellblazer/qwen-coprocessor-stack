@@ -345,9 +345,12 @@ from coreutils.
 - The main checkout is refused, and so is an `OUTDIR` inside the worktree or in
   a temp directory. The default `OUTDIR` is under `~/.cache/dsh-run`.
 - When the session ends or times out, the launcher kills dsh's process group,
-  then (`scripts/dsh/reap.py`) any process that started during the run and still
-  has its working directory in the worktree, so nothing is still writing when
-  the patch is built. The JSON's `reaped` lists the pids killed that way.
+  then (`scripts/dsh/reap.py`) orphaned processes that started during the run
+  and have their working directory in the worktree or dsh's temp dir: jobs dsh's
+  shell tool left behind. The JSON lists them under `reaped` (and `reap_error`
+  if the check failed). A job that changed its working directory elsewhere is
+  not found, and nothing is reaped if the launcher itself is SIGKILLed. Shells
+  and editors you open in the worktree have a live parent and are left alone.
 - The key comes from `OPENROUTER_API_KEY` or the Keychain item `ds-openrouter`.
   `DSH_MODEL` picks the model (default `deepseek/deepseek-v4.1-flash-1017`) and
   `DSH_TIMEOUT` the wall limit in seconds (default 1500).
