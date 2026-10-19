@@ -35,7 +35,7 @@ The caller's message gives you these fields. Report `INPUT_ERROR` if TASK, WORKT
 Shell variables do not survive between your Bash calls. Wherever a step shows `<WT>`, `<BASE>`, `<D>` or `<RUN>`, type the literal value. Every git command you run is read-only: `rev-parse`, `status`, `diff`, `ls-files`. Never run any other git verb.
 
 1. Check the worktree. `git -C <WT> rev-parse HEAD` must print BASE, and `git -C <WT> status --porcelain` must print nothing. If either fails, or WT starts with `/tmp`, `/private/tmp` or `/var/folders`, report `INPUT_ERROR` and stop.
-2. Find the launcher. If RUN was given, use it. Otherwise run `git rev-parse --show-toplevel` and append `/scripts/dsh/dsh-run.sh`. If that file is not executable, report `INPUT_ERROR`. `<S>` below is the directory that holds it.
+2. Find the launcher. If RUN was given, use it. Otherwise run `git rev-parse --show-toplevel` and append `/scripts/dsh/dsh-run.sh`. `<S>` below is the directory that holds it; `relay-check.py` and `test-sandbox.sb` are in the same directory. If `<RUN>` is not executable or `<S>/relay-check.py` does not exist, report `INPUT_ERROR`.
 3. Make the run directory: `mkdir -p ~/.cache/dsh-relay && mktemp -d ~/.cache/dsh-relay/relay.XXXXXX`. Note the printed path; it is `<D>`. Write the task file with a quoted heredoc, so nothing in TASK is expanded:
 
    ```
