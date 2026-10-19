@@ -308,8 +308,8 @@ DeepSeek coding work is routed through DeepSeek Harness (`dsh`). The evidence is
 one battery: four merged beads replayed from their base commit and scored by the
 tests their PRs added, 20 sessions, one session per bead and arm except bpv (two).
 DeepSeek v4.1-flash in dsh gained a mean of 7.4 tests over the no-op floor, and the
-same model in Claude Code 0.4 to 1.4. Most of the gap is two beads (55q, q5mj), on
-which the Claude Code arms also broke tests that already passed; dsh's two bpv
+same model in Claude Code 0.4 to 1.4. Most of the gap is two beads (55q, q5mj);
+on q5mj the Claude Code arms also broke tests that already passed. dsh's two bpv
 sessions scored +5 and +0. dsh sends no reasoning-effort setting and thought about
 three times as much per session, so harness and reasoning budget are not separated.
 dsh cost 1.5 to 2 times as much per session (USD 0.02 to 0.05). DeepSeek through
@@ -326,11 +326,17 @@ from coreutils.
 
 - The model is reached through `scripts/dsh/dsh-pin-proxy.py`, a loopback proxy
   to OpenRouter's Anthropic-format endpoint. It pins routing to `DSH_PROVIDER`
-  (default `DeepInfra`, no fallbacks) and refuses any other POST path, so nothing
-  goes out unpinned. It holds the OpenRouter key: dsh gets a dummy key, and the
-  session's shell has no OpenRouter variable (checked 2026-10-19). It logs
-  per-request usage, cost and the serving provider to `OUTDIR/usage.jsonl`, never
-  request bodies or keys.
+  (default `DeepInfra`, no fallbacks), forces the model to `DSH_MODEL`, and
+  forwards only `POST /v1/messages` and `GET /v1/models`, so nothing goes out
+  unpinned and the port cannot reach other models or account endpoints. It
+  logs per-request usage, cost and the serving provider to `OUTDIR/usage.jsonl`,
+  never request bodies or keys.
+- The OpenRouter key reaches only the proxy, on stdin. dsh gets a dummy key, and
+  the session's shell has no OpenRouter variable (checked 2026-10-19). That does
+  not put the key out of the session's reach: the session runs as you, so if the
+  key is in the Keychain item `ds-openrouter`, a command in the session can most
+  likely read it with `security` the way the launcher does. Use a key with a
+  spending limit.
 - dsh runs in `workspace-write` mode, set by the launcher whatever the caller's
   environment says, with a private `TMPDIR` and telemetry off. Its writes go only
   to the worktree, `/tmp` and that temp dir. Its reads and network are not

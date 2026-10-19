@@ -13,6 +13,7 @@ object: files [{path, status}], non_empty, scope_ok, outside_scope, symlinks, te
 import json, os, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+TEST_TIMEOUT = int(os.environ.get("DSH_TEST_TIMEOUT", "500"))
 
 
 def git(wt, *args):
@@ -50,11 +51,15 @@ def main():
     res["test"] = None
     if test:
         env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
-        r = subprocess.run(["sandbox-exec", "-D", f"WT={os.path.realpath(wt)}", "-D", f"HOME={os.path.expanduser('~')}",
-                            "-f", os.path.join(HERE, "test-sandbox.sb"), "bash", "-c", test],
-                           cwd=wt, env=env, capture_output=True, text=True, errors="replace", timeout=1200)
-        tail = (r.stdout + r.stderr).splitlines()[-30:]
-        res["test"] = {"exit": r.returncode, "tail": "\n".join(tail)}
+        cmd = ["sandbox-exec", "-D", f"WT={os.path.realpath(wt)}", "-D", f"HOME={os.path.expanduser('~')}",
+               "-f", os.path.join(HERE, "test-sandbox.sb"), "bash", "-c", test]
+        try:
+            # Under the relay's single 600 s Bash call, with room to print the result.
+            r = subprocess.run(cmd, cwd=wt, env=env, capture_output=True, text=True, errors="replace",
+                               timeout=TEST_TIMEOUT)
+            res["test"] = {"exit": r.returncode, "tail": "\n".join((r.stdout + r.stderr).splitlines()[-30:])}
+        except subprocess.TimeoutExpired:
+            res["test"] = {"exit": None, "timeout": True, "tail": f"test exceeded {TEST_TIMEOUT} s"}
     print(json.dumps(res))
 
 

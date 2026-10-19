@@ -85,10 +85,23 @@ out=$(python3 "$summ" "$tmp/good.ndjson" "$tmp/u.jsonl" notanumber)
 check "summary bad rc" "$(jget "$out" 'd["is_error"]')" True
 
 # 7. Proxy refuses to start without a key or with an empty provider pin.
-OPENROUTER_API_KEY= python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
+echo "" | DSH_MODEL=m python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
 check "proxy no key" "$?" 1
-DSH_PROVIDER=" , " python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
+echo k | python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
+check "proxy no model" "$?" 1
+echo k | DSH_MODEL=m DSH_PROVIDER=" , " python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null
 check "proxy empty pin" "$?" 1
+# Path filter and error replies, with the upstream pointed at a closed local port (no network).
+rm -f "$tmp/pp"
+echo k | DSH_MODEL=m DSH_UPSTREAM_HOST=127.0.0.1 python3 "$here/../dsh-pin-proxy.py" "$tmp/pu" "$tmp/pp" 2>/dev/null &
+px=$!; for _ in $(seq 1 50); do [ -s "$tmp/pp" ] && break; sleep 0.1; done
+pu="http://127.0.0.1:$(cat "$tmp/pp")"
+check "proxy refuses GET /v1/key" "$(curl -s -o /dev/null -w '%{http_code}' "$pu/v1/key")" 403
+check "proxy refuses POST /v1/chat" "$(curl -s -o /dev/null -w '%{http_code}' -d '{}' "$pu/v1/chat/completions")" 403
+check "proxy 400 on non-object" "$(curl -s -o /dev/null -w '%{http_code}' -d '[1]' "$pu/v1/messages")" 400
+check "proxy 502 upstream down" "$(curl -s -o /dev/null -w '%{http_code}' -d '{"model":"x"}' "$pu/v1/messages")" 502
+kill "$px" 2>/dev/null; wait "$px" 2>/dev/null
+check "proxy logged the 502" "$(grep -c '"status": 502' "$tmp/pu")" 1
 
 # 8. relay-check: patch, scope (prefix vs exact, new files), and a test that cannot write outside.
 rc_py="$here/../relay-check.py"

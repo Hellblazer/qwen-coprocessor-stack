@@ -1,14 +1,17 @@
 """Loopback proxy between dsh and OpenRouter's Anthropic-format endpoint.
 
-Holds the OpenRouter key: dsh is given a dummy key, and the proxy replaces
-whatever auth headers it sends with the real one from its own environment
-(OPENROUTER_API_KEY), so the key never enters dsh's process or its tools.
-Pins OpenRouter routing to the providers in DSH_PROVIDER (comma-separated, no
+Holds the OpenRouter key, read from the first line of stdin so it is in no
+process environment: dsh is given a dummy key, and the proxy replaces whatever
+auth headers it sends with the real one. Forwards only POST /v1/messages* and
+GET /v1/models*, and forces every message request's model to DSH_MODEL, so a
+session cannot use the port to spend the key on another model or read the
+account. Pins OpenRouter routing to the providers in DSH_PROVIDER (comma-separated, no
 fallbacks) on every /v1/messages request, streams the response back, and
 appends one JSON line per request to USAGE with the usage OpenRouter reported
 (tokens, cost, provider when present). Request bodies and keys are never written.
 
-Usage: python3 dsh-pin-proxy.py USAGE PORTFILE   (listens on 127.0.0.1, port 0)
+Usage: printf '%s\n' "$KEY" | DSH_MODEL=... python3 dsh-pin-proxy.py USAGE PORTFILE
+       (listens on 127.0.0.1, port 0)
 """
 import http.client, json, os, ssl, sys, threading, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -16,10 +19,13 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 USAGE, PORTFILE = sys.argv[1], sys.argv[2]
 UPSTREAM_HOST = os.environ.get("DSH_UPSTREAM_HOST", "openrouter.ai")
 UPSTREAM_PATH = "/api"
-KEY = os.environ.get("OPENROUTER_API_KEY", "")
+KEY = sys.stdin.readline().strip()
+MODEL = os.environ.get("DSH_MODEL", "")
 PIN = [p.strip() for p in os.environ.get("DSH_PROVIDER", "DeepInfra").split(",") if p.strip()]
 if not KEY:
-    sys.exit("dsh-pin-proxy: OPENROUTER_API_KEY not set")
+    sys.exit("dsh-pin-proxy: no key on stdin")
+if not MODEL:
+    sys.exit("dsh-pin-proxy: DSH_MODEL not set")
 if not PIN:
     sys.exit("dsh-pin-proxy: DSH_PROVIDER names no provider")
 HOP = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade",
@@ -87,8 +93,9 @@ class H(BaseHTTPRequestHandler):
         hdrs = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
         hdrs["Authorization"] = "Bearer " + KEY
         is_msg = self.path.startswith("/v1/messages") and "count_tokens" not in self.path
-        if method == "POST" and not self.path.startswith("/v1/messages"):
-            return self._error(403, f"proxy forwards only /v1/messages POSTs, not {self.path}")
+        allowed = "/v1/messages" if method == "POST" else "/v1/models"
+        if not self.path.startswith(allowed):
+            return self._error(403, f"proxy does not forward {method} {self.path}")
         stream = False
         if is_msg:
             try:
@@ -98,6 +105,7 @@ class H(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._error(400, f"unpinnable request: {e}")
             body["provider"] = {"order": PIN, "allow_fallbacks": False}
+            body["model"] = MODEL
             stream = bool(body.get("stream"))
             raw = json.dumps(body).encode()
         t0 = time.time()

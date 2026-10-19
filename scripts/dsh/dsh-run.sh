@@ -60,7 +60,9 @@ K="${OPENROUTER_API_KEY:-}"
 PP=""
 cleanup() { [ -n "$PP" ] && kill "$PP" 2>/dev/null; }
 trap cleanup EXIT
-OPENROUTER_API_KEY="$K" python3 "$HERE/dsh-pin-proxy.py" "$OUT/usage.jsonl" "$OUT/port" 2> "$OUT/proxy.stderr" &
+MODEL="${DSH_MODEL:-deepseek/deepseek-v4.1-flash-1017}"
+printf '%s\n' "$K" | env -u OPENROUTER_API_KEY DSH_MODEL="$MODEL" \
+  python3 "$HERE/dsh-pin-proxy.py" "$OUT/usage.jsonl" "$OUT/port" 2> "$OUT/proxy.stderr" &
 PP=$!
 disown "$PP"
 K=""
@@ -74,7 +76,7 @@ cd "$WT" || fail "cannot enter $WT"
 # turn dsh's sandbox off.
 env -u OPENROUTER_API_KEY DSH_PERMISSION_MODE=workspace-write TMPDIR="$DTMP" DSH_TELEMETRY_DISABLED=1 \
   DSH_PROXY_BASE="http://127.0.0.1:$(cat "$OUT/port")" DSH_PROXY_DUMMY_KEY=via-proxy \
-  DSH_MODEL="${DSH_MODEL:-deepseek/deepseek-v4.1-flash-1017}" \
+  DSH_MODEL="$MODEL" \
   timeout "${DSH_TIMEOUT:-1500}" "$DSH" --profile headless --patch "$HERE/dsh-openrouter.patch.yml" \
   --json - < "$TASK" > "$OUT/events.ndjson" 2> "$OUT/events.ndjson.stderr"
 rc=$?

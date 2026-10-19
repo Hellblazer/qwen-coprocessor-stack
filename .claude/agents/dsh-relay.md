@@ -52,10 +52,18 @@ Shell variables do not survive between your Bash calls. Wherever a step shows `<
    ```
 
    It prints one JSON line: `turns`, `is_error`, `rc`, `usage` (tokens and `cost` in USD), `result` (the agent's final message), `outdir`. A nonzero exit status is expected when `is_error` is true; read the JSON either way. If there is no JSON line, report `DSH_ERROR` with the output's first 400 characters. Do not retry.
-5. Run the checks, with a Bash timeout of 600000 ms. Leave out the last argument if TEST was not given:
+5. If TEST was given, write it to a file with a quoted heredoc:
 
    ```
-   python3 <S>/relay-check.py <WT> <BASE> <D> '<SCOPE>' '<TEST>'
+   cat > <D>/test.sh <<'DSH_TEST_EOF'
+   <TEST>
+   DSH_TEST_EOF
+   ```
+
+   Then run the checks, with a Bash timeout of 600000 ms. Leave out the last argument if TEST was not given:
+
+   ```
+   python3 <S>/relay-check.py <WT> <BASE> <D> '<SCOPE>' 'bash <D>/test.sh'
    ```
 
    It writes `<D>/patch.diff` and prints JSON: `files`, `non_empty`, `scope_ok`, `outside_scope`, `symlinks`, `test` (`exit`, `tail`) or null. If `is_error` was true and `files` is empty, report `DSH_ERROR` with `rc` and the first 400 characters of `result`.
@@ -84,7 +92,7 @@ PATCH:
 <the full patch if it is 200 lines or fewer; otherwise "see PATCH_FILE">
 ```
 
-`session` passes when `is_error` is false. `test` passes when its exit is 0. `RESULT` is `OK` only when every check that ran passed.
+`session` passes when `is_error` is false. `test` passes when its exit is 0; a `timeout` (over 500 s) is a fail. `RESULT` is `OK` only when every check that ran passed.
 
 ## Rules
 
