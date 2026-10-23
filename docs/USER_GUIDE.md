@@ -367,6 +367,35 @@ still model-written code running before review. The agent caps a session at
 
 ---
 
+## Recipe: run Claude Code on Kimi K3.1 Pro
+
+`scripts/kimi/kimi` runs the `claude` CLI against OpenRouter's Anthropic-format
+endpoint, with every model role (opus, sonnet, fable, haiku, subagents) set to
+`moonshotai/kimi-k3.1-pro`. Arguments go to `claude` unchanged, so `kimi`,
+`kimi -c` and `kimi -p "task"` work as they do with `claude`. Link it onto your
+PATH once: `ln -sf "$PWD/scripts/kimi/kimi" ~/.local/bin/kimi`.
+
+It uses your normal `~/.claude`: settings, plugins, hooks, memory and the
+mailbox. The session is a peer of the Claude sessions on the machine, named
+`kimi-<dir>` unless you pass `-n`. The OpenRouter token takes precedence over
+the claude.ai login, so the claude.ai connectors are off in this session. On
+2026-10-23 a headless run with an Explore subagent sent all of its requests to
+Kimi, and none went to Anthropic.
+
+- Moonshot is the only provider, serving mxfp4 weights at USD 2 / 10 per
+  million input / output tokens (the `highspeed` tier costs twice that). The
+  context is 1M. The `[1m]` suffix the script adds tells Claude Code to use the
+  full 1M; `KIMI_CONTEXT_1M=0` drops it.
+- Claude Code's `total_cost_usd` is a guess for non-Claude models. Read the
+  real cost on the OpenRouter activity page.
+- The key comes from `OPENROUTER_API_KEY` or the Keychain item `ds-openrouter`.
+  It is in the session's environment as `ANTHROPIC_AUTH_TOKEN`, so the session's
+  shell can read it (checked 2026-10-23). Use a key with a spending limit.
+- Kimi has not yet been run through the bead-replay battery (bead zmp7). Its
+  quality in this harness is not measured.
+
+---
+
 ## Recipe: tune the session budget
 
 If long tasks crash with `ECONNRESET`, the inner Qwen is overrunning its context
