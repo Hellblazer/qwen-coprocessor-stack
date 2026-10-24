@@ -376,8 +376,12 @@ endpoint, with every model role (opus, sonnet, fable, haiku, subagents) set to
 PATH once: `ln -sf "$PWD/scripts/kimi/kimi" ~/.local/bin/kimi`.
 
 It uses your normal `~/.claude`: settings, plugins, hooks, memory and the
-mailbox. The session is a peer of the Claude sessions on the machine, named
-`kimi-<dir>` unless you pass `-n`. The OpenRouter token takes precedence over
+mailbox. The session is a peer of the Claude sessions on the machine: like the
+`claude` shell function, the launcher adds `--channels plugin:conexus@nexus-plugins`
+and names the session `kimi_<dir>_<hex>` (no hyphen, so the close gates do not
+read it as a bead id) unless you pass `-n` or `-p`. To move an existing session
+onto Kimi, resume it with `kimi --resume <id>`; resuming it with `claude` sends
+the Kimi model name to Anthropic and fails. The OpenRouter token takes precedence over
 the claude.ai login, so the claude.ai connectors are off in this session. On
 2026-10-23 a headless run with an Explore subagent sent all of its requests to
 Kimi, and none went to Anthropic.

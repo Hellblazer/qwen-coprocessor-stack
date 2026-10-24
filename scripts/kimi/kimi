@@ -6,7 +6,8 @@
 #   Shares the default ~/.claude (settings, plugins, hooks, memory, mailbox), so the session is
 #   a peer of the Claude sessions on this machine. The OpenRouter token takes precedence over
 #   the claude.ai login, so claude.ai connectors are off in this session (Claude Code warns).
-#   The session gets the display name kimi-<dir> unless -n/--name is given.
+#   Adds --channels plugin:conexus@nexus-plugins and a kimi_<dir>_<hex> name, as the claude
+#   shell function does; pass your own --channels or -n to override.
 # Env: KIMI_MODEL (default moonshotai/kimi-k3.1-pro), KIMI_CONTEXT_1M (default 1; 0 drops the
 #      [1m] suffix and Claude Code assumes 200K), OPENROUTER_API_KEY (else Keychain item
 #      kimi-openrouter, else ds-openrouter), CLAUDE_BIN (default: claude on PATH).
@@ -23,10 +24,14 @@ KEY=${KEY:-$(security find-generic-password -s ds-openrouter -w 2>/dev/null)}
 [ -n "$KEY" ] || { echo "kimi: no OPENROUTER_API_KEY and no Keychain item kimi-openrouter or ds-openrouter" >&2; exit 1; }
 CLAUDE=${CLAUDE_BIN:-$(command -v claude)} || { echo "kimi: claude not on PATH" >&2; exit 1; }
 
-NAME=()
+# Same session conventions as the interactive `claude` shell function: conexus channels for
+# peer messages, and a name with no hyphen (a hyphenated name reads as a bead id to the close
+# gates, nexus-rsqdl). Explicit names and print runs keep their own.
+PRE=()
+case " $* " in *" --channels "*|*" --channels="*) ;; *) PRE=(--channels plugin:conexus@nexus-plugins) ;; esac
 case " $* " in
-  *" -n "*|*" --name "*|*" --name="*) ;;
-  *) NAME=(-n "kimi-$(basename "$PWD")") ;;
+  *" -n "*|*" --name "*|*" --name="*|*" -p "*|*" --print "*) ;;
+  *) D=$(basename "$PWD"); PRE+=(-n "kimi_${D//-/_}_$(openssl rand -hex 2 | cut -c1-3)") ;;
 esac
 
 export ANTHROPIC_BASE_URL=https://openrouter.ai/api
@@ -39,4 +44,4 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL=$MAIN
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=$MODEL
 export CLAUDE_CODE_SUBAGENT_MODEL=$MODEL
 unset OPENROUTER_API_KEY
-exec "$CLAUDE" "${NAME[@]}" "$@"
+exec "$CLAUDE" "${PRE[@]}" "$@"
