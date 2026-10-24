@@ -386,6 +386,12 @@ Kimi, and none went to Anthropic.
   million input / output tokens (the `highspeed` tier costs twice that). The
   context is 1M. The `[1m]` suffix the script adds tells Claude Code to use the
   full 1M; `KIMI_CONTEXT_1M=0` drops it.
+- Kimi is reachable only from a session started with `kimi`: the endpoint is
+  fixed at launch, so picking the Kimi model with `/model` in a `claude`
+  session sends it to Anthropic (`model_not_found`). `/model` also saves its
+  choice as the default in the shared `~/.claude/settings.json`, where a Kimi
+  name breaks new `claude` sessions; in a `kimi` session there is nothing to
+  pick, since every role is already Kimi.
 - Claude Code's `total_cost_usd` is a guess for non-Claude models. Read the
   real cost on the OpenRouter activity page.
 - The key comes from `OPENROUTER_API_KEY`, else the Keychain item
