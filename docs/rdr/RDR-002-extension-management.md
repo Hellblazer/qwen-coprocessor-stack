@@ -997,11 +997,15 @@ operator's authority whenever a session activates the extension — so a remote
 install lands arbitrary code on the host regardless of timing details. On the
 *supervisor-forwarded* `opts.mcpServers` path, RDR-013's Pin-verified finding
 established that such servers launch at SDK session init BEFORE any permission
-check; the *extension-loader* path (manifest-declared servers, loaded by
-qwen-code itself) is analogous but has NOT been independently spike-verified —
-this amendment conservatively assumes it behaves the same (bead
-`qwen-coprocessor-stack-0wu` tracks the verification; the gate does not depend
-on the timing nuance either way). The threat is not an untrusted client — it
+check. The *extension-loader* path (manifest-declared servers, loaded by
+qwen-code itself) behaves the same, verified by its own spike on 2026-10-22
+(bead `qwen-coprocessor-stack-0wu`, qwen-code 0.15.6 through `@qwen-code/sdk`
+0.1.7, `permissionMode: "default"` with a `canUseTool` that denies, an
+isolated HOME holding one probe extension): the probe server was spawned,
+initialized and listed 1.0-1.1 s after the query started and showed as
+connected in the SDK's init message, 28.8 s before the first `canUseTool` call
+when the prompt asked for a tool, and with no `canUseTool` call at all when it
+did not. The gate does not depend on the timing either way. The threat is not an untrusted client — it
 is a trusted client running an autonomous model over attacker-influenced task
 text.
 
