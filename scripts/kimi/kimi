@@ -18,8 +18,8 @@
 MODEL=${KIMI_MODEL:-moonshotai/kimi-k3.1-pro}
 MAIN=$MODEL
 [ "${KIMI_CONTEXT_1M:-1}" = 1 ] && MAIN="$MODEL[1m]"
-KEY=${OPENROUTER_API_KEY:-$(security find-generic-password -s kimi-openrouter -w 2>/dev/null ||
-  security find-generic-password -s ds-openrouter -w 2>/dev/null)}
+KEY=${OPENROUTER_API_KEY:-$(security find-generic-password -s kimi-openrouter -w 2>/dev/null)}
+KEY=${KEY:-$(security find-generic-password -s ds-openrouter -w 2>/dev/null)}
 [ -n "$KEY" ] || { echo "kimi: no OPENROUTER_API_KEY and no Keychain item kimi-openrouter or ds-openrouter" >&2; exit 1; }
 CLAUDE=${CLAUDE_BIN:-$(command -v claude)} || { echo "kimi: claude not on PATH" >&2; exit 1; }
 
