@@ -388,8 +388,13 @@ Kimi, and none went to Anthropic.
   full 1M; `KIMI_CONTEXT_1M=0` drops it.
 - Claude Code's `total_cost_usd` is a guess for non-Claude models. Read the
   real cost on the OpenRouter activity page.
-- The key comes from `OPENROUTER_API_KEY` or the Keychain item `ds-openrouter`.
-  It is in the session's environment as `ANTHROPIC_AUTH_TOKEN`, so the session's
+- The key comes from `OPENROUTER_API_KEY`, else the Keychain item
+  `kimi-openrouter`, else `ds-openrouter`. Give Kimi its own key: one turn at
+  ~380K prompt tokens costs about USD 0.76 uncached, and on the shared
+  `ds-openrouter` key a long session spends the limit dsh and the supervisor's
+  OpenRouter backends depend on (it ran out on 2026-10-23). Add one with
+  `security add-generic-password -a "$USER" -s kimi-openrouter -w`. It is in the
+  session's environment as `ANTHROPIC_AUTH_TOKEN`, so the session's
   shell can read it (checked 2026-10-23). Use a key with a spending limit.
 - Kimi has not yet been run through the bead-replay battery (bead zmp7). Its
   quality in this harness is not measured.

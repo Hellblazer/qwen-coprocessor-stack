@@ -9,15 +9,18 @@
 #   The session gets the display name kimi-<dir> unless -n/--name is given.
 # Env: KIMI_MODEL (default moonshotai/kimi-k3.1-pro), KIMI_CONTEXT_1M (default 1; 0 drops the
 #      [1m] suffix and Claude Code assumes 200K), OPENROUTER_API_KEY (else Keychain item
-#      ds-openrouter), CLAUDE_BIN (default: claude on PATH).
+#      kimi-openrouter, else ds-openrouter), CLAUDE_BIN (default: claude on PATH).
+# A key of its own (kimi-openrouter) keeps a heavy Kimi session from spending the limit that
+# dsh and the supervisor's OpenRouter backends share on ds-openrouter.
 # The token is in the claude process's environment as ANTHROPIC_AUTH_TOKEN.
 # Claude Code's reported cost is a guess for non-Claude models; OpenRouter's dashboard has the
 # real figure.
 MODEL=${KIMI_MODEL:-moonshotai/kimi-k3.1-pro}
 MAIN=$MODEL
 [ "${KIMI_CONTEXT_1M:-1}" = 1 ] && MAIN="$MODEL[1m]"
-KEY=${OPENROUTER_API_KEY:-$(security find-generic-password -s ds-openrouter -w 2>/dev/null)}
-[ -n "$KEY" ] || { echo "kimi: no OPENROUTER_API_KEY and no Keychain item ds-openrouter" >&2; exit 1; }
+KEY=${OPENROUTER_API_KEY:-$(security find-generic-password -s kimi-openrouter -w 2>/dev/null ||
+  security find-generic-password -s ds-openrouter -w 2>/dev/null)}
+[ -n "$KEY" ] || { echo "kimi: no OPENROUTER_API_KEY and no Keychain item kimi-openrouter or ds-openrouter" >&2; exit 1; }
 CLAUDE=${CLAUDE_BIN:-$(command -v claude)} || { echo "kimi: claude not on PATH" >&2; exit 1; }
 
 NAME=()
