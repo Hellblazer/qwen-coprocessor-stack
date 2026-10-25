@@ -389,7 +389,11 @@ Kimi, and none went to Anthropic.
 - Moonshot is the only provider, serving mxfp4 weights at USD 2 / 10 per
   million input / output tokens (the `highspeed` tier costs twice that). The
   context is 1M. The `[1m]` suffix the script adds tells Claude Code to use the
-  full 1M; `KIMI_CONTEXT_1M=0` drops it.
+  full 1M; `KIMI_CONTEXT_1M=0` drops it. Auto-compact fires at 250K tokens,
+  not near 1M: the script sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from
+  `KIMI_COMPACT_WINDOW` (default `250000`, range 100k to 1M). On 2026-10-23 a
+  session left to grow to 330-580K tokens cost about USD 0.12 a request even
+  with 97% cache reads, and spent USD 37 in six hours.
 - Kimi is reachable only from a session started with `kimi`: the endpoint is
   fixed at launch, so picking the Kimi model with `/model` in a `claude`
   session sends it to Anthropic (`model_not_found`). `/model` also saves its
