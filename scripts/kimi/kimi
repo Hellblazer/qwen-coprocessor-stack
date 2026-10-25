@@ -9,11 +9,15 @@
 #   Adds --channels plugin:conexus@nexus-plugins and a kimi_<dir>_<hex> name, as the claude
 #   shell function does; pass your own --channels or -n to override.
 # Env: KIMI_MODEL (default moonshotai/kimi-k3.1-pro), KIMI_CONTEXT_1M (default 1; 0 drops the
-#      [1m] suffix and Claude Code assumes 200K), OPENROUTER_API_KEY (else Keychain item
+#      [1m] suffix and Claude Code assumes 200K), KIMI_COMPACT_WINDOW (default 250000; the context
+#      size at which auto-compact fires, 100k to 1M, passed as CLAUDE_CODE_AUTO_COMPACT_WINDOW),
+#      OPENROUTER_API_KEY (else Keychain item
 #      kimi-openrouter, else ds-openrouter), CLAUDE_BIN (default: claude on PATH).
 # A key of its own (kimi-openrouter) keeps a heavy Kimi session from spending the limit that
 # dsh and the supervisor's OpenRouter backends share on ds-openrouter.
 # The token is in the claude process's environment as ANTHROPIC_AUTH_TOKEN.
+# Compacting at 250K rather than near 1M keeps the per-request cost down: the ART session ran at
+# 330-580K tokens of context, about USD 0.12 a request even at 97% cache reads (bead slwz).
 # Claude Code's reported cost is a guess for non-Claude models; OpenRouter's dashboard has the
 # real figure.
 MODEL=${KIMI_MODEL:-moonshotai/kimi-k3.1-pro}
@@ -43,5 +47,6 @@ export ANTHROPIC_DEFAULT_OPUS_MODEL=$MAIN
 export ANTHROPIC_DEFAULT_SONNET_MODEL=$MAIN
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=$MODEL
 export CLAUDE_CODE_SUBAGENT_MODEL=$MODEL
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=${KIMI_COMPACT_WINDOW:-250000}
 unset OPENROUTER_API_KEY
 exec "$CLAUDE" "${PRE[@]}" "$@"
