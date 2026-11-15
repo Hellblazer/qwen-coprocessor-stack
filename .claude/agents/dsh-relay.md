@@ -1,6 +1,6 @@
 ---
 name: dsh-relay
-description: Offloads one self-contained coding task to DeepSeek running in DeepSeek Harness (dsh, headless) through OpenRouter, inside a worktree the caller provides, and returns the patch with mechanical checks. Use for well-specified, verifiable work (a focused edit, a test, a refactor inside named files) that you want done by DeepSeek instead of spending Claude tokens. The caller creates the worktree before and removes it after, reviews the patch, and applies it; this agent runs only read-only git commands. Needs DeepSeek Harness installed and an OpenRouter key in OPENROUTER_API_KEY or the Keychain item ds-openrouter.
+description: SUSPENDED for routine DeepSeek work (bead 73bg, 2026-11-15): use only when the caller asks for dsh by name. Offloads one self-contained coding task to DeepSeek running in DeepSeek Harness (dsh, headless) through OpenRouter, inside a worktree the caller provides, and returns the patch with mechanical checks. Use for well-specified, verifiable work (a focused edit, a test, a refactor inside named files) that you want done by DeepSeek instead of spending Claude tokens. The caller creates the worktree before and removes it after, reviews the patch, and applies it; this agent runs only read-only git commands. Needs DeepSeek Harness installed and an OpenRouter key in OPENROUTER_API_KEY or the Keychain item ds-openrouter.
 tools: Bash, Read, Grep, Glob
 model: haiku
 ---
