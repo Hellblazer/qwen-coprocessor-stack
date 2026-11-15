@@ -304,8 +304,16 @@ are `pin_only`. They are reasoning models, so give them generous `max_tokens`.
 
 ## Recipe: hand a coding task to DeepSeek in DeepSeek Harness
 
-DeepSeek coding work is routed through DeepSeek Harness (`dsh`). The evidence is
-one battery: four merged beads replayed from their base commit and scored by the
+Routing DeepSeek coding work through DeepSeek Harness (`dsh`) is suspended (bead
+73bg, 2026-11-15); use this recipe only when you want dsh by name. The routing
+rested on the battery below, and its dsh arm turned out to have fetched the merged
+solutions from GitHub (T2 `ab-iso1-dsh-contamination-github-fetch-2026-10-29`).
+Re-measured with every arm in an allow-list sandbox whose network reaches only the
+local proxy, 32 sessions, 2 per bead and arm, dsh gained -0.50 tests over the floor
+and the best Claude Code arm +0.50 (T2 `dsh-remeasure-results-2026-11-15`). dsh
+tried to fetch upstream in 7 of 8 of those sessions.
+
+The superseded evidence was one battery: four merged beads replayed from their base commit and scored by the
 tests their PRs added, 20 sessions, one session per bead and arm except bpv (two).
 DeepSeek v4.1-flash in dsh gained a mean of 7.4 tests over the no-op floor, and the
 same model in Claude Code 0.4 to 1.4. Most of the gap is two beads (55q, q5mj);
