@@ -100,6 +100,14 @@ tag in the image name). Gold patch for `psf__requests-1963` scored
 **resolved**. First base-image build ~8 min (one-time); per-instance eval
 **47–80 s**. Requires Docker Desktop running (`open -a Docker`).
 
+> **Annotation, 2026-11-22 (bead hbjw).** swebench 4.1.0 builds these images
+> for `TestSpec.arch`, which defaults to `x86_64` with no CLI override, so the
+> local build was most likely x86_64 under emulation rather than `linux/arm64`;
+> the original images are gone, so this cannot be re-checked. The prebuilt
+> `swebench/` images do run on the Mac. In 2026-11 the local build began
+> failing under emulation (exit 139), and `score.py` now defaults to the
+> prebuilt images (PR #154).
+
 **RF-2 — agent→predictions→score rail proven (Arm C).** Clone @ base_commit
 → `claude -p --dangerously-skip-permissions --output-format json` → `git diff`
 → score = **resolved**. Telemetry available from the JSON envelope

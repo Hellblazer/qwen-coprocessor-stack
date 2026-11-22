@@ -72,7 +72,7 @@ Counts are per-class-per-instance and NOT mutually exclusive (one instance can b
   timeouts register as unresolved flips, so Arm B's ±30 pp band overstates
   *model* non-determinism — part of it is infra noise, not the model.
 - **Single-host, serial scoring.** All scoring ran on one M-series Mac at
-  `--max_workers 1` against a locally-built arm64 image set; this is a
+  `--max_workers 1` against a locally-built image set (x86_64 under emulation, not arm64; since 2026-11-22 the prebuilt `swebench/` images, bead hbjw); this is a
   throughput floor, not a property of the models.
 - **Robustness needs more reps / a larger slice** — exactly the trigger-gated
   Phase-3 work (`qwen-coprocessor-stack-40v.10`).
