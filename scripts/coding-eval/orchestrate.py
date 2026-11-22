@@ -487,6 +487,9 @@ def orchestrate(
     production ones.
     """
     out_dir = Path(out_dir)
+    if do_score and score_fn is score.score_predictions:
+        # Refuse before any generation, not after it (bead hbjw).
+        score.require_swebench()
     # run_id seeds the swebench harness run id (-> Docker container names). A
     # uuid suffix avoids same-second collisions across arms/re-scores.
     run_id = run_id or f"rdr006-{uuid.uuid4().hex[:8]}"

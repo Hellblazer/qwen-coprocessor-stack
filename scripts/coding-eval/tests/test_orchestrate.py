@@ -584,3 +584,25 @@ def test_orchestrate_summary_keys_present_when_no_score(tmp_path):
     # Keys present (None), so programmatic callers need no do_score guard.
     assert summary["docs_path"] is None
     assert summary["scorecards"] is None
+
+
+def test_orchestrate_refuses_missing_swebench_before_generation(tmp_path, monkeypatch):
+    # Bead hbjw: with the real scorer, a missing swebench must stop the run
+    # before any arm generates, not after.
+    def _missing():
+        raise RuntimeError("cannot import swebench")
+
+    monkeypatch.setattr(orchestrate.score, "require_swebench", _missing)
+
+    class _ArmMustNotRun:
+        def __getattr__(self, name):
+            raise AssertionError("an arm started before the swebench check")
+
+    with pytest.raises(RuntimeError, match="swebench"):
+        orchestrate.orchestrate(
+            "A",
+            instance_ids=["a__b-1"],
+            rows={"a__b-1": {}},
+            out_dir=tmp_path,
+            arm_modules={"A": _ArmMustNotRun()},
+        )

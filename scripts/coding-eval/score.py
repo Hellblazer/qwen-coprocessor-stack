@@ -12,20 +12,27 @@ memory ``coding-agent-eval-phase0-spike-2026-06-06``)::
         --run_id <id> \
         --max_workers 1 \
         --instance_ids <ids...> \
-        --namespace '' \
+        --namespace swebench \
         --cache_level instance
 
 Load-bearing flags (verified against swebench 4.1.0 source):
 
-  * ``--namespace ''`` (the empty string) is MANDATORY on arm64 (M-series Mac).
-    ``swebench.harness.utils.optional_str("")`` maps the empty string to
-    ``None``; ``run_evaluation.main`` then takes the ``namespace is None``
-    branch (``build_env_images`` + a LOCAL image build) instead of pulling the
-    published, x86-only ``swebench/...`` namespaced images. Without it the run
-    pulls x86_64 images that cannot execute under the arm64 Docker VM. The
-    ``x86_64`` token still appears inside the locally-built image *tag* (it is
-    baked into the SWE-bench image-naming convention) but the image is built
-    locally for the host arch — that tag string is cosmetic, not a pull target.
+  * ``--namespace swebench`` (the default, bead hbjw, 2026-11-21) uses the
+    published prebuilt ``swebench/sweb.eval.x86_64.*`` images. They are x86_64
+    and run under Docker's emulation on an M-series Mac; mini-swe-agent's
+    generation runs in the same images. The empty string
+    (``optional_str("") -> None``) selects ``build_env_images``, a LOCAL
+    build. That build is also x86_64 (``TestSpec.arch`` defaults to x86_64),
+    so it is emulated too, and since 2026-11 its miniconda step dies with exit
+    139; it worked on 2026-10-12. An older note here said the prebuilt images
+    could not execute on the arm64 VM, which no longer holds. RDR-006 RF-1
+    says the local build was ``linux/arm64``; 4.1.0 source says x86_64, and
+    the old images are gone, so that cannot now be checked.
+
+    Comparability: every score before 2026-11-22 (and every ``report.json``
+    without a ``namespace`` key) came from locally built images; later ones
+    from the prebuilt ``swebench`` images. Each normalized report records its
+    ``namespace``. Compare across the two only with a bridge re-score.
 
   * ``--cache_level instance`` keeps the per-instance image cached so a re-run
     of the same instance skips the (slow, ~minutes) base/env rebuild.
@@ -67,6 +74,9 @@ import subset
 # canonical published name is the ``princeton-nlp`` mirror used in the spike.
 DATASET_NAME = "princeton-nlp/SWE-bench_Lite"
 
+# Harness image namespace: the published prebuilt images (bead hbjw).
+DEFAULT_NAMESPACE = "swebench"
+
 # Per-instance apply markers the harness writes to run_instance.log
 # (swebench.harness.constants APPLY_PATCH_PASS / APPLY_PATCH_FAIL). This is the
 # TRUE git-apply signal — distinct from the summary report's ``completed_ids``,
@@ -80,6 +90,28 @@ APPLY_FAIL_MARKER = ">>>>> Patch Apply Failed"
 def instance_log_dir(cwd: Path, run_id: str, model_name: str) -> Path:
     """Where the harness writes per-instance logs for this run."""
     return Path(cwd) / "logs" / "run_evaluation" / run_id / model_name
+
+
+# Markers of a crashed test run rather than a failing patch. Under Docker's
+# x86 emulation on an M-series Mac, compilers and test runners occasionally
+# segfault (bead hbjw); the harness then scores the instance unresolved.
+CRASH_MARKERS = ("Segmentation fault", "internal compiler error")
+
+
+def parse_crash_ids(log_dir: Path, instance_ids: Sequence[str]) -> list[str]:
+    """Instances whose ``test_output.txt`` carries a crash marker, in input order.
+
+    A marker alone does not mean the score is wrong (a crash can be retried or
+    harmless), so callers intersect this with the unresolved set.
+    """
+    out = []
+    for iid in instance_ids:
+        log = Path(log_dir) / iid / "test_output.txt"
+        if log.exists():
+            text = log.read_text(encoding="utf-8", errors="replace")
+            if any(m in text for m in CRASH_MARKERS):
+                out.append(iid)
+    return out
 
 
 def parse_apply_status(
@@ -128,11 +160,13 @@ def build_argv(
     *,
     dataset: str = DATASET_NAME,
     max_workers: int = 1,
+    namespace: str = DEFAULT_NAMESPACE,
 ) -> list[str]:
     """Construct the official harness argv (RF-1 proven shape).
 
-    The ``--namespace`` value is the EMPTY STRING — load-bearing on arm64
-    (forces a local build; see module docstring). ``--cache_level instance`` is
+    ``namespace`` defaults to ``swebench``: the published prebuilt images (see
+    module docstring, bead hbjw). The empty string selects a local image
+    build. ``--cache_level instance`` is
     pinned. ``--max_workers`` defaults to 1 (the headline scores one arm's full
     subset; 1 keeps the cold env-image builds race-free and deterministic). The
     batched variance probe raises it to evaluate many instances' (cached-image)
@@ -152,7 +186,7 @@ def build_argv(
         "--max_workers",
         str(max_workers),
         "--namespace",
-        "",  # MANDATORY empty string -> optional_str -> None -> local arm64 build
+        namespace,  # "" -> optional_str -> None -> local build
         "--cache_level",
         "instance",
     ]
@@ -263,6 +297,25 @@ def parse_report(
 DEFAULT_HARNESS_TIMEOUT_SECONDS = 21600
 
 
+def require_swebench() -> None:
+    """Refuse to start when ``sys.executable`` cannot import swebench.
+
+    The harness runs as ``sys.executable -m swebench...``. Without this check
+    an interpreter lacking swebench fails only after generation, surfacing as
+    a misleading "harness report not found" (bead hbjw). Entry points that
+    generate before scoring (``orchestrate.orchestrate``, ``score.main``) call
+    it up front so the refusal comes before any generation.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("swebench") is None:
+        raise RuntimeError(
+            f"{sys.executable} cannot import swebench, which scoring needs "
+            "(with Docker). Install it into the interpreter you run "
+            "(`pip install swebench`), e.g. scripts/coding-eval/.venv."
+        )
+
+
 def _make_default_runner(timeout_seconds: float) -> "Runner":
     """Build the production runner: execute the harness as a subprocess in
     ``cwd`` (where it writes its report), streaming output, bounded by
@@ -314,6 +367,7 @@ def score_predictions(
     cwd: Path | None = None,
     report_out: Path | None = None,
     max_workers: int = 1,
+    namespace: str = DEFAULT_NAMESPACE,
 ) -> dict:
     """Score ``predictions_path`` via the official harness; return normalized dict.
 
@@ -326,12 +380,18 @@ def score_predictions(
     owns its own bounding.
     """
     if runner is None:
+        require_swebench()
         runner = _make_default_runner(harness_timeout)
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     instance_ids = list(instance_ids)
 
     argv = build_argv(
-        predictions_path, run_id, instance_ids, dataset=dataset, max_workers=max_workers
+        predictions_path,
+        run_id,
+        instance_ids,
+        dataset=dataset,
+        max_workers=max_workers,
+        namespace=namespace,
     )
     rc = runner(argv, cwd)
 
@@ -357,6 +417,9 @@ def score_predictions(
         rep_file, instance_ids, run_id=run_id, dataset=dataset
     )
     normalized["harness_exit_code"] = rc
+    # Which image path produced this score (bead hbjw): scores from the prebuilt
+    # and the locally built images are not guaranteed identical.
+    normalized["namespace"] = namespace
 
     # Per-instance git-apply status from the run logs — the TRUE clean-apply
     # signal (the summary report has none). report.py prefers applied_ids over
@@ -367,6 +430,19 @@ def score_predictions(
     normalized["applied_ids"] = [i for i, v in apply_status.items() if v is True]
     normalized["apply_failed_ids"] = [i for i, v in apply_status.items() if v is False]
     normalized["apply_unknown_ids"] = [i for i, v in apply_status.items() if v is None]
+
+    # Unresolved instances whose test run crashed: possibly an emulation flake,
+    # not a wrong patch. Re-score them before trusting the count.
+    resolved = set(normalized.get("resolved_ids", []))
+    suspects = [i for i in parse_crash_ids(log_dir, instance_ids) if i not in resolved]
+    normalized["crash_suspect_ids"] = suspects
+    if suspects:
+        warnings.warn(
+            f"{len(suspects)} unresolved instance(s) crashed during the test run "
+            f"({', '.join(suspects)}); re-score them before trusting the count.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     out = Path(report_out) if report_out is not None else cwd / "report.json"
     out.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
@@ -388,17 +464,24 @@ def main() -> None:
     )
     ap.add_argument("--dataset", default=DATASET_NAME)
     ap.add_argument(
+        "--namespace",
+        default=DEFAULT_NAMESPACE,
+        help="Harness image namespace (default: swebench, prebuilt images; '' builds locally).",
+    )
+    ap.add_argument(
         "--report_out",
         default=None,
         help="Where to write the normalized report.json (default: ./report.json).",
     )
     args = ap.parse_args()
+    require_swebench()
 
     result = score_predictions(
         args.predictions_path,
         args.run_id,
         args.instance_ids,
         dataset=args.dataset,
+        namespace=args.namespace,
         report_out=Path(args.report_out) if args.report_out else None,
     )
     print(
