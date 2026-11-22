@@ -19,7 +19,8 @@
   ],
   "runtime_repos": [
     "ggml-org/llama.cpp",
-    "PrismML-Eng/llama.cpp"
+    "PrismML-Eng/llama.cpp",
+    "unslothai/llama.cpp"
   ],
   "overlay_repos": [
     "Hellblazer/qwen-coprocessor-stack"
