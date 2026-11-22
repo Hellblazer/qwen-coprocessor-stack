@@ -92,6 +92,28 @@ def instance_log_dir(cwd: Path, run_id: str, model_name: str) -> Path:
     return Path(cwd) / "logs" / "run_evaluation" / run_id / model_name
 
 
+# Markers of a crashed test run rather than a failing patch. Under Docker's
+# x86 emulation on an M-series Mac, compilers and test runners occasionally
+# segfault (bead hbjw); the harness then scores the instance unresolved.
+CRASH_MARKERS = ("Segmentation fault", "internal compiler error")
+
+
+def parse_crash_ids(log_dir: Path, instance_ids: Sequence[str]) -> list[str]:
+    """Instances whose ``test_output.txt`` carries a crash marker, in input order.
+
+    A marker alone does not mean the score is wrong (a crash can be retried or
+    harmless), so callers intersect this with the unresolved set.
+    """
+    out = []
+    for iid in instance_ids:
+        log = Path(log_dir) / iid / "test_output.txt"
+        if log.exists():
+            text = log.read_text(encoding="utf-8", errors="replace")
+            if any(m in text for m in CRASH_MARKERS):
+                out.append(iid)
+    return out
+
+
 def parse_apply_status(
     log_dir: Path, instance_ids: Sequence[str]
 ) -> dict[str, bool | None]:
@@ -408,6 +430,19 @@ def score_predictions(
     normalized["applied_ids"] = [i for i, v in apply_status.items() if v is True]
     normalized["apply_failed_ids"] = [i for i, v in apply_status.items() if v is False]
     normalized["apply_unknown_ids"] = [i for i, v in apply_status.items() if v is None]
+
+    # Unresolved instances whose test run crashed: possibly an emulation flake,
+    # not a wrong patch. Re-score them before trusting the count.
+    resolved = set(normalized.get("resolved_ids", []))
+    suspects = [i for i in parse_crash_ids(log_dir, instance_ids) if i not in resolved]
+    normalized["crash_suspect_ids"] = suspects
+    if suspects:
+        warnings.warn(
+            f"{len(suspects)} unresolved instance(s) crashed during the test run "
+            f"({', '.join(suspects)}); re-score them before trusting the count.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     out = Path(report_out) if report_out is not None else cwd / "report.json"
     out.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")

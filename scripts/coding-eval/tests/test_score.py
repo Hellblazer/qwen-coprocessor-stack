@@ -502,3 +502,39 @@ def test_build_argv_max_workers_default_and_override():
     assert a1[a1.index("--max_workers") + 1] == "1"   # headline default
     a4 = score.build_argv("p.jsonl", "r", ["i"], max_workers=4)
     assert a4[a4.index("--max_workers") + 1] == "4"   # batched probe override
+
+
+def test_parse_crash_ids_flags_emulation_crashes(tmp_path):
+    # Bead hbjw: under Docker's x86 emulation a test run can segfault, which the
+    # harness scores as unresolved. Such instances must be visible for re-score.
+    for iid, text in {
+        "a__b-1": "ok\n/eval.sh: line 49:   199 Segmentation fault      (core dumped) ./runtests.py\n",
+        "c__d-2": "gcc: internal compiler error: Segmentation fault signal terminated program cc1\n",
+        "e__f-3": "all tests passed\n",
+    }.items():
+        (tmp_path / iid).mkdir()
+        (tmp_path / iid / "test_output.txt").write_text(text)
+    assert score.parse_crash_ids(tmp_path, ["a__b-1", "c__d-2", "e__f-3", "g__h-4"]) == [
+        "a__b-1",
+        "c__d-2",
+    ]
+
+
+def test_score_predictions_reports_unresolved_crash_suspects(tmp_path):
+    preds = tmp_path / "preds.jsonl"
+    ids = ["psf__requests-1963", "psf__requests-2148"]
+    _write_preds(preds, "gold", ids)
+    captured: dict = {}
+    base = _fake_runner_factory(_canned_report(["psf__requests-1963"], ["psf__requests-2148"]), captured=captured)
+
+    def runner(argv, cwd):
+        rc = base(argv, cwd)
+        log_dir = score.instance_log_dir(cwd, "crash", "gold")
+        for iid in ids:  # both crashed; only the unresolved one is a suspect
+            (log_dir / iid).mkdir(parents=True, exist_ok=True)
+            (log_dir / iid / "test_output.txt").write_text("Segmentation fault (core dumped)\n")
+        return rc
+
+    with pytest.warns(RuntimeWarning, match="re-score"):
+        norm = score.score_predictions(preds, "crash", ids, runner=runner, cwd=tmp_path)
+    assert norm["crash_suspect_ids"] == ["psf__requests-2148"]
