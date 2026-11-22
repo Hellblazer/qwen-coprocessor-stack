@@ -206,7 +206,9 @@ def _infer_format(paths: Iterable[str]) -> str:
     return "safetensors"
 
 
-EXTERNAL_HF_CACHE = Path("/Volumes/Transcend Hell/hf-cache")
+# The WD_BLACK NVMe (HF_HOME). Never the SD card at /Volumes/Transcend Hell: it silently corrupts sustained writes
+# with no I/O error (CLAUDE.md), and a fetch's hash covers the bytes received, not what the card stored.
+EXTERNAL_HF_CACHE = Path("/Volumes/SanHell/hf-cache")
 
 
 def default_dest_dir(owner: str, name: str, sha: str) -> Path:
@@ -600,6 +602,23 @@ def _expected_total(resp: Any, offset: int) -> int | None:
     return offset + int(length) if length.isdecimal() else None
 
 
+def _read_back(dest_path: Path, received: str) -> str:
+    """Hash the finished file from disk and refuse it if it differs from the bytes received.
+
+    The stream hash covers the bytes received, not the bytes the disk kept: a failing medium can store a different
+    file with no I/O error (2026-11-20, an SD card stored a 22.9 GB GGUF that hashed differently, bead n2mc). The
+    hash a caller compares to upstream must be the stored file's.
+    """
+    stored = sha256_file(dest_path)
+    if stored != received:
+        dest_path.unlink(missing_ok=True)
+        raise ProvenanceError(
+            f"stored file differs from the bytes received: {dest_path} (received {received}, read back {stored}). "
+            "Sanctioned next step: the destination disk is corrupting writes; fetch to a different disk (--dest)."
+        )
+    return stored
+
+
 def download_to_path(
     url: str, dest_path: Path, headers: dict[str, str], chunk_size: int = 1 << 20, resume: bool = False
 ) -> tuple[str, int]:
@@ -689,7 +708,7 @@ def download_to_path(
         dest_path.unlink(missing_ok=True)
         raise
     part_path.replace(dest_path)
-    return h.hexdigest(), size
+    return _read_back(dest_path, h.hexdigest()), size
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -785,7 +804,7 @@ def download_gh_artifact_zip(
         dest_path.unlink(missing_ok=True)
         raise
     part_path.replace(dest_path)
-    return h.hexdigest(), size
+    return _read_back(dest_path, h.hexdigest()), size
 
 
 # --------------------------------------------------------------------------

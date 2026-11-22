@@ -1051,6 +1051,63 @@ def _range_route(content: bytes, seen: list, honour_range: bool = True, lie_tota
     return handler
 
 
+class _CorruptingWriter:
+    """A file opened for writing whose first write lands with one byte flipped, as a failing medium stores it."""
+
+    def __init__(self, f) -> None:
+        self._f, self._first = f, True
+
+    def write(self, b: bytes) -> int:
+        if self._first and b:
+            self._first = False
+            self._f.write(bytes([b[0] ^ 0xFF]) + b[1:])
+            return len(b)
+        return self._f.write(b)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._f.close()
+
+
+class DownloadReadBackTests(ProvenanceTestCase):
+    """bead n2mc: the hash returned must be the stored file's, not the stream's."""
+
+    content = bytes(range(256)) * 64
+
+    def _dest(self) -> Path:
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        return Path(td.name) / "file.bin"
+
+    def _corrupt_writes(self) -> None:
+        real_open = open
+
+        def corrupting_open(path, mode="r", *a, **kw):
+            f = real_open(path, mode, *a, **kw)
+            return _CorruptingWriter(f) if ("w" in mode or "a" in mode) else f
+
+        setattr(prov, "open", corrupting_open)  # module global shadows the builtin inside provenance.py
+        self.addCleanup(lambda: delattr(prov, "open"))
+
+    def test_clean_disk_returns_the_stored_hash(self) -> None:
+        self.server.header_routes["/readback/ok.bin"] = _range_route(self.content, [])
+        dest = self._dest()
+        sha, size = prov.download_to_path(f"{self.server.base_url}/readback/ok.bin", dest, {})
+        self.assertEqual(sha, hashlib.sha256(dest.read_bytes()).hexdigest())
+        self.assertEqual(sha, hashlib.sha256(self.content).hexdigest())
+
+    def test_corrupting_disk_is_refused_and_leaves_no_file(self) -> None:
+        self.server.header_routes["/readback/bad.bin"] = _range_route(self.content, [])
+        dest = self._dest()
+        self._corrupt_writes()
+        with self.assertRaisesRegex(prov.ProvenanceError, "stored file differs from the bytes received"):
+            prov.download_to_path(f"{self.server.base_url}/readback/bad.bin", dest, {})
+        self.assertFalse(dest.exists())
+        self.assertFalse(dest.with_name(dest.name + ".part").exists())
+
+
 class DownloadResumeTests(ProvenanceTestCase):
     content = bytes(range(256)) * 512
 
