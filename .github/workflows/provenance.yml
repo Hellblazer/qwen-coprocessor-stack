@@ -27,7 +27,8 @@ concurrency:
 jobs:
   manifest:
     name: manifest schema + tool tests + upstream drift (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not -latest: the 26.04 image has no Python 3.9 for setup-python.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
