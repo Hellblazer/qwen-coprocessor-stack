@@ -139,6 +139,7 @@ def test_score_predictions_passes_namespace(tmp_path):
         preds, "ns", ids, runner=runner, cwd=tmp_path, namespace=""
     )
     assert captured["argv"][captured["argv"].index("--namespace") + 1] == ""
+    assert json.loads((tmp_path / "report.json").read_text())["namespace"] == ""
 
 
 def test_default_runner_refuses_interpreter_without_swebench(tmp_path, monkeypatch):
@@ -152,12 +153,32 @@ def test_default_runner_refuses_interpreter_without_swebench(tmp_path, monkeypat
         importlib.util, "find_spec",
         lambda name, *a, **k: None if name == "swebench" else real(name, *a, **k),
     )
+    def _no_harness(_timeout):
+        raise AssertionError("harness must not start")
+
+    monkeypatch.setattr(score, "_make_default_runner", _no_harness)
     preds = tmp_path / "preds.jsonl"
     _write_preds(preds, "gold", ["psf__requests-1963"])
     with pytest.raises(RuntimeError, match="swebench"):
         score.score_predictions(
-            preds, "x", ["psf__requests-1963"], cwd=tmp_path, harness_timeout=5
+            preds, "x", ["psf__requests-1963"], cwd=tmp_path
         )
+
+
+def test_cli_passes_empty_namespace_through(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_score(*a, **k):
+        seen.update(k)
+        return {"resolved": 0, "total": 1, "report_out": "r.json"}
+
+    monkeypatch.setattr(score, "score_predictions", fake_score)
+    monkeypatch.setattr(score, "require_swebench", lambda: None)
+    monkeypatch.setattr(sys, "argv", ["score.py", "--predictions_path", "p.jsonl",
+                                      "--run_id", "r", "--instance_ids", "i-1",
+                                      "--namespace", ""])
+    score.main()
+    assert seen["namespace"] == ""
 
 
 def test_build_argv_dataset_override():
@@ -410,6 +431,9 @@ def test_make_default_runner_returns_callable_per_timeout():
 
 
 def test_score_predictions_threads_harness_timeout_to_built_runner(tmp_path, monkeypatch):
+    # The swebench preflight is not under test here; keep this test valid in a
+    # pytest-only interpreter (requirements-dev.txt does not install swebench).
+    monkeypatch.setattr(score, "require_swebench", lambda: None)
     # When no runner is injected, score_predictions builds one with the given
     # harness_timeout; verify the timeout reaches the subprocess wait. The
     # default runner uses Popen + wait(timeout=) (start_new_session) so a hung

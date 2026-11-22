@@ -25,7 +25,14 @@ Load-bearing flags (verified against swebench 4.1.0 source):
     build. That build is also x86_64 (``TestSpec.arch`` defaults to x86_64),
     so it is emulated too, and since 2026-11 its miniconda step dies with exit
     139; it worked on 2026-10-12. An older note here said the prebuilt images
-    could not execute on the arm64 VM, which no longer holds.
+    could not execute on the arm64 VM, which no longer holds. RDR-006 RF-1
+    says the local build was ``linux/arm64``; 4.1.0 source says x86_64, and
+    the old images are gone, so that cannot now be checked.
+
+    Comparability: every score before 2026-11-22 (and every ``report.json``
+    without a ``namespace`` key) came from locally built images; later ones
+    from the prebuilt ``swebench`` images. Each normalized report records its
+    ``namespace``. Compare across the two only with a bridge re-score.
 
   * ``--cache_level instance`` keeps the per-instance image cached so a re-run
     of the same instance skips the (slow, ~minutes) base/env rebuild.
@@ -268,19 +275,22 @@ def parse_report(
 DEFAULT_HARNESS_TIMEOUT_SECONDS = 21600
 
 
-def _require_swebench() -> None:
+def require_swebench() -> None:
     """Refuse to start when ``sys.executable`` cannot import swebench.
 
     The harness runs as ``sys.executable -m swebench...``. Without this check
     an interpreter lacking swebench fails only after generation, surfacing as
-    a misleading "harness report not found" (bead hbjw).
+    a misleading "harness report not found" (bead hbjw). Entry points that
+    generate before scoring (``orchestrate.orchestrate``, ``score.main``) call
+    it up front so the refusal comes before any generation.
     """
     import importlib.util
 
     if importlib.util.find_spec("swebench") is None:
         raise RuntimeError(
-            f"{sys.executable} cannot import swebench; run under "
-            "scripts/coding-eval/.venv/bin/python (pip install -r requirements-dev.txt)."
+            f"{sys.executable} cannot import swebench, which scoring needs "
+            "(with Docker). Install it into the interpreter you run "
+            "(`pip install swebench`), e.g. scripts/coding-eval/.venv."
         )
 
 
@@ -348,7 +358,7 @@ def score_predictions(
     owns its own bounding.
     """
     if runner is None:
-        _require_swebench()
+        require_swebench()
         runner = _make_default_runner(harness_timeout)
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     instance_ids = list(instance_ids)
@@ -385,6 +395,9 @@ def score_predictions(
         rep_file, instance_ids, run_id=run_id, dataset=dataset
     )
     normalized["harness_exit_code"] = rc
+    # Which image path produced this score (bead hbjw): scores from the prebuilt
+    # and the locally built images are not guaranteed identical.
+    normalized["namespace"] = namespace
 
     # Per-instance git-apply status from the run logs — the TRUE clean-apply
     # signal (the summary report has none). report.py prefers applied_ids over
@@ -426,6 +439,7 @@ def main() -> None:
         help="Where to write the normalized report.json (default: ./report.json).",
     )
     args = ap.parse_args()
+    require_swebench()
 
     result = score_predictions(
         args.predictions_path,
