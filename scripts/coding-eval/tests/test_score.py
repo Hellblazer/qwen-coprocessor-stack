@@ -3,8 +3,8 @@
 
 Offline unit tests (ALWAYS run): inject a fake runner that writes a canned
 swebench report to the path the real harness would, and assert (a) the argv we
-build matches the RF-1 proven shape — crucially ``--namespace ''`` (the empty
-string), ``--cache_level instance``, the dataset name, predictions path, run_id,
+build matches the RF-1 proven shape — crucially ``--namespace swebench`` by default
+(bead hbjw), ``--cache_level instance``, the dataset name, predictions path, run_id,
 and instance_ids — and (b) the report parse yields correct resolved/unresolved
 counts, including the missing-instance-counts-as-unresolved case (no crash).
 
@@ -92,13 +92,15 @@ def _fake_runner_factory(report_payload: dict, *, captured: dict, rc: int = 0):
 # ── argv shape (RF-1) ───────────────────────────────────────────────────────
 
 
-def test_build_argv_has_empty_namespace_and_pinned_flags():
+def test_build_argv_defaults_to_prebuilt_namespace_and_pinned_flags():
     argv = score.build_argv(
         "preds.jsonl", "run-x", ["a__b-1", "c__d-2"]
     )
-    # --namespace immediately followed by the EMPTY STRING (load-bearing arm64).
+    # Default is the published prebuilt images (bead hbjw: the local x86 build
+    # segfaults under emulation on arm64).
     ns_idx = argv.index("--namespace")
-    assert argv[ns_idx + 1] == "", "namespace value must be the empty string"
+    assert argv[ns_idx + 1] == "swebench"
+    assert score.DEFAULT_NAMESPACE == "swebench"
 
     # --cache_level instance
     cl_idx = argv.index("--cache_level")
@@ -116,6 +118,46 @@ def test_build_argv_has_empty_namespace_and_pinned_flags():
     # invokes the official harness module, not a reimplementation
     assert "swebench.harness.run_evaluation" in argv
     assert "--max_workers" in argv and argv[argv.index("--max_workers") + 1] == "1"
+
+
+def test_build_argv_empty_namespace_selects_local_build():
+    # The empty string still reaches the harness verbatim: optional_str("")
+    # -> None -> build_env_images (local build).
+    argv = score.build_argv("p.jsonl", "r", ["i-1"], namespace="")
+    assert argv[argv.index("--namespace") + 1] == ""
+
+
+def test_score_predictions_passes_namespace(tmp_path):
+    preds = tmp_path / "preds.jsonl"
+    ids = ["psf__requests-1963"]
+    _write_preds(preds, "gold", ids)
+    captured: dict = {}
+    runner = _fake_runner_factory(
+        _canned_report(ids, []), captured=captured
+    )
+    score.score_predictions(
+        preds, "ns", ids, runner=runner, cwd=tmp_path, namespace=""
+    )
+    assert captured["argv"][captured["argv"].index("--namespace") + 1] == ""
+
+
+def test_default_runner_refuses_interpreter_without_swebench(tmp_path, monkeypatch):
+    # The harness runs under sys.executable; an interpreter without swebench
+    # used to fail only after hours of generation, with a misleading
+    # "report not found". It must fail before the harness starts.
+    import importlib.util
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name, *a, **k: None if name == "swebench" else real(name, *a, **k),
+    )
+    preds = tmp_path / "preds.jsonl"
+    _write_preds(preds, "gold", ["psf__requests-1963"])
+    with pytest.raises(RuntimeError, match="swebench"):
+        score.score_predictions(
+            preds, "x", ["psf__requests-1963"], cwd=tmp_path, harness_timeout=5
+        )
 
 
 def test_build_argv_dataset_override():
@@ -189,9 +231,9 @@ def test_score_predictions_offline_full_flow(tmp_path):
         preds, "spike-gold", ids, runner=runner, cwd=tmp_path
     )
 
-    # runner saw the RF-1 argv with empty namespace
+    # runner saw the default (prebuilt) namespace
     ns_idx = captured["argv"].index("--namespace")
-    assert captured["argv"][ns_idx + 1] == ""
+    assert captured["argv"][ns_idx + 1] == "swebench"
     assert captured["cwd"] == tmp_path
 
     # normalized counts correct
