@@ -253,6 +253,27 @@ class ProvenanceTestCase(unittest.TestCase):
             {"model.Q8_0.gguf": gguf_bytes},
         )
 
+        # -- packager repos publishing GGUFs under the `.gguf_file` suffix ----
+        cls.ggufile_sha = sha1_commit("repo-ggufile")
+        register_hf_repo(
+            s,
+            "unsloth/repo-ggufile-GGUF",
+            cls.ggufile_sha,
+            [sibling_weight("Mainline/model.Q8_0.gguf_file", gguf_bytes)],
+            [tree_entry("Mainline/model.Q8_0.gguf_file", gguf_bytes)],
+            {"Mainline/model.Q8_0.gguf_file": gguf_bytes},
+        )
+        cls.notgguf_sha = sha1_commit("repo-notgguf")
+        not_gguf = b"PK\x03\x04-not-a-gguf-" * 20
+        register_hf_repo(
+            s,
+            "unsloth/repo-notgguf-GGUF",
+            cls.notgguf_sha,
+            [sibling_weight("model.Q8_0.gguf_file", not_gguf)],
+            [tree_entry("model.Q8_0.gguf_file", not_gguf)],
+            {"model.Q8_0.gguf_file": not_gguf},
+        )
+
     def make_manifest_path(self) -> str:
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
@@ -487,6 +508,50 @@ class AllowlistTests(ProvenanceTestCase):
         entry = manifest["artifacts"][0]
         self.assertEqual(entry["trust_tier"], "packager")
         self.assertEqual(entry["derived_from"], "Qwen/repo-basic@" + self.basic_sha)
+
+    def _fetch_packager(self, repo: str, manifest_path: str, dest: str) -> int:
+        return self.run_main(
+            [
+                "fetch", repo, "--manifest", manifest_path, "--dest", dest,
+                "--hf-base", self.server.base_url, "--allow-packager",
+                "--derived-from", "Qwen/repo-basic@" + self.basic_sha,
+            ]
+        )
+
+    def test_gguf_file_suffix_fetches_as_gguf(self) -> None:
+        manifest_path = self.make_manifest_path()
+        dest = self.make_dest_dir()
+        self.assertEqual(self._fetch_packager("unsloth/repo-ggufile-GGUF", manifest_path, dest), 0)
+        entry = prov.load_manifest(manifest_path)["artifacts"][0]
+        self.assertEqual(entry["format"], "gguf")
+        self.assertEqual([f["path"] for f in entry["files"]], ["Mainline/model.Q8_0.gguf_file"])
+        self.assertTrue((Path(dest) / "Mainline/model.Q8_0.gguf_file").exists())
+
+    def test_gguf_file_suffix_without_gguf_magic_refused(self) -> None:
+        manifest_path = self.make_manifest_path()
+        dest = self.make_dest_dir()
+        self.assertNotEqual(self._fetch_packager("unsloth/repo-notgguf-GGUF", manifest_path, dest), 0)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+        self.assertFalse((Path(dest) / "model.Q8_0.gguf_file").exists())
+
+    def test_gguf_file_reused_from_disk_without_gguf_magic_refused(self) -> None:
+        # A file already at the destination whose hash matches upstream is reused without downloading;
+        # the magic check must still run on it (e.g. left behind by an interrupted read-back).
+        manifest_path = self.make_manifest_path()
+        dest = self.make_dest_dir()
+        placed = Path(dest) / "model.Q8_0.gguf_file"
+        placed.parent.mkdir(parents=True, exist_ok=True)
+        placed.write_bytes(b"PK\x03\x04-not-a-gguf-" * 20)
+        self.assertNotEqual(self._fetch_packager("unsloth/repo-notgguf-GGUF", manifest_path, dest), 0)
+        self.assertEqual(prov.load_manifest(manifest_path)["artifacts"], [])
+        self.assertFalse(placed.exists())
+
+    def test_classify_gguf_file_is_weight(self) -> None:
+        self.assertEqual(prov.classify_extension("Mainline_Support/Inkling-2-Mini-UD-Q8_K_XL.GGUF_FILE"), "weight")
+        self.assertEqual(prov.classify_extension("x.gguf_file.zip"), "deny")
+
+    def test_infer_format_gguf_file_beside_text_and_mmproj(self) -> None:
+        self.assertEqual(prov._infer_format(["config.json", "m.gguf_file", "mmproj-F16.mmproj"]), "gguf")
 
     def test_origin_owner_needs_no_derived_from(self) -> None:
         manifest_path = self.make_manifest_path()

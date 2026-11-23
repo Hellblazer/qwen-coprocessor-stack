@@ -36,7 +36,9 @@ re-hashed. The manifest + this workflow close all four.
    GGUF. Record the output with `register --trust-tier self-quantized --derived-from <origin id> --quantized-by-tool/-version/-command`.
 3. **Pinned revision.** The manifest stores a 40-hex commit sha, never `main`.
    Passing `--revision main` is fine — the tool resolves and records the sha.
-4. **Formats.** `.safetensors` / `.gguf` only for weights. Pickle formats and
+4. **Formats.** `.safetensors` / `.gguf` / `.mmproj` only for weights, plus
+   `.gguf_file` (Unsloth's name for some GGUFs), which `fetch` keeps only if the
+   stored bytes start with `GGUF`. Pickle formats and
    archives are refused for the whole fetch. `.py` in the repo needs
    `--allow-remote-code` and gets listed in the entry.
 5. **Verify on both ends.** `verified_on` must contain the host that serves the
