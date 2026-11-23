@@ -63,7 +63,13 @@ DEFAULT_HF_BASE = "https://huggingface.co"
 DEFAULT_GH_BASE = "https://github.com"
 
 ALLOWED_TEXT_SUFFIXES = {".json", ".txt", ".md", ".jinja", ".model", ".tiktoken"}
-ALLOWED_WEIGHT_SUFFIXES = {".safetensors", ".gguf", ".mmproj"}
+# Unsloth publishes some GGUFs as `.gguf_file` (Inkling-2-Mini-GGUF/Mainline_Support, 2026-11) so that loaders
+# auto-picking `*.gguf` skip them. `fetch` keeps such a file only if its stored bytes open with the GGUF magic
+# (_require_gguf_magic, on fresh, resumed and reused files). Four bytes catch a mislabelled file, not a hostile one;
+# the upstream sha256 is still the trust anchor. `adopt` and `register` have no bytes to check and rely on the hash.
+GGUF_RENAMED_SUFFIX = ".gguf_file"
+GGUF_MAGIC = b"GGUF"
+ALLOWED_WEIGHT_SUFFIXES = {".safetensors", ".gguf", ".mmproj", GGUF_RENAMED_SUFFIX}
 DENY_SUFFIXES = {
     ".bin", ".pt", ".pth", ".pkl", ".pickle", ".ckpt", ".h5",
     ".zip", ".tar", ".tgz", ".7z",
@@ -200,7 +206,7 @@ def _infer_format(paths: Iterable[str]) -> str:
     paths = list(paths)
     if any(p.lower().endswith(".safetensors") for p in paths):
         return "safetensors"
-    if any(p.lower().endswith(".gguf") for p in paths):
+    if any(p.lower().endswith((".gguf", GGUF_RENAMED_SUFFIX)) for p in paths):
         return "gguf"
     LOG.warning("could not infer format from selected files; defaulting to 'safetensors'")
     return "safetensors"
@@ -616,7 +622,22 @@ def _read_back(dest_path: Path, received: str) -> str:
             f"stored file differs from the bytes received: {dest_path} (received {received}, read back {stored}). "
             "Sanctioned next step: the destination disk is corrupting writes; fetch to a different disk (--dest)."
         )
+    _require_gguf_magic(dest_path)
     return stored
+
+
+def _require_gguf_magic(path: Path) -> None:
+    """Delete and refuse a `.gguf_file` whose bytes do not start with the GGUF magic; other suffixes pass."""
+    if not path.name.lower().endswith(GGUF_RENAMED_SUFFIX):
+        return
+    with path.open("rb") as fh:
+        magic = fh.read(len(GGUF_MAGIC))
+    if magic != GGUF_MAGIC:
+        path.unlink(missing_ok=True)
+        raise ProvenanceError(
+            f"{path.name} is named {GGUF_RENAMED_SUFFIX} but does not start with the GGUF magic "
+            f"(read {magic!r}); refusing it. Only a real GGUF may use that suffix."
+        )
 
 
 def download_to_path(
@@ -992,6 +1013,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 # what upstream publishes at this revision; anything else is refetched.
                 local_sha = sha256_file(dest_path)
                 if local_sha.lower() == expected_lfs.lower():
+                    _require_gguf_magic(dest_path)
                     sha256_hex, size, reused = local_sha, dest_path.stat().st_size, True
                     LOG.info("%s: already on disk with the upstream sha256; not downloading", f)
                 else:

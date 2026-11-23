@@ -12,6 +12,7 @@ verified upstream hash does not get served.
 | Threat | Closed by | Notes |
 |---|---|---|
 | Pickle-based weights (`.bin/.pt/.pth/.pkl/.ckpt`) executing code on load | tool refuses the whole fetch; hook denies loading them | the actual malware vector for model files |
+| A GGUF published under Unsloth's `.gguf_file` suffix (Inkling-2-Mini-GGUF `Mainline_Support/`) | `fetch` admits the suffix only when the stored file starts with the GGUF magic, on fresh, resumed and reused files; `adopt`/`register` rely on the sha256 alone | four bytes catch a mislabelled file, not a hostile one; the upstream hash stays the trust anchor |
 | `trust_remote_code` repos running arbitrary code at import | tool refuses unless `--allow-remote-code`, then records every `.py` | Qwen3.8 needs none; treat "needs remote code" as a reason to wait for native support |
 | Third-party re-upload / hijacked packager account | origin allowlist (two tiers) + prefer self-quantize from origin safetensors | **the allowlist is the trust anchor** — verifying against HF's LFS sha256 proves the bytes are what *that repo at that commit* published, not that the repo is honest |
 | Packager re-quantizing in place under the same filename | pinned 40-hex commit sha in the manifest; `drift` re-checks | unsloth rewrote `mmproj-BF16.gguf` between 2026-04-16 and 04-20 |
