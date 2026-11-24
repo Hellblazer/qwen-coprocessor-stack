@@ -6000,8 +6000,8 @@
         },
         {
           "path": "ggml-vulkan.dll",
-          "sha256": "f4b1264cf1de9715467237133ca779d5ae08f3beb9765c8bde70217c185401cc",
-          "size": 41572352
+          "sha256": "431a77fbff3e7ccde75e1e1d9480262c2e39676b20cfcc0aaa3cb488163ac2ff",
+          "size": 44903424
         },
         {
           "path": "ggml.dll",
@@ -6182,21 +6182,21 @@
       "verified_on": [
         "mac"
       ],
-      "verified_at": "2026-11-24T18:11:10Z",
-      "notes": "Unsloth fork b12651-mix-c7059d6 Windows Vulkan bundle (Authenticode-signed upstream) with ggml-vulkan.dll replaced by our UMA carve-first build (b11541 patch applies unchanged); bead ssea",
+      "verified_at": "2026-11-24T18:24:07Z",
+      "notes": "Unsloth fork b12651-mix-c7059d6 Windows Vulkan bundle (Authenticode-signed upstream) with ggml-vulkan.dll replaced by our UMA carve-first build. Built from the release source tarball llama.cpp-source-b12651-mix-c7059d6.tar.gz (sha256 dedb1c00..., upstream b12651 plus Unsloth pins) with Unsloth's Windows Vulkan config; patch regenerated for this tree; bead ssea",
       "overlay": {
         "repo": "Hellblazer/qwen-coprocessor-stack",
-        "run_id": 45455685073,
+        "run_id": 45458151657,
         "artifact": "ggml-vulkan-b12651-mix-c7059d6-patched",
         "file": "ggml-vulkan.dll",
-        "sha256": "f4b1264cf1de9715467237133ca779d5ae08f3beb9765c8bde70217c185401cc",
-        "bytes": 41572352,
+        "sha256": "431a77fbff3e7ccde75e1e1d9480262c2e39676b20cfcc0aaa3cb488163ac2ff",
+        "bytes": 44903424,
         "base_tag": "b12651-mix-c7059d6",
-        "base_sha": "a5aa5bacbc2bda2478ee2985d42f36211ffc7da9",
-        "patch_path": "scripts/ops/patches/vulkan-uma-honor-disable-host-visible-vidmem-b11541.patch",
-        "patch_sha256": "d3884bb47f51f5d22c8f80b4ddbce8814c48eb227361cc28578ec11b89fa7f15",
+        "base_sha": "tarball-sha256:dedb1c001a6d4af567d9ea152f7fdd0a467cc04486021aa0f126d7dbe2375bb0",
+        "patch_path": "scripts/ops/patches/vulkan-uma-honor-disable-host-visible-vidmem-b12651-mix.patch",
+        "patch_sha256": "f2b7ea09dc329265e25b354feef0e7a0e613db2a1b28752c0b0cc22aa4cebbb4",
         "verification": "online-artifact-hash",
-        "head_sha": "7009f30803b3cd26e744b4dcd4ebb73dec9da396"
+        "head_sha": "b23b2cb47a35c84d9ab1b0a58b9bf7b59c59b6e8"
       }
     }
   ]
