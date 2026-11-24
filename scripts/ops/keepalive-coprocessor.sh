@@ -164,6 +164,8 @@ MAX_GPU_RETRIES=2                  # then STAND DOWN with a standing alert; see 
 GPUCHK_EVERY=45                    # runtime residency re-check cadence, in 20s cycles (~15 min)
 PREFLIGHT_ENFORCE=${QWEN_PREFLIGHT_ENFORCE:-1}   # 0 = bypass, logged every launch.
 PREFLIGHT_REFUSED=0
+PREFLIGHT_ALERT=""             # reason of the standing refusal; surfaced in write_state, cleared when preflight passes
+PREFLIGHT_ALERT_T=0            # SECONDS at the last ALERT log; re-logged at most hourly unless the reason changes
 GPU_FAILS=0
 GPU_ALERT=""
 GPU_LAST=""
@@ -180,9 +182,10 @@ SESSION_B64=$(printf '%s' '$q = @(query session 2>$null); $c = $false; foreach (
 # Static machine-state assertions, one ssh round trip. STARTUP deliberately
 # filters on EXECUTABLE extensions, not on name: a launcher in the Startup folder
 # is the hazard regardless of what it is called (Tailscale.lnk is not one).
-# The name filters are qwen(?!t)|llama: labrun's \qwent-usage-sample task contains "qwen" and
-# refused every launch from 2026-11-15 (false positive found 2026-11-24).
-PREFLIGHT_B64=$(printf '%s' '$ErrorActionPreference="SilentlyContinue"; $k="HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"; $v=(Get-ItemProperty -Path $k -Name "HardwareInformation.qwMemorySize")."HardwareInformation.qwMemorySize"; Write-Output ("CARVE=" + $v); $pf=Get-CimInstance Win32_PageFileSetting | Select-Object -First 1; Write-Output ("PAGEFILE=" + $(if($pf){"" + $pf.InitialSize + "/" + $pf.MaximumSize}else{"automatic"})); $d=@("C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup","C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"); $f=@(); foreach ($x in $d) { if (Test-Path $x) { Get-ChildItem -LiteralPath $x -File | Where-Object { $_.Extension -match "^\.(cmd|bat|ps1|exe|vbs)$" } | ForEach-Object { $f += $_.Name } } }; Write-Output ("STARTUP=" + $(if($f){$f -join ","}else{"none"})); $t=@(Get-ScheduledTask | Where-Object { ($_.TaskName -match "qwen(?!t)|llama") -and ($_.State -ne "Disabled") }); Write-Output ("TASKS=" + $(if($t){($t | ForEach-Object { $_.TaskName }) -join ","}else{"none"})); $s=@(Get-Service | Where-Object { $_.Name -match "qwen(?!t)|llama" -or $_.DisplayName -match "qwen(?!t)|llama" }); Write-Output ("SERVICES=" + $(if($s){($s | ForEach-Object { $_.Name }) -join ","}else{"none"})); $fw=@(Get-NetFirewallApplicationFilter -Program "'"$LL"'" | Get-NetFirewallRule | Where-Object { $_.Enabled -eq "True" -and $_.Direction -eq "Inbound" -and $_.Action -eq "Block" }); Write-Output ("FWBLOCK=" + $(if($fw){($fw | ForEach-Object { $_.DisplayName + "/" + $_.Profile }) -join ","}else{"none"}))' | iconv -t UTF-16LE | base64)
+# The name filters are qwen(?!t-usage)|llama: labrun's \qwent-usage-sample task contains "qwen" and
+# refused every launch from 2026-11-15 (false positive found 2026-11-24). Only qwent-usage*
+# is exempt; any other qwent*/qwentescence* task still counts as a second launcher.
+PREFLIGHT_B64=$(printf '%s' '$ErrorActionPreference="SilentlyContinue"; $k="HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"; $v=(Get-ItemProperty -Path $k -Name "HardwareInformation.qwMemorySize")."HardwareInformation.qwMemorySize"; Write-Output ("CARVE=" + $v); $pf=Get-CimInstance Win32_PageFileSetting | Select-Object -First 1; Write-Output ("PAGEFILE=" + $(if($pf){"" + $pf.InitialSize + "/" + $pf.MaximumSize}else{"automatic"})); $d=@("C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup","C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"); $f=@(); foreach ($x in $d) { if (Test-Path $x) { Get-ChildItem -LiteralPath $x -File | Where-Object { $_.Extension -match "^\.(cmd|bat|ps1|exe|vbs)$" } | ForEach-Object { $f += $_.Name } } }; Write-Output ("STARTUP=" + $(if($f){$f -join ","}else{"none"})); $t=@(Get-ScheduledTask | Where-Object { ($_.TaskName -match "qwen(?!t-usage)|llama") -and ($_.State -ne "Disabled") }); Write-Output ("TASKS=" + $(if($t){($t | ForEach-Object { $_.TaskName }) -join ","}else{"none"})); $s=@(Get-Service | Where-Object { $_.Name -match "qwen(?!t-usage)|llama" -or $_.DisplayName -match "qwen(?!t-usage)|llama" }); Write-Output ("SERVICES=" + $(if($s){($s | ForEach-Object { $_.Name }) -join ","}else{"none"})); $fw=@(Get-NetFirewallApplicationFilter -Program "'"$LL"'" | Get-NetFirewallRule | Where-Object { $_.Enabled -eq "True" -and $_.Direction -eq "Inbound" -and $_.Action -eq "Block" }); Write-Output ("FWBLOCK=" + $(if($fw){($fw | ForEach-Object { $_.DisplayName + "/" + $_.Profile }) -join ","}else{"none"}))' | iconv -t UTF-16LE | base64)
 # Post-load residency sample. GPUDED=-1 means the counter itself was unreadable
 # (localized counter names on a non-English Windows would do this) -- that is
 # DARK, not a failure, and is logged once rather than silently swallowed.
@@ -220,6 +223,7 @@ RECLAIMS=0
 MAX_RECLAIMS=3
 GUARDS_DOWN=0
 BUILDCHK_DARK=0
+OWNERPID_DARK=0
 up()    { curl -s --max-time 5 "http://$HOST:$1/v1/models" 2>/dev/null | grep -q '"name"'; }
 # Inference probe (bead ffsc). up() is not liveness when the disk under the
 # server is gone: on 2026-10-08 D: dropped out, llama-server kept answering
@@ -565,11 +569,11 @@ preflight() {  # sets PREFLIGHT_REASON; returns 1 on any failed assertion
     return 1
   fi
   if [ "$tasks" != "none" ]; then
-    PREFLIGHT_REASON="enabled scheduled task(s) matching qwen(?!t)|llama: $tasks. Second launcher (bead 36p). A boot-triggered task also hits session-0/GPU isolation and cannot work anyway."
+    PREFLIGHT_REASON="enabled scheduled task(s) whose name contains qwen (not qwent-usage*) or llama: $tasks. Second launcher (bead 36p). A boot-triggered task also hits session-0/GPU isolation and cannot work anyway."
     return 1
   fi
   if [ "$services" != "none" ]; then
-    PREFLIGHT_REASON="Windows service(s) matching qwen(?!t)|llama: $services. Second launcher (bead 36p)."
+    PREFLIGHT_REASON="Windows service(s) whose name contains qwen (not qwent-usage*) or llama: $services. Second launcher (bead 36p)."
     return 1
   fi
   # Bead 07i. A listen from the desktop session raises the firewall prompt, and a
@@ -661,7 +665,7 @@ write_state() {
   # fallback pid may be a husk, and guarding on it would reclaim the real server.
   if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"preflight_alert\": \"$(printf '%s' "${PREFLIGHT_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
@@ -678,7 +682,14 @@ start_coder() {
     if [ "$PREFLIGHT_ENFORCE" = "0" ]; then
       log "PREFLIGHT BYPASS (QWEN_PREFLIGHT_ENFORCE=0): $PREFLIGHT_REASON -- launching anyway"
     else
-      [ "$PREFLIGHT_REFUSED" -eq 0 ] && log "REFUSING to launch coder-box -- PREFLIGHT: $PREFLIGHT_REASON (or QWEN_PREFLIGHT_ENFORCE=0 to bypass, logged)"
+      # Loud on the first refusal, on any change of reason, and hourly while the
+      # streak lasts: the per-cycle "coder-box DOWN" line alone hid a refusal for 8+ days.
+      if [ "$PREFLIGHT_REFUSED" -eq 0 ] || [ "$PREFLIGHT_ALERT" != "$PREFLIGHT_REASON" ] || [ $((SECONDS - PREFLIGHT_ALERT_T)) -ge 3600 ]; then
+        log "ALERT: coder-box launch refused by PREFLIGHT: $PREFLIGHT_REASON (QWEN_PREFLIGHT_ENFORCE=0 bypasses, logged)"
+        PREFLIGHT_ALERT="$PREFLIGHT_REASON"
+        PREFLIGHT_ALERT_T=$SECONDS
+        write_state
+      fi
       PREFLIGHT_REFUSED=1
       sleep 280
       return 1
@@ -686,6 +697,7 @@ start_coder() {
   fi
   [ "$PREFLIGHT_REFUSED" -eq 1 ] && log "preflight assertions now pass"
   PREFLIGHT_REFUSED=0
+  PREFLIGHT_ALERT=""   # the launch's own write_state records the cleared field
   if ! prov_gate; then
     if [ "$PROVENANCE_ENFORCE" = "0" ]; then
       log "PROVENANCE BYPASS (QWEN_PROVENANCE_ENFORCE=0): $PROV_REASON — launching anyway"
@@ -816,8 +828,13 @@ while true; do
     fi
     if [ "$EXPECTED_PID" -eq 0 ] || [ $((CYC % PIDCHECK_EVERY)) -eq 0 ]; then
       pid=$(ownerpid)
-      if [ -z "$pid" ] || [ "$pid" = "0" ]; then
-        :  # transient ssh failure or pid 0 (no listener row) — no data is not a mismatch; don't reclaim
+      [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$OWNERPID_DARK" -eq 1 ] && { log "owner pid recovered ($pid); identity guard active"; OWNERPID_DARK=0; }
+      if [ -z "$pid" ]; then
+        :  # transient ssh failure — no data is not a mismatch; don't reclaim
+      elif [ "$pid" = "0" ]; then
+        # pid 0 = no usable owner row (2026-11-04/05: six healthy-server reclaims on "X -> 0").
+        # No data, not a mismatch; logged once so the idle guard is operator-visible.
+        [ "$OWNERPID_DARK" -eq 0 ] && { log "owner pid dark: ownerpid returns 0; identity guard idle"; OWNERPID_DARK=1; }
       elif [ "$EXPECTED_PID" -eq 0 ]; then
         adopt "$pid"
       elif [ "$pid" != "$EXPECTED_PID" ]; then
