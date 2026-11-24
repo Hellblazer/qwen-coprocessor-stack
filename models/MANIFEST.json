@@ -6180,9 +6180,10 @@
         }
       ],
       "verified_on": [
-        "mac"
+        "mac",
+        "box"
       ],
-      "verified_at": "2026-11-24T18:24:07Z",
+      "verified_at": "2026-11-24T18:29:55Z",
       "notes": "Unsloth fork b12651-mix-c7059d6 Windows Vulkan bundle (Authenticode-signed upstream) with ggml-vulkan.dll replaced by our UMA carve-first build. Built from the release source tarball llama.cpp-source-b12651-mix-c7059d6.tar.gz (sha256 dedb1c00..., upstream b12651 plus Unsloth pins) with Unsloth's Windows Vulkan config; patch regenerated for this tree; bead ssea",
       "overlay": {
         "repo": "Hellblazer/qwen-coprocessor-stack",
@@ -6198,6 +6199,539 @@
         "verification": "online-artifact-hash",
         "head_sha": "b23b2cb47a35c84d9ab1b0a58b9bf7b59c59b6e8"
       }
+    },
+    {
+      "id": "llama.cpp@unsloth-b12651-mix-macos-arm64",
+      "kind": "runtime",
+      "status": "verified",
+      "source": {
+        "host": "github",
+        "repo": "unslothai/llama.cpp",
+        "revision": "b12651-mix-c7059d6",
+        "asset": "llama-b12651-mix-c7059d6-bin-macos-arm64.tar.gz",
+        "url": "https://github.com/unslothai/llama.cpp/releases/download/b12651-mix-c7059d6/llama-b12651-mix-c7059d6-bin-macos-arm64.tar.gz"
+      },
+      "format": "zip",
+      "trust_tier": "origin",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "zip:llama-b12651-mix-c7059d6-bin-macos-arm64.tar.gz",
+          "sha256": "fb1eb013113962d2e874e5d93b4db912549c38ddc7285acc247b49e1300e1fdd",
+          "size": 13205715
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-mtmd-debug",
+          "sha256": "43b78ccf0a8f6e3718ea0490d15f43c21a677df131eaaa4a81d689a6f2b49753",
+          "size": 75760
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-tokenize",
+          "sha256": "c550f51a740035cfce18c0a14ef88816656829762eb0de556b43eef3bfae2e1f",
+          "size": 58672
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-cli",
+          "sha256": "efad449080912b10cf9929441f1ec9ef45f0ff1e9a1147426aae414cf79638df",
+          "size": 49960
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-batched-bench",
+          "sha256": "cd0a881128729c3b624dd8bdda758a1e457144905fb348503f341aca092e16fe",
+          "size": 33488
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libggml-base.1.0.0.dylib",
+          "sha256": "e8096a93ba899ce329bb9be75c7209462b97101e994ad5a06f7a5fb7b4569940",
+          "size": 806184
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-minicpmv-cli",
+          "sha256": "4baffe08bb410686ee032b1b2ff9a948bbde3fdc014dddf750f36978e3b40589",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/LICENSE",
+          "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+          "size": 1078
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libggml-blas.1.0.0.dylib",
+          "sha256": "81d17b2af896cac3765ae67fc335cad7cfc651ae4ce4d37f4b177cfe9d49ab6e",
+          "size": 58776
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-results",
+          "sha256": "09748971f165ecd4f2f5ce283d03f26435987eb68fa5a4145c113ebb9854934c",
+          "size": 58864
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-server-impl.dylib",
+          "sha256": "1e6efa78593f55e9291a4e3f276d4d7234462d66df95c43309f248e7bf97044e",
+          "size": 9519640
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-gguf-split",
+          "sha256": "8ed0f349d938dbcbbc23add639be8cd5a10144fe6f471107730ffe88ee65a7dc",
+          "size": 60000
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-perplexity",
+          "sha256": "4c1bb6ff8c275c960dba15a6df4d733cba6bac5de1fa2f34cfafe9d47ffdb89b",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-imatrix",
+          "sha256": "352a758bafa0a7ceb692fffa9809fa57d71bb05112529c77c6a0b35e4ddcf36a",
+          "size": 206240
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-fit-params",
+          "sha256": "eae0de523ccb6817c0b809941bea282c085b9b85065de9f1e4bdbb8a75ba0571",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/ggml-rpc-server",
+          "sha256": "36b63dba34da106add5f03be8f341505df1f1aaf8ac2f2f9e2a67b2cc66c4625",
+          "size": 133024
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libggml-metal.1.0.0.dylib",
+          "sha256": "1f65493ff8a812f05c387e17b9f2c849bbd784e61bdc43a2fc5550f3fa816dd8",
+          "size": 6976504
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-qwen2vl-cli",
+          "sha256": "9be4a36b2587c0216009b1ed59ac79b1e4dd2e885f326e8aeffac8aa37761d31",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-gemma3-cli",
+          "sha256": "f7f9126b0881654bdb4c9ceab6de40f42e31998fa0c775505b5979ef7e8e567e",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-completion-impl.dylib",
+          "sha256": "fd4bbff81dda096fa2c1b3e79587d1b0d8e9551f2c7b3cd1f0011ffe1b3afddd",
+          "size": 123584
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-bench-impl.dylib",
+          "sha256": "a5727765cdf210f17dbd749175d9fcd3a29d080c2f64567c77a6f2e3ac7b7b3a",
+          "size": 323176
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libggml-cpu.1.0.0.dylib",
+          "sha256": "529929d2ee4a39a45cbecc3b859f8e505c687b4f269c77d8ad2b2814edd3e4e1",
+          "size": 994352
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-perplexity-impl.dylib",
+          "sha256": "468ab6ac2d02327e860c98d1cb33c97b17a46d2b809fde24e521bb610e2effd2",
+          "size": 156320
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libggml-rpc.1.0.0.dylib",
+          "sha256": "bfd80590490311f7487fdafc51e8b8f2d2b7e11277f383d1386f64ddb377c91a",
+          "size": 239984
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-mtmd-cli",
+          "sha256": "39f01c01314caa481952fbc831d26a7522f136585b6304d40e6f7cf44d573ee7",
+          "size": 87072
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/ggml-metal-tuning",
+          "sha256": "35e07953844161ae69f7922ca3794cfc117e2edc199a4e559fb0d68e97dd467f",
+          "size": 87696
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-cvector-generator",
+          "sha256": "dc49b03479af230c798bec23f777ce22ebca8ac7294c9b6bdd1a36428a4d75b0",
+          "size": 85720
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-quantize-impl.dylib",
+          "sha256": "80a440fadfc3c58c4ab38530804dc7cfc3304f49832b81e6a110305729ece200",
+          "size": 96624
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-completion",
+          "sha256": "47e1944c34f1420db8cfa107f0391a7785de97d2abb2ecc189b5fb709c340d0b",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-bench",
+          "sha256": "d9c534d568982dc50dfbac62040ffcdc1b9b5406a03311d791d7dac6b7efec42",
+          "size": 33464
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-cli-impl.dylib",
+          "sha256": "c3be2141d19a0f7d8f31a430edfe9c4b69897b069da4de77798e8bf46687eab8",
+          "size": 255224
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama.1.0.0.dylib",
+          "sha256": "98c12fb351eb4d6bf4d81414546a5bb3e59a91cf7abef3d7796bef717598bdb2",
+          "size": 4065280
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libmtmd.1.0.0.dylib",
+          "sha256": "b7009745b5786152bd05a2e9743bf5e912619e45bb72b370f16296a8b269a286",
+          "size": 2246512
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-common.1.0.0.dylib",
+          "sha256": "9df93b0b05edc01afaabbe4817aea2720be73bcf41902699a7eaea11ecf73f9a",
+          "size": 8418232
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-server",
+          "sha256": "9c99f4b9182aa90830c9bd15d2635707afeab55e7e64dbe3f37de97eaf4115a8",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-batched-bench-impl.dylib",
+          "sha256": "f61dcbbcb9cb2dffbaf3c02d1bedaeda3b1aa6edc2370e85fed9c2922e4828b9",
+          "size": 56512
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-llava-cli",
+          "sha256": "9a77293c34faa94ae6955f9b1da3dca9fa55cf09fcd0fff87c96f5ec44b9d547",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-tts",
+          "sha256": "327ddd23a1158a17ca1cff0c81e1750d582c218540b7e05a1c5771a04807688d",
+          "size": 61736
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libggml.1.0.0.dylib",
+          "sha256": "7337d3bfc980d4b2641b1b2dc8b2dfd94f2b96a1964c9467b3c76876c0d8f869",
+          "size": 60016
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-quantize",
+          "sha256": "05ed9c6d5955fff6fe5ed17b9a25eda5238e804c9f7a3005c75664cdb6f5717b",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama-export-lora",
+          "sha256": "a0a0df6f6b5d346cc16f4b26e288917050138e9e3b737654dd050d679731ddf8",
+          "size": 99792
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/libllama-fit-params-impl.dylib",
+          "sha256": "1ae12dff6146a37fb0777c433c0e06262dcdc0e7c636b1cd3dbb0bff6d9e9f66",
+          "size": 56352
+        },
+        {
+          "path": "llama-b12651-mix-c7059d6/llama",
+          "sha256": "3bc5afe51b71481036c7a3530cbf04c1c14a228de2f9c9c9cd3a9fb907609b13",
+          "size": 107256
+        }
+      ],
+      "verified_on": [
+        "mac"
+      ],
+      "verified_at": "2026-11-24T17:45:30Z",
+      "notes": "Unsloth fork prebuilt (Metal), b12651-mix-c7059d6. Inkling-2-Mini bench arm A/C (bead ssea)."
+    },
+    {
+      "id": "llama.cpp@b12649-macos-arm64",
+      "kind": "runtime",
+      "status": "verified",
+      "source": {
+        "host": "github",
+        "repo": "ggml-org/llama.cpp",
+        "revision": "b12649",
+        "asset": "llama-b12649-bin-macos-arm64.tar.gz",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12649/llama-b12649-bin-macos-arm64.tar.gz"
+      },
+      "format": "zip",
+      "trust_tier": "origin",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "zip:llama-b12649-bin-macos-arm64.tar.gz",
+          "sha256": "04db8281b11189b91b159c7890688b7dc3bc62a95fe81ec5c8078067be5bb4ad",
+          "size": 16643876
+        },
+        {
+          "path": "llama-b12649/llama-mtmd-debug",
+          "sha256": "68617b4c4b71e939635c17b78c5cc284043603a055d5f66cb99e3eca3e9395f9",
+          "size": 75760
+        },
+        {
+          "path": "llama-b12649/llama-tokenize",
+          "sha256": "00596d0831d8a83557013acad7426a9b1308537422a526c0716dc36fd342e16d",
+          "size": 58672
+        },
+        {
+          "path": "llama-b12649/llama-cli",
+          "sha256": "bd106d493e17ed3e71239b9a0b85d70c19cba245c7e509381e9e0e99bef92d4a",
+          "size": 49960
+        },
+        {
+          "path": "llama-b12649/llama-batched-bench",
+          "sha256": "b63a739e1e5b3a2e2a6fd096b7af4cc273127aebfe21ce0dcf8af1c24e1bc09e",
+          "size": 33488
+        },
+        {
+          "path": "llama-b12649/libggml-base.1.0.0.dylib",
+          "sha256": "afe2cab624bfe97e59b905d886f79f29b0f4f22f95b48bf5f8cc817d7160a816",
+          "size": 770920
+        },
+        {
+          "path": "llama-b12649/llama-minicpmv-cli",
+          "sha256": "4baffe08bb410686ee032b1b2ff9a948bbde3fdc014dddf750f36978e3b40589",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12649/llama-connect",
+          "sha256": "a2e54e1198276037f05882b5142641cd4c55c7fbdd748fcb10a4a8109c723d59",
+          "size": 8251536
+        },
+        {
+          "path": "llama-b12649/LICENSE",
+          "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+          "size": 1078
+        },
+        {
+          "path": "llama-b12649/libggml-blas.1.0.0.dylib",
+          "sha256": "8bfc2b86400db027c4d85571e838c149bd09e66093d707405f9be37fd51bdccc",
+          "size": 58776
+        },
+        {
+          "path": "llama-b12649/llama-results",
+          "sha256": "1e8b05ce62b5ea3489330d558eaee28ade5e38a31e09c6c8703587c53e1448c5",
+          "size": 58864
+        },
+        {
+          "path": "llama-b12649/libllama-server-impl.dylib",
+          "sha256": "12413b811a5358bc9c6e180d96da83dd871295ca5a23bc3e5d2ebbac211cd9ae",
+          "size": 9517768
+        },
+        {
+          "path": "llama-b12649/llama-gguf-split",
+          "sha256": "f3b6363c0190aa161b522f04669c20f3605d73a6ea5f10f23431d03434e140a3",
+          "size": 60000
+        },
+        {
+          "path": "llama-b12649/llama-perplexity",
+          "sha256": "b0dc41a20d93d4803aee33472322a5d0a9455a36bb24bf84916134bf18520bdf",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12649/llama-imatrix",
+          "sha256": "2013f80238ef7ab773a31f919726417396922088483ce421b4b1bbbb1d53dce8",
+          "size": 206240
+        },
+        {
+          "path": "llama-b12649/llama-fit-params",
+          "sha256": "d82e77633af47929267b28744f6407059a45c4fd4ed80fb7d31d63eb0453ce2f",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12649/ggml-rpc-server",
+          "sha256": "cc5945ecb7744b0e843acd44115d12729427d4b494820b79b519ebd3114ef8ce",
+          "size": 133024
+        },
+        {
+          "path": "llama-b12649/libggml-metal.1.0.0.dylib",
+          "sha256": "072d36cd371406654118e1d4454f6b70b72695d87e334448ff6bc90efbeca13f",
+          "size": 5705080
+        },
+        {
+          "path": "llama-b12649/llama-qwen2vl-cli",
+          "sha256": "9be4a36b2587c0216009b1ed59ac79b1e4dd2e885f326e8aeffac8aa37761d31",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12649/llama-gemma3-cli",
+          "sha256": "f7f9126b0881654bdb4c9ceab6de40f42e31998fa0c775505b5979ef7e8e567e",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12649/libllama-completion-impl.dylib",
+          "sha256": "345205e9ad877cfad3b9dcadce9cb0e0fe3f15c6a24f84ade918ca72e92965c2",
+          "size": 123584
+        },
+        {
+          "path": "llama-b12649/libllama-bench-impl.dylib",
+          "sha256": "aab6b8bb0677396d20970f92a13f527542e94925322d50f0a559bdaeb7c60867",
+          "size": 323176
+        },
+        {
+          "path": "llama-b12649/libggml-cpu.1.0.0.dylib",
+          "sha256": "6636de017f92a89c4a6466c1113f56eab74ee92d98254a5cb967cf9c00cf3740",
+          "size": 976448
+        },
+        {
+          "path": "llama-b12649/libllama-perplexity-impl.dylib",
+          "sha256": "9ee1b0ccaca01e344a839ad349a4d0bb2f319201ad47bd9254fe8a2d7fd1d399",
+          "size": 156320
+        },
+        {
+          "path": "llama-b12649/libggml-rpc.1.0.0.dylib",
+          "sha256": "4f3431a57895c26459f2d6d4ccb4be35af232d937d0182c0cf763a16cd03729f",
+          "size": 243488
+        },
+        {
+          "path": "llama-b12649/llama-mtmd-cli",
+          "sha256": "dd5c24bf21799f8824c0b122a5186d29cfdb62aa4cbccdf8e289804e2ab5042c",
+          "size": 103584
+        },
+        {
+          "path": "llama-b12649/ggml-metal-tuning",
+          "sha256": "0c5c015b459833a54761aecaaf23020d3bb791f37fd483665acdd61282b1ac3b",
+          "size": 87696
+        },
+        {
+          "path": "llama-b12649/llama-cvector-generator",
+          "sha256": "117920924cc82d519697690ddda68e89774294aee275505414151ece7b8aaceb",
+          "size": 102232
+        },
+        {
+          "path": "llama-b12649/libllama-quantize-impl.dylib",
+          "sha256": "4ec516c56d185f68f1be334bf28a25d4b19aeeafa456682397237b14c67578df",
+          "size": 96624
+        },
+        {
+          "path": "llama-b12649/llama-completion",
+          "sha256": "37bd17f568b4b9632f7ab998ccb9bf3e70af9aa037b60cfc832580634f92c5d6",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12649/llama-bench",
+          "sha256": "e59efabeca809dceecbdf2547734603148184e6374518a4e8bc4e7990e9282eb",
+          "size": 33464
+        },
+        {
+          "path": "llama-b12649/libllama-cli-impl.dylib",
+          "sha256": "869a6e8322f9a8480bcfde8fea5f537d02790b273acfd361fb4538f674e72742",
+          "size": 255224
+        },
+        {
+          "path": "llama-b12649/libllama.1.0.0.dylib",
+          "sha256": "405a9a5499308a4d9d45438527ab2b19f5897b0185e2568dda4d75812d143b89",
+          "size": 3942192
+        },
+        {
+          "path": "llama-b12649/libmtmd.1.0.0.dylib",
+          "sha256": "4f1cae35b3e2bb891de638d1a126df09d4ef8224d9319abaefd0daaa83801571",
+          "size": 2224656
+        },
+        {
+          "path": "llama-b12649/libllama-common.1.0.0.dylib",
+          "sha256": "0308cf36595eb6362b934ed4c6a28cdda74cedd65eb95dba8398a1d591ea12d6",
+          "size": 8375000
+        },
+        {
+          "path": "llama-b12649/llama-server",
+          "sha256": "685941b8df982e4e205fd20492f9aaa9418f2d1224ba3d311a686abd0edb0439",
+          "size": 49984
+        },
+        {
+          "path": "llama-b12649/libllama-batched-bench-impl.dylib",
+          "sha256": "2966d0b2d5a02baa7755e4b4f0e337da484150084c9dc8bf4d44ca4e9c8b4518",
+          "size": 56512
+        },
+        {
+          "path": "llama-b12649/llama-llava-cli",
+          "sha256": "9a77293c34faa94ae6955f9b1da3dca9fa55cf09fcd0fff87c96f5ec44b9d547",
+          "size": 35344
+        },
+        {
+          "path": "llama-b12649/llama-tts",
+          "sha256": "ce546eaf1cdf3aabbd96996ec1eaadc02b2cb37c5b26ea428a51fd9663088365",
+          "size": 61736
+        },
+        {
+          "path": "llama-b12649/libggml.1.0.0.dylib",
+          "sha256": "7d3702e5e30ba6a7b342bee26496a018bc289d44c90c6c5627b75dd9862b2cde",
+          "size": 60016
+        },
+        {
+          "path": "llama-b12649/llama-quantize",
+          "sha256": "e541eee3175b8fbde9c528c70563efdfb0de3e1e66b958c28d35b050ee078b70",
+          "size": 33472
+        },
+        {
+          "path": "llama-b12649/llama-export-lora",
+          "sha256": "59c3bafbc7fcbd4c97b65ea26c161932fffc9bd9166b8e91dace179c9015f552",
+          "size": 99792
+        },
+        {
+          "path": "llama-b12649/libllama-fit-params-impl.dylib",
+          "sha256": "5d0ce4b2203f2d9412fb03fc15983ff7102064a418e91a81c7facec0cf2454dc",
+          "size": 56352
+        },
+        {
+          "path": "llama-b12649/llama",
+          "sha256": "cfba0467293cdfacdb471f6da2a006383a77f017aca34e5569605ee0272e8b15",
+          "size": 107256
+        }
+      ],
+      "verified_on": [
+        "mac"
+      ],
+      "verified_at": "2026-11-24T17:45:36Z",
+      "notes": "Official macOS arm64 (Metal) release b12649. Mainline arm B for the Inkling-2-Mini speed claim (bead ssea)."
+    },
+    {
+      "id": "inkling-2-mini-unsloth-gguf@45fd0876",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "unsloth/Inkling-2-Mini-GGUF",
+        "revision": "45fd08764f2b0bf16b03a5483a80e5c7aaec8772",
+        "url": "https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/resolve/45fd08764f2b0bf16b03a5483a80e5c7aaec8772/"
+      },
+      "format": "gguf",
+      "trust_tier": "packager",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "Inkling-2-Mini-UD-Q4_K_XL.gguf",
+          "sha256": "e62d463c135ffe283df8d94b279a96ca145ac128b52ce854478613045bf4de15",
+          "size": 17629759456,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "safe",
+            "jFrogScan": "safe"
+          }
+        }
+      ],
+      "verified_on": [
+        "mac",
+        "box"
+      ],
+      "verified_at": "2026-11-24T18:34:44Z",
+      "notes": "as-of: fetched at revision '45fd08764f2b0bf16b03a5483a80e5c7aaec8772' (resolved to 45fd08764f2b0bf16b03a5483a80e5c7aaec8772)",
+      "derived_from": "thinkingmachines/Inkling-2-Mini@ed40e7da625f594fc9c4990f5f66be24873c22d7",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00001.safetensors",
+          "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1",
+          "size": 19526019168
+        },
+        {
+          "path": "mtp.safetensors",
+          "sha256": "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2",
+          "size": 635801416
+        }
+      ]
     }
   ]
 }
