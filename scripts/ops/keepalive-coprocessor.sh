@@ -164,7 +164,7 @@ MAX_GPU_RETRIES=2                  # then STAND DOWN with a standing alert; see 
 GPUCHK_EVERY=45                    # runtime residency re-check cadence, in 20s cycles (~15 min)
 PREFLIGHT_ENFORCE=${QWEN_PREFLIGHT_ENFORCE:-1}   # 0 = bypass, logged every launch.
 PREFLIGHT_REFUSED=0
-PREFLIGHT_ALERT=""             # reason of the standing refusal; surfaced in write_state, cleared when preflight passes
+PREFLIGHT_ALERT=""             # reason last logged for the standing refusal (dedupe); cleared when preflight passes
 PREFLIGHT_ALERT_T=0            # SECONDS at the last ALERT log; re-logged at most hourly unless the reason changes
 GPU_FAILS=0
 GPU_ALERT=""
@@ -665,7 +665,7 @@ write_state() {
   # fallback pid may be a husk, and guarding on it would reclaim the real server.
   if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"preflight_alert\": \"$(printf '%s' "${PREFLIGHT_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
@@ -688,7 +688,6 @@ start_coder() {
         log "ALERT: coder-box launch refused by PREFLIGHT: $PREFLIGHT_REASON (QWEN_PREFLIGHT_ENFORCE=0 bypasses, logged)"
         PREFLIGHT_ALERT="$PREFLIGHT_REASON"
         PREFLIGHT_ALERT_T=$SECONDS
-        write_state
       fi
       PREFLIGHT_REFUSED=1
       sleep 280
@@ -697,7 +696,7 @@ start_coder() {
   fi
   [ "$PREFLIGHT_REFUSED" -eq 1 ] && log "preflight assertions now pass"
   PREFLIGHT_REFUSED=0
-  PREFLIGHT_ALERT=""   # the launch's own write_state records the cleared field
+  PREFLIGHT_ALERT=""
   if ! prov_gate; then
     if [ "$PROVENANCE_ENFORCE" = "0" ]; then
       log "PROVENANCE BYPASS (QWEN_PROVENANCE_ENFORCE=0): $PROV_REASON — launching anyway"
