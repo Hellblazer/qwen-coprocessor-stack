@@ -5915,6 +5915,289 @@
           "size": 635801416
         }
       ]
+    },
+    {
+      "id": "llama.cpp@unsloth-b12651-mix-patched",
+      "kind": "runtime",
+      "status": "verified",
+      "source": {
+        "host": "github",
+        "repo": "unslothai/llama.cpp",
+        "revision": "b12651-mix-c7059d6",
+        "asset": "app-b12651-mix-c7059d6-windows-x64-vulkan.zip",
+        "url": "https://github.com/unslothai/llama.cpp/releases/download/b12651-mix-c7059d6/app-b12651-mix-c7059d6-windows-x64-vulkan.zip"
+      },
+      "format": "zip",
+      "trust_tier": "self-quantized",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "zip:app-b12651-mix-c7059d6-windows-x64-vulkan.zip",
+          "sha256": "04e03d38b542f02c8dff8185d05356213d7a81b08f2addc38d6b9b60ae259bc7",
+          "size": 28679557
+        },
+        {
+          "path": "ggml-base.dll",
+          "sha256": "cb36b08f18ce2ecc3e8677b5488f845cb36f45c181756f1a376023c193170c6e",
+          "size": 753984
+        },
+        {
+          "path": "ggml-cpu-alderlake.dll",
+          "sha256": "23a0416580c0009b4a104885988f8b7cbdc4d47fca9cf49827b7f877294c3b46",
+          "size": 1158976
+        },
+        {
+          "path": "ggml-cpu-cannonlake.dll",
+          "sha256": "b5a1a69ed1df7d6ad431e8818d748fcf75687be150ebdc51b448d4017385e6d1",
+          "size": 1277248
+        },
+        {
+          "path": "ggml-cpu-cascadelake.dll",
+          "sha256": "42082deb28a427f98b4ec7233e2603c2b8572e8ad67cea90076d5b5a8535769b",
+          "size": 1279296
+        },
+        {
+          "path": "ggml-cpu-haswell.dll",
+          "sha256": "3014521c40bd1a53c165ac64ac87b13bd00a992ad45794e0eb40278f7157b770",
+          "size": 1160000
+        },
+        {
+          "path": "ggml-cpu-icelake.dll",
+          "sha256": "9b3db3711aeae7470287791aa685c48fd41031f1f3b4abf8168fa14e6d5894bc",
+          "size": 1279296
+        },
+        {
+          "path": "ggml-cpu-sandybridge.dll",
+          "sha256": "e9679bb000072d7d8f2bb0a97b5058b21787a7e7e1d607e378baa781ba3f287d",
+          "size": 1138496
+        },
+        {
+          "path": "ggml-cpu-skylakex.dll",
+          "sha256": "a6d0fd20779b633927750ce370e7bc8f0a08b67f525cfacd4d58b2d52d5438b9",
+          "size": 1277248
+        },
+        {
+          "path": "ggml-cpu-sse42.dll",
+          "sha256": "edc4941f7598fb95b57a3ff2d8a6aad84de3446ede4d4fe37bab28e2c571c73a",
+          "size": 906048
+        },
+        {
+          "path": "ggml-cpu-x64.dll",
+          "sha256": "c9cd8f649555b8f28d7e880244a3a8556cbf233b659d0f4365860f3e2a818272",
+          "size": 908096
+        },
+        {
+          "path": "ggml-rpc-server.exe",
+          "sha256": "a0c7e6c833a2a619dc07c52dc475401d22ec22bd5037f9ca450f20b9a32eff26",
+          "size": 112960
+        },
+        {
+          "path": "ggml-rpc.dll",
+          "sha256": "56f53f52cde1a5dd8400e74b5a578cf4a18b27fa46c4dee6d860cdd7ac7395a5",
+          "size": 228672
+        },
+        {
+          "path": "ggml-vulkan.dll",
+          "sha256": "f4b1264cf1de9715467237133ca779d5ae08f3beb9765c8bde70217c185401cc",
+          "size": 41572352
+        },
+        {
+          "path": "ggml.dll",
+          "sha256": "e92a6db2ef4968af293545cdf6c37f5d38cf9ea1039ff8544dbac1effad7b000",
+          "size": 76096
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d",
+          "size": 1078
+        },
+        {
+          "path": "llama-batched-bench-impl.dll",
+          "sha256": "d164500b91a3ee13a94e674607f8c0b6a157d07dcde5142b19cb8be9bc48a1d2",
+          "size": 147264
+        },
+        {
+          "path": "llama-batched-bench.exe",
+          "sha256": "f06807b6c3f21dab240464f068faa7d82d842143f2ff9d27b19d5bebd9f20ce5",
+          "size": 26944
+        },
+        {
+          "path": "llama-bench-impl.dll",
+          "sha256": "c975d149c415ce68752691d986a782ff14f4b5288e3b89c15383d9d2f547b67e",
+          "size": 926528
+        },
+        {
+          "path": "llama-bench.exe",
+          "sha256": "e79842757047711a162993f9e494b1e3306ce0bd3358d3ca7a98729ebd8c19aa",
+          "size": 26944
+        },
+        {
+          "path": "llama-cli-impl.dll",
+          "sha256": "2f2f59e313e70a4642c0dcc47631704e655116e2b99e0e6f0475f360ae098334",
+          "size": 2057536
+        },
+        {
+          "path": "llama-cli.exe",
+          "sha256": "fd8379f0b99be859cac23eecf7aaf534a98a7f1b3dfec5c64cfc5307352f3234",
+          "size": 26944
+        },
+        {
+          "path": "llama-common.dll",
+          "sha256": "9076a2b357f82b3d38a52ebf6723618c4c6dd853076c5a1bb043c9f5779832f8",
+          "size": 10905920
+        },
+        {
+          "path": "llama-completion-impl.dll",
+          "sha256": "28469dfeab320d4b1bb689a1d619c59aee1442878b2f332afe768151cde3a780",
+          "size": 370496
+        },
+        {
+          "path": "llama-completion.exe",
+          "sha256": "3b6765fa64394621d785f11cd6fec8ac7c526ed8c9f570aeda415f4c91f84ae1",
+          "size": 26944
+        },
+        {
+          "path": "llama-diffusion-cli.exe",
+          "sha256": "83581ceddb5c6737c92b97bf19a5b038149634724b03363c73930869d0456380",
+          "size": 117056
+        },
+        {
+          "path": "llama-diffusion-gemma-visual-server.exe",
+          "sha256": "df5a638d3154dfe896d61133fb6b2fbcf1d423b7669caa972a5b74f14fd60886",
+          "size": 75072
+        },
+        {
+          "path": "llama-fit-params-impl.dll",
+          "sha256": "4d6d65e993cc28ea3d5fd4e86e2cb77d40236c8d9c81fb71cdfa5e2617a8ecf1",
+          "size": 138560
+        },
+        {
+          "path": "llama-fit-params.exe",
+          "sha256": "7aa86cf1348067dec062d97603a52e63e1d6f98cdce7844a59b59829152a809c",
+          "size": 26944
+        },
+        {
+          "path": "llama-gemma3-cli.exe",
+          "sha256": "7577e73c62b0c55eca7b54216769ecff534130020a9f942d94411d90b3c1854e",
+          "size": 42816
+        },
+        {
+          "path": "llama-gguf-split.exe",
+          "sha256": "1ff7e0e1e21434db9cf8fd4d5a8e9891fa7c6ddcc1aa8cc7221662c4be13a590",
+          "size": 66368
+        },
+        {
+          "path": "llama-imatrix.exe",
+          "sha256": "00a9929a46d6e66d8693388706d32e2a0d3f985cc15ef324ff8bcb4cd3afc031",
+          "size": 211264
+        },
+        {
+          "path": "llama-llava-cli.exe",
+          "sha256": "d617897938beb8f2e9d05887fff6dfef5697d4b46ffa97d4cc7177969539a716",
+          "size": 42816
+        },
+        {
+          "path": "llama-minicpmv-cli.exe",
+          "sha256": "0e3c7d04a35a38d7fcf50631ab6954df68dd7e0cf3999f489ee5d7e56c0245a7",
+          "size": 42816
+        },
+        {
+          "path": "llama-mtmd-cli.exe",
+          "sha256": "b58933c6a57116d0fcced0b05f367182f86c838329d1a7f4055d2bf5ed705c71",
+          "size": 97600
+        },
+        {
+          "path": "llama-mtmd-debug.exe",
+          "sha256": "898914fdf54ea42bb755e6c87c1b4c36b40ee2d5ea445b26979f733176ac93fe",
+          "size": 61760
+        },
+        {
+          "path": "llama-perplexity-impl.dll",
+          "sha256": "a3a196e18fa89af8f12fccec7e95641f0b3c53e034b4080e656c44129787def1",
+          "size": 362304
+        },
+        {
+          "path": "llama-perplexity.exe",
+          "sha256": "e9713d9fdddb6ec9f6aacdea12b7f9b12876e9cb6cd6b93a8717b614f37cc652",
+          "size": 26944
+        },
+        {
+          "path": "llama-quantize-impl.dll",
+          "sha256": "2b6baa9df2fc75909c24c0d5fdd6e0a23f0bb03711bff440210da9bedcbac459",
+          "size": 356160
+        },
+        {
+          "path": "llama-quantize.exe",
+          "sha256": "a37c384dd899fcfe56f0768232ecefd510631e69cba028d6781b462e5c4db77d",
+          "size": 26944
+        },
+        {
+          "path": "llama-qwen2vl-cli.exe",
+          "sha256": "8bca385f530b90f68c8e070a5c4ed04d7014b3a38d69235ac3d47a040973809f",
+          "size": 42816
+        },
+        {
+          "path": "llama-results.exe",
+          "sha256": "57241e8a5d9eaae025d64de3f818e10951875b092710909be48f7007f1cb2ecc",
+          "size": 55104
+        },
+        {
+          "path": "llama-server-impl.dll",
+          "sha256": "4745684d726b0601ed41f410764eeee76f6755de8c7251757d26bf967daf510e",
+          "size": 8375616
+        },
+        {
+          "path": "llama-server.exe",
+          "sha256": "e42bc2c4172595a994e260bab86b54be3f27e58e13f6f3d55368041a4b788f0a",
+          "size": 26944
+        },
+        {
+          "path": "llama-tokenize.exe",
+          "sha256": "9ee87bddabb74627f3cac31ec82cb964219b6ee518ada677cc7ffd85d5886c05",
+          "size": 68928
+        },
+        {
+          "path": "llama-tts.exe",
+          "sha256": "b2d70da4448924a01317c23b38ef90ab44033c41693c455762bcb8f18318ff4b",
+          "size": 58176
+        },
+        {
+          "path": "llama.dll",
+          "sha256": "25951426260c3e7cf73e84073fe1006acf6b992a630a22ad80fe5d70643f6b7b",
+          "size": 3435840
+        },
+        {
+          "path": "llama.exe",
+          "sha256": "a47fa382803cd0350b4c56cc0242a898c688ff2c376d387ea09bc828688c681e",
+          "size": 85312
+        },
+        {
+          "path": "mtmd.dll",
+          "sha256": "ceb7b92c153577d884b9c9072fb328fb0c409b1447b78c13551f972957508d2e",
+          "size": 3897664
+        }
+      ],
+      "verified_on": [
+        "mac"
+      ],
+      "verified_at": "2026-11-24T18:11:10Z",
+      "notes": "Unsloth fork b12651-mix-c7059d6 Windows Vulkan bundle (Authenticode-signed upstream) with ggml-vulkan.dll replaced by our UMA carve-first build (b11541 patch applies unchanged); bead ssea",
+      "overlay": {
+        "repo": "Hellblazer/qwen-coprocessor-stack",
+        "run_id": 45455685073,
+        "artifact": "ggml-vulkan-b12651-mix-c7059d6-patched",
+        "file": "ggml-vulkan.dll",
+        "sha256": "f4b1264cf1de9715467237133ca779d5ae08f3beb9765c8bde70217c185401cc",
+        "bytes": 41572352,
+        "base_tag": "b12651-mix-c7059d6",
+        "base_sha": "a5aa5bacbc2bda2478ee2985d42f36211ffc7da9",
+        "patch_path": "scripts/ops/patches/vulkan-uma-honor-disable-host-visible-vidmem-b11541.patch",
+        "patch_sha256": "d3884bb47f51f5d22c8f80b4ddbce8814c48eb227361cc28578ec11b89fa7f15",
+        "verification": "online-artifact-hash",
+        "head_sha": "7009f30803b3cd26e744b4dcd4ebb73dec9da396"
+      }
     }
   ]
 }
