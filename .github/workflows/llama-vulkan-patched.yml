@@ -110,10 +110,13 @@ jobs:
         working-directory: llama.cpp
         run: |
           set -eu
-          p="$GITHUB_WORKSPACE/stack/scripts/ops/patches/$IN_PATCH"
-          echo "Applying $p"
-          git apply --check --verbose "$p"
-          git apply "$p"
+          # The runner's checkout may hand us CRLF line endings (autocrlf); the
+          # source tree here is LF, so strip CRs from the patch first.
+          p="$RUNNER_TEMP/applied.patch"
+          tr -d '\r' < "$GITHUB_WORKSPACE/stack/scripts/ops/patches/$IN_PATCH" > "$p"
+          echo "Applying $IN_PATCH"
+          git apply --ignore-whitespace --check --verbose "$p"
+          git apply --ignore-whitespace "$p"
           echo "--- patched region ---"
           grep -n -B2 -A14 "Carve-first" ggml/src/ggml-vulkan/*.cpp
 
