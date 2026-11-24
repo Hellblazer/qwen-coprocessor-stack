@@ -180,7 +180,9 @@ SESSION_B64=$(printf '%s' '$q = @(query session 2>$null); $c = $false; foreach (
 # Static machine-state assertions, one ssh round trip. STARTUP deliberately
 # filters on EXECUTABLE extensions, not on name: a launcher in the Startup folder
 # is the hazard regardless of what it is called (Tailscale.lnk is not one).
-PREFLIGHT_B64=$(printf '%s' '$ErrorActionPreference="SilentlyContinue"; $k="HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"; $v=(Get-ItemProperty -Path $k -Name "HardwareInformation.qwMemorySize")."HardwareInformation.qwMemorySize"; Write-Output ("CARVE=" + $v); $pf=Get-CimInstance Win32_PageFileSetting | Select-Object -First 1; Write-Output ("PAGEFILE=" + $(if($pf){"" + $pf.InitialSize + "/" + $pf.MaximumSize}else{"automatic"})); $d=@("C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup","C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"); $f=@(); foreach ($x in $d) { if (Test-Path $x) { Get-ChildItem -LiteralPath $x -File | Where-Object { $_.Extension -match "^\.(cmd|bat|ps1|exe|vbs)$" } | ForEach-Object { $f += $_.Name } } }; Write-Output ("STARTUP=" + $(if($f){$f -join ","}else{"none"})); $t=@(Get-ScheduledTask | Where-Object { ($_.TaskName -match "qwen|llama") -and ($_.State -ne "Disabled") }); Write-Output ("TASKS=" + $(if($t){($t | ForEach-Object { $_.TaskName }) -join ","}else{"none"})); $s=@(Get-Service | Where-Object { $_.Name -match "qwen|llama" -or $_.DisplayName -match "qwen|llama" }); Write-Output ("SERVICES=" + $(if($s){($s | ForEach-Object { $_.Name }) -join ","}else{"none"})); $fw=@(Get-NetFirewallApplicationFilter -Program "'"$LL"'" | Get-NetFirewallRule | Where-Object { $_.Enabled -eq "True" -and $_.Direction -eq "Inbound" -and $_.Action -eq "Block" }); Write-Output ("FWBLOCK=" + $(if($fw){($fw | ForEach-Object { $_.DisplayName + "/" + $_.Profile }) -join ","}else{"none"}))' | iconv -t UTF-16LE | base64)
+# The name filters are qwen(?!t)|llama: labrun's \qwent-usage-sample task contains "qwen" and
+# refused every launch from 2026-11-15 (false positive found 2026-11-24).
+PREFLIGHT_B64=$(printf '%s' '$ErrorActionPreference="SilentlyContinue"; $k="HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000"; $v=(Get-ItemProperty -Path $k -Name "HardwareInformation.qwMemorySize")."HardwareInformation.qwMemorySize"; Write-Output ("CARVE=" + $v); $pf=Get-CimInstance Win32_PageFileSetting | Select-Object -First 1; Write-Output ("PAGEFILE=" + $(if($pf){"" + $pf.InitialSize + "/" + $pf.MaximumSize}else{"automatic"})); $d=@("C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup","C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"); $f=@(); foreach ($x in $d) { if (Test-Path $x) { Get-ChildItem -LiteralPath $x -File | Where-Object { $_.Extension -match "^\.(cmd|bat|ps1|exe|vbs)$" } | ForEach-Object { $f += $_.Name } } }; Write-Output ("STARTUP=" + $(if($f){$f -join ","}else{"none"})); $t=@(Get-ScheduledTask | Where-Object { ($_.TaskName -match "qwen(?!t)|llama") -and ($_.State -ne "Disabled") }); Write-Output ("TASKS=" + $(if($t){($t | ForEach-Object { $_.TaskName }) -join ","}else{"none"})); $s=@(Get-Service | Where-Object { $_.Name -match "qwen(?!t)|llama" -or $_.DisplayName -match "qwen(?!t)|llama" }); Write-Output ("SERVICES=" + $(if($s){($s | ForEach-Object { $_.Name }) -join ","}else{"none"})); $fw=@(Get-NetFirewallApplicationFilter -Program "'"$LL"'" | Get-NetFirewallRule | Where-Object { $_.Enabled -eq "True" -and $_.Direction -eq "Inbound" -and $_.Action -eq "Block" }); Write-Output ("FWBLOCK=" + $(if($fw){($fw | ForEach-Object { $_.DisplayName + "/" + $_.Profile }) -join ","}else{"none"}))' | iconv -t UTF-16LE | base64)
 # Post-load residency sample. GPUDED=-1 means the counter itself was unreadable
 # (localized counter names on a non-English Windows would do this) -- that is
 # DARK, not a failure, and is logged once rather than silently swallowed.
@@ -563,11 +565,11 @@ preflight() {  # sets PREFLIGHT_REASON; returns 1 on any failed assertion
     return 1
   fi
   if [ "$tasks" != "none" ]; then
-    PREFLIGHT_REASON="enabled scheduled task(s) matching qwen|llama: $tasks. Second launcher (bead 36p). A boot-triggered task also hits session-0/GPU isolation and cannot work anyway."
+    PREFLIGHT_REASON="enabled scheduled task(s) matching qwen(?!t)|llama: $tasks. Second launcher (bead 36p). A boot-triggered task also hits session-0/GPU isolation and cannot work anyway."
     return 1
   fi
   if [ "$services" != "none" ]; then
-    PREFLIGHT_REASON="Windows service(s) matching qwen|llama: $services. Second launcher (bead 36p)."
+    PREFLIGHT_REASON="Windows service(s) matching qwen(?!t)|llama: $services. Second launcher (bead 36p)."
     return 1
   fi
   # Bead 07i. A listen from the desktop session raises the firewall prompt, and a
@@ -814,8 +816,8 @@ while true; do
     fi
     if [ "$EXPECTED_PID" -eq 0 ] || [ $((CYC % PIDCHECK_EVERY)) -eq 0 ]; then
       pid=$(ownerpid)
-      if [ -z "$pid" ]; then
-        :  # transient ssh failure — no data is not a mismatch; don't reclaim
+      if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+        :  # transient ssh failure or pid 0 (no listener row) — no data is not a mismatch; don't reclaim
       elif [ "$EXPECTED_PID" -eq 0 ]; then
         adopt "$pid"
       elif [ "$pid" != "$EXPECTED_PID" ]; then
