@@ -1,0 +1,43 @@
+Subject: vulkan: let GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM reach UMA devices
+
+Same edit and rationale as vulkan-uma-honor-disable-host-visible-vidmem-b11541.patch
+(PR #22930 makes the device->uma branch of ggml_vk_create_buffer_device() request a
+host-visible type first, so on an AMD APU under the Windows proprietary driver the
+weights land in pageable shared memory instead of the BIOS-carved dedicated heap,
+and GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM is unreachable on UMA). This patch makes
+the variable work on UMA: when set, prefer the dedicated heap and keep the
+host-visible options as fallbacks. No default changes.
+
+Regenerated against ggml-org/llama.cpp b12722. The edit is confined to the
+device->uma branch. The new GGML_VK_PREFER_HOST_MEMORY branch (device->prefer_host_memory,
+tested first) is untouched, so it still wins when both variables are set.
+
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
+@@ -224,11 +224,21 @@ vk_buffer ggml_vk_create_buffer_device(vk_device& device, size_t size) {
+             buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                                                        vk::MemoryPropertyFlagBits::eDeviceLocal});
+         } else if (device->uma) {
+-            // On UMA, prefer host-visible memory so direct tensor borrowing works.
+-            // If unavailable, fall back to device-local memory.
+-            buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+-                                                       vk::MemoryPropertyFlagBits::eDeviceLocal,
+-                                                       vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
++            if (device->disable_host_visible_vidmem) {
++                // Carve-first: on an APU with a BIOS-reserved (dedicated) heap, a
++                // host-visible type can shadow it and push the weights into pageable
++                // shared memory. Ask for the dedicated heap first, keep the rest as
++                // fallbacks.
++                buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal,
++                                                           vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
++                                                           vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
++            } else {
++                // On UMA, prefer host-visible memory so direct tensor borrowing works.
++                // If unavailable, fall back to device-local memory.
++                buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
++                                                           vk::MemoryPropertyFlagBits::eDeviceLocal,
++                                                           vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent});
++            }
+         } else if (!device->rebar || device->disable_host_visible_vidmem) {
+             if (device->allow_sysmem_fallback) {
+                 buf = ggml_vk_create_buffer(device, size, {vk::MemoryPropertyFlagBits::eDeviceLocal,

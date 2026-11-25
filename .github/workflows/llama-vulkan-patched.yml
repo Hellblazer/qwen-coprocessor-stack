@@ -8,6 +8,8 @@
 #   from a checkout of the tag, so the result differs from the official
 #   llama-<tag>-bin-win-vulkan-x64.zip in one file and one patch.
 #
+# (ggml-org builds use windows-2025 and the VS generator, bead 3c76.)
+#
 # unslothai/llama.cpp: the tag is a fork-master merge commit and is NOT the
 #   build input. Unsloth builds from the release asset
 #   llama.cpp-source-<tag>.tar.gz (upstream tag + the pins in
@@ -52,7 +54,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-2022
+    # ggml-org tags build on windows-2025 with the VS generator (as upstream's
+    # release job and the promoted b11541-patched did, bead 3c76); the Unsloth
+    # fork keeps its own windows-2022 + Ninja configuration.
+    runs-on: ${{ github.event.inputs.repo == 'unslothai/llama.cpp' && 'windows-2022' || 'windows-2025' }}
     env:
       VULKAN_VERSION: 1.4.357.0
       # Inputs reach scripts through env, never through ${{ }} in a script body.
@@ -129,16 +134,33 @@ jobs:
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
 
       - name: Install Ninja
+        if: ${{ github.event.inputs.repo == 'unslothai/llama.cpp' }}
         shell: pwsh
         run: choco install ninja --no-progress
 
       - name: Setup MSVC
+        if: ${{ github.event.inputs.repo == 'unslothai/llama.cpp' }}
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
+
+      # ggml-org: upstream's Vulkan release flags (VS generator, CPU backend
+      # off), the configuration b11541-patched was built with.
+      - name: Configure (ggml-org)
+        if: ${{ github.event.inputs.repo == 'ggml-org/llama.cpp' }}
+        shell: pwsh
+        working-directory: llama.cpp
+        run: |
+          cmake -S . -B build `
+            -DGGML_VULKAN=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU=OFF `
+            -DGGML_BACKEND_DL=ON `
+            -DLLAMA_BUILD_BORINGSSL=ON
 
       # Same configuration as unsloth-prebuilt-vulkan.yml (and a superset of
       # upstream's ggml-org Vulkan release flags), so ggml-vulkan.dll matches
       # the ggml-base/llama DLLs in the zip it is dropped into.
-      - name: Configure
+      - name: Configure (unslothai)
+        if: ${{ github.event.inputs.repo == 'unslothai/llama.cpp' }}
         shell: pwsh
         working-directory: llama.cpp
         run: |
