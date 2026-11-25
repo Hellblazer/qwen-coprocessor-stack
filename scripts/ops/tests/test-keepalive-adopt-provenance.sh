@@ -91,12 +91,15 @@ PROVENANCE_ENFORCE=1; LAUNCH_T0=0; CODER_PID=0; GPU_LAST=""; GPU_ALERT=""; EXPEC
 PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_REFUSED=0
 PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""; PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0
 PROV_ADOPT_ALERT=""; PROV_ADOPT_ALERT_T=0; PROV_FAIL_STREAK=0; PROV_RETRY_AT=0
-PROV_RETRY_FIRST=60; PROV_RETRY_EVERY=300; PROV_REGATE_EVERY=3600; LAUNCHED_AT=""
+PROV_RETRY_FIRST=60; PROV_RETRY_EVERY=300; PROV_REGATE_EVERY=3600; LAUNCHED_AT=""; LAUNCHED_PID=""
 PREFLIGHT_ENFORCE=1; PREFLIGHT_REFUSED=0; PREFLIGHT_ALERT=""; LAUNCH_DEAD=0; GPU_FAILS=0; MAX_GPU_RETRIES=2
 GUARDS_DOWN=0; CYC=0; PIDCHECK_EVERY=15; GPUCHK_EVERY=45; OWNERPID_DARK=0; RECLAIMS=0
 . "$tmp/fns.sh"
 log() { echo "$*" >> "$tmp/log"; }
-gpu_check() { GPU_LAST="53 GB dedicated"; return 0; }
+gpu_check() {
+  if [ "${FAKE_GPU_FAIL:-0}" = 1 ]; then GPU_REASON="below the residency band"; GPU_LAST="1 GB dedicated"; return 1; fi
+  GPU_LAST="53 GB dedicated"; return 0
+}
 ownercmd() { echo "$FAKE_CMD"; }
 reclaim() { echo "reclaim: $1" >> "$tmp/reclaims"; }
 killremote() { echo "killremote" >> "$tmp/reclaims"; }
@@ -118,8 +121,8 @@ reset() {
   : > "$CALLS"; : > "$tmp/log"; : > "$tmp/reclaims"; rm -f "$STATE_OUT" "$OWNER_SEQ" "$tmp/marks"
   PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""
   PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0; PROV_ADOPT_ALERT=""; PROV_ADOPT_ALERT_T=0; PROV_FAIL_STREAK=0
-  PROV_RETRY_AT=0; EXPECTED_PID=0; LAUNCHED_AT=""; PROVENANCE_ENFORCE=1; GPU_ALERT=""; GUARDS_DOWN=0
-  unset FAKE_OWNER FAKE_STAT_FAIL FAKE_OVERLAY FAKE_MODEL_FAIL FAKE_DLL_FAIL FAKE_HANG
+  PROV_RETRY_AT=0; EXPECTED_PID=0; LAUNCHED_AT=""; LAUNCHED_PID=""; PROVENANCE_ENFORCE=1; GPU_ALERT=""; GUARDS_DOWN=0
+  unset FAKE_OWNER FAKE_GPU_FAIL FAKE_STAT_FAIL FAKE_OVERLAY FAKE_MODEL_FAIL FAKE_DLL_FAIL FAKE_HANG
   export FAKE_CMD="C:\\llama-test\\llama-server.exe -m C:\\models\\m.gguf --port 1235"
 }
 nstat() { count '^stat' "$CALLS"; }
@@ -158,7 +161,8 @@ expect "owner changed during adopt: guard not armed"  "0"      "$EXPECTED_PID"
 # write_state itself refuses to arm when the live owner differs from the verified pid
 reset; export FAKE_OWNER="9999 5"
 write_state 4242
-expect "write_state known != live: not armed, live pid reported" "0/9999/owner-query" "$EXPECTED_PID/$(field pid)/$(field pid_source)"
+expect "write_state known != live: not armed, nothing written" "0/absent" "$EXPECTED_PID/$([ -e "$STATE_OUT" ] && echo present || echo absent)"
+expect "write_state known != live: logged" "1" "$(count 'not the verified 4242' "$tmp/log")"
 
 # 4 (critic B1, probe A): adopt under adopt-fail, then the owner changes; the retry
 # must not re-arm, write, or gate
@@ -305,8 +309,12 @@ run_loop() {  # one main-loop iteration with the liveness/identity probes stubbe
   (
     up() { return 0; }; probe_step() { return 0; }; buildok() { return 0; }
     prov_adopt_retry() { echo retry >> "$tmp/marks"; }
+    # With STUB_ADOPT set, adopt() is a marker: the identity-guard branch of the
+    # loop would otherwise arm a pid (legitimately) and hide what the GPU block did.
+    [ -n "${STUB_ADOPT:-}" ] && adopt() { echo "adopt $1" >> "$tmp/marks"; }
     # shellcheck disable=SC1091
     . "$tmp/loop.sh"
+    echo "$EXPECTED_PID" > "$tmp/loop-expected"   # the loop runs in a subshell: export its verdict
   )
 }
 reset; EXPECTED_PID=4242; run_loop
@@ -316,5 +324,21 @@ expect "main loop: guards-down branch still runs prov_adopt_retry" "1" "$(count 
 # GPU recovery write: with the owner lookup dark it must carry the verified pid, not tasklist
 reset; export FAKE_OWNER="0 -1"; EXPECTED_PID=4242; GPU_ALERT="old alert"; CYC0=44 run_loop
 expect "main loop GPU write passes EXPECTED_PID" "4242/caller-verified/0" "$(field pid)/$(field pid_source)/$(count '^tasklist' "$CALLS")"
+
+# item 1: GPU block with EXPECTED_PID=0 must not arm or write whatever owns :1235 (owner 9999)
+reset; export FAKE_OWNER="9999 5"; EXPECTED_PID=0; GPU_ALERT="old alert"; STUB_ADOPT=1 CYC0=44 run_loop
+expect "GPU recovery, EXPECTED_PID=0: nothing armed, nothing written" "0/absent" "$(cat "$tmp/loop-expected")/$([ -e "$STATE_OUT" ] && echo present || echo absent)"
+reset; export FAKE_OWNER="9999 5"; EXPECTED_PID=0; GPU_ALERT=""; FAKE_GPU_FAIL=1 STUB_ADOPT=1 CYC0=44 run_loop
+expect "GPU alert, EXPECTED_PID=0: nothing armed, nothing written" "0/absent" "$(cat "$tmp/loop-expected")/$([ -e "$STATE_OUT" ] && echo present || echo absent)"
+reset; export FAKE_OWNER="4242 90"; EXPECTED_PID=4242; GPU_ALERT=""; FAKE_GPU_FAIL=1 CYC0=44 run_loop
+expect "GPU alert, EXPECTED_PID>0: written and gpu_alert recorded" "4242/below the residency band" "$(field pid)/$(field gpu_alert)"
+
+# item 3: launched_at follows the pid it was stamped for
+reset; export FAKE_OWNER="4242 90"; adopt 4242; l0=$(field launched_at); command sleep 1
+EXPECTED_PID=0; adopt 4242
+expect "re-adopting the SAME pid keeps launched_at" "$l0" "$(field launched_at)"
+export FAKE_OWNER="5555 3"; EXPECTED_PID=0; adopt 5555
+[ "$(field launched_at)" != "$l0" ] && rr=ok || rr="stale $l0"
+expect "adopting a DIFFERENT pid restamps launched_at" "ok" "$rr"
 
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

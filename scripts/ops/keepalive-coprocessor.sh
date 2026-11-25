@@ -406,10 +406,14 @@ adopt_provenance() {  # $1 = verified pid of the adopted server
 }
 # Main-loop hook (bead 5il): re-run an adopt-time gate that is due (failed, or a
 # pass older than PROV_REGATE_EVERY). It writes the state json only for the SAME
-# owner it verified: a changed or unreadable owner is never re-armed from here,
-# adopt() re-verifies cmdline + pid first.
+# owner it verified. A changed owner is not re-armed from here: EXPECTED_PID goes
+# to 0 and the next cycle's adopt() verifies cmdline + pid (+ build) before it
+# arms the new pid; an unreadable owner defers the retry and writes nothing.
 prov_adopt_retry() {
   local pid
+  # launch-pass is deliberately absent: it was gated immediately before the launch
+  # it describes and gate_at shows its age. adopt-pass describes a server we did
+  # not start, whose files can change under it, so it is re-gated hourly.
   case "$PROV_GATE_STATE" in adopt-fail|adopt-bypass|adopt-pass) ;; *) return 0 ;; esac
   [ "${EXPECTED_PID:-0}" -gt 0 ] 2>/dev/null || return 0   # not adopted/armed: adopt() owns that path
   [ "$SECONDS" -ge "$PROV_RETRY_AT" ] || return 0
@@ -433,6 +437,8 @@ adopt() {
   [ -z "$cmd" ] && return   # transient — retry next cycle, adopt nothing on no data
   want=$(printf '%s' "$CODER" | sed 's/"//g' | tr -s ' ')
   if [ "$cmd" = "$want" ]; then
+    # A different server than the one launched_at was stamped for: restamp.
+    [ "$LAUNCHED_PID" != "$pid" ] && LAUNCHED_AT=""
     EXPECTED_PID=$pid
     log "adopted serving pid $pid (build + cmdline verified)"
     adopt_provenance "$pid"
@@ -494,6 +500,7 @@ PROV_RETRY_FIRST=60           # s to the first retry of a transient failure
 PROV_RETRY_EVERY=300          # s between later retries (~ the pid-check cadence)
 PROV_REGATE_EVERY=3600        # s a pass is reused for its pid; then re-gated
 LAUNCHED_AT=""                # stamped by the first write after a launch/adoption; later writes keep it
+LAUNCHED_PID=""               # the pid LAUNCHED_AT was stamped for; adopting a different pid restamps
 boxlen() {  # $1 = windows path -> byte length (empty on failure)
   local b64
   b64=$(printf "(Get-Item -LiteralPath '%s' -ErrorAction SilentlyContinue).Length" "$1" | iconv -t UTF-16LE | base64)
@@ -793,16 +800,20 @@ write_state() {
   fi
   # Arm the bm2 pid-identity guard only from an authoritative resolution; a
   # tasklist pid may be a husk, and guarding on it would reclaim the real server.
-  case "$src" in owner-query|caller-verified) EXPECTED_PID=$pid ;; *) EXPECTED_PID=0 ;; esac
+  # The live owner is not the pid the caller verified: record nothing (the ids
+  # and gate belong to the verified pid, not to this one) and arm nothing; the
+  # next cycle's adopt() verifies the new owner.
   if [ "$src" = owner-query ] && [ "$known" -gt 0 ] 2>/dev/null && [ "$pid" != "$known" ]; then
-    log "owner of :1235 is pid $pid, not the verified $known; guard not armed, re-adopting next cycle"
+    log "owner of :1235 is pid $pid, not the verified $known; state json not written, guard not armed, re-adopting next cycle"
     EXPECTED_PID=0
+    return 0
   fi
+  case "$src" in owner-query|caller-verified) EXPECTED_PID=$pid ;; *) EXPECTED_PID=0 ;; esac
   # The first write after a launch binds that launch's gate pass to the pid that
   # owns :1235 (authoritative lookups only).
   if [ "$PROV_GATE_STATE" = "launch-pass" ] && [ -z "$PROV_GATE_PID" ] && [ "$src" = owner-query ]; then PROV_GATE_PID=$pid; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  [ -z "$LAUNCHED_AT" ] && LAUNCHED_AT=$ts
+  if [ -z "$LAUNCHED_AT" ]; then LAUNCHED_AT=$ts; LAUNCHED_PID=$pid; fi
   json="{\"pid\": ${pid:-null}, \"pid_source\": \"$src\", \"launched_at\": \"$LAUNCHED_AT\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\", \"gate\": \"$PROV_GATE_STATE\", \"gate_reason\": \"$(json_esc "$PROV_GATE_REASON")\", \"gate_pid\": \"$PROV_GATE_PID\", \"gate_at\": \"$PROV_GATE_AT\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
@@ -967,11 +978,13 @@ while true; do
     # out of the carve, the fix is a carve/BIOS decision, not a relaunch loop.
     if [ $((CYC % GPUCHK_EVERY)) -eq 0 ]; then
       if gpu_check; then
-        [ -n "$GPU_ALERT" ] && { log "GPU residency recovered ($GPU_LAST)"; GPU_ALERT=""; write_state "$EXPECTED_PID"; }
+        [ -n "$GPU_ALERT" ] && { log "GPU residency recovered ($GPU_LAST)"; GPU_ALERT=""; [ "$EXPECTED_PID" -gt 0 ] && write_state "$EXPECTED_PID"; }
       elif [ "$GPU_ALERT" != "$GPU_REASON" ]; then
         GPU_ALERT="$GPU_REASON"
         log "ALERT: GPU residency assertion failed on the SERVING model -- $GPU_REASON (measured: $GPU_LAST). NOT restarting from the periodic check; :1235 liveness and tok/s will both look fine."
-        write_state "$EXPECTED_PID"
+        # Only for a pid the guards verified: with EXPECTED_PID=0 write_state would
+        # arm whatever owns :1235, unverified.
+        [ "$EXPECTED_PID" -gt 0 ] && write_state "$EXPECTED_PID"
       fi
     fi
     prov_adopt_retry   # bead 5il: re-run an adopt-time gate that failed (no-op otherwise)
