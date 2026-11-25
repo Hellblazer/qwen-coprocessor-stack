@@ -7022,9 +7022,10 @@
         }
       ],
       "verified_on": [
-        "mac"
+        "mac",
+        "box"
       ],
-      "verified_at": "2026-11-25T11:22:12Z",
+      "verified_at": "2026-11-25T11:25:01Z",
       "notes": "overlay runtime: official llama-b12722-bin-win-vulkan-x64.zip with ggml-vulkan.dll replaced per Hellblazer/qwen-coprocessor-stack#45603067796 artifact ggml-vulkan-b12722-patched",
       "overlay": {
         "repo": "Hellblazer/qwen-coprocessor-stack",
