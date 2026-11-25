@@ -346,6 +346,38 @@ reclaim() {  # $1 = reason. Counts toward the stand-down cap; crash restarts don
 # different-flags (36p's documented un-remediation vector, e.g. a restored
 # Startup .cmd with --cache-reuse) is a foreign server and gets reclaimed.
 # Quote-stripped equality: Win32_Process quotes the exe path, $CODER doesn't.
+# Bead 5il: an adopted server never went through start_coder, so prov_gate()
+# never ran and write_state() advertised empty ids. adopt() verified the cmdline
+# equals $CODER, so the same gate the launch path runs applies unchanged (it
+# also covers the patched-DLL overlay and keeps the b1y 20 s Python bound).
+# Unlike the launch path this NEVER refuses or reclaims: a failed gate here is
+# recorded in the state json (adopt-fail + reason), alerted once per reason, and
+# re-run every PROV_RETRY_EVERY s by prov_adopt_retry(). Killing a healthy
+# adopted server on a transient box-stat failure is the bead jqq class, and a
+# reclaim would not help anyway: start_coder() gates before it kills, so a
+# refusing gate leaves the server up. A pass is final for this process (the
+# cmdline, hence the artifacts, cannot differ from $CODER).
+adopt_provenance() {
+  case "$PROV_GATE_STATE" in launch-pass|adopt-pass) return 0 ;; esac
+  if prov_gate; then
+    PROV_GATE_STATE="adopt-pass"; PROV_GATE_REASON=""
+    [ -n "$PROV_ADOPT_ALERT" ] && log "provenance gate now passes on the adopted server (model $PROV_MODEL_ID, runtime $PROV_RUNTIME_ID)"
+    PROV_ADOPT_ALERT=""
+    log "provenance verified on adopted server (model=$PROV_MODEL_ID${PROV_MMPROJ_ID:+ mmproj=$PROV_MMPROJ_ID} runtime=$PROV_RUNTIME_ID)"
+  else
+    PROV_GATE_STATE="adopt-fail"; PROV_GATE_REASON="$PROV_REASON"
+    PROV_RETRY_AT=$((SECONDS + PROV_RETRY_EVERY))
+    if [ "$PROV_ADOPT_ALERT" != "$PROV_REASON" ]; then
+      log "ALERT: provenance gate FAILED on the adopted server -- $PROV_REASON. Server left running (adopt never tears down on a gate failure); state json records adopt-fail; retry every ${PROV_RETRY_EVERY}s."
+      PROV_ADOPT_ALERT="$PROV_REASON"
+    fi
+  fi
+}
+prov_adopt_retry() {  # main-loop hook: re-run a failed adopt-time gate when due
+  [ "$PROV_GATE_STATE" = "adopt-fail" ] && [ "$SECONDS" -ge "$PROV_RETRY_AT" ] || return 0
+  adopt_provenance
+  write_state "${EXPECTED_PID:-0}"
+}
 adopt() {
   local pid cmd want
   pid=$1
@@ -355,6 +387,7 @@ adopt() {
   if [ "$cmd" = "$want" ]; then
     EXPECTED_PID=$pid
     log "adopted serving pid $pid (build + cmdline verified)"
+    adopt_provenance
     # An ADOPTED server never went through start_coder, so it never got the
     # post-load residency assertion. Measured 2026-09-12: a keepalive restart
     # usually does NOT kill the box-side llama-server (the Windows sshd child
@@ -367,7 +400,7 @@ adopt() {
       GPU_ALERT="$GPU_REASON"
       log "ALERT: GPU residency assertion FAILED on the adopted server -- $GPU_REASON (measured: $GPU_LAST)"
     fi
-    write_state   # keep state json honest for the adopted server too
+    write_state "$pid"   # keep state json honest for the adopted server too
   else
     reclaim "foreign cmdline on :1235 (pid $pid)"
   fi
@@ -389,6 +422,14 @@ PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 
 PROVENANCE_ENFORCE=${QWEN_PROVENANCE_ENFORCE:-1}
 PROV_PY_TIMEOUT=${QWEN_PROV_PY_TIMEOUT:-20}   # per-$PYTHON wall-clock bound in prov_gate (bead b1y)
 PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_REFUSED=0
+# What the state json says about HOW the ids above were (not) obtained (bead 5il):
+# not-run | launch-pass | launch-bypass | adopt-pass | adopt-fail. A reader of
+# the json can then tell "adopted, gate passed" from "adopted, gate failed" from
+# "never checked", instead of three identical empty strings.
+PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""
+PROV_ADOPT_ALERT=""           # reason last logged for an adopt-fail streak (dedupe)
+PROV_RETRY_AT=0               # SECONDS after which an adopt-fail gate is re-run
+PROV_RETRY_EVERY=300          # s between re-runs (~ the pid-check cadence)
 boxlen() {  # $1 = windows path -> byte length (empty on failure)
   local b64
   b64=$(printf "(Get-Item -LiteralPath '%s' -ErrorAction SilentlyContinue).Length" "$1" | iconv -t UTF-16LE | base64)
@@ -418,6 +459,9 @@ prov_timeout() {  # $1 = short step name; sets PROV_REASON
 prov_gate() {  # sets PROV_MODEL_ID / PROV_RUNTIME_ID; returns 1 with PROV_REASON on refusal
   local len rt pyrc
   PROV_REASON=""
+  # A failed re-run must not leave the ids of an earlier pass standing (bead 5il):
+  # the adopt path re-runs this against a server that may have changed.
+  PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""
   if [ ! -f "$PROV" ]; then PROV_REASON="provenance tool missing at $PROV"; return 1; fi
   # Bootstrap: an EMPTY manifest is the not-yet-populated state (RDR-016 Approach
   # step 4 lands the retro entries), not a bypass — arm the gate only once the
@@ -637,8 +681,18 @@ waitup(){
 }
 # Launch metadata for the box-side Claude (negotiation commitment 2, 2026-07-21):
 # every (re)launch writes C:\claude-coordination\qwen-server-state.json.
+# $1 (optional) = a pid the caller has ALREADY verified owns :1235 (adopt():
+# build + cmdline checked). It is used when this function's own lookup fails
+# or reports pid 0, instead of tasklist's first row, and it keeps the identity
+# guard armed (bead 5il, part 2: the lookup goes dark for stretches while the
+# server is healthy, and the tasklist fallback used to reset EXPECTED_PID to 0,
+# which re-adopted the same server on every later check).
+json_esc() {  # one line, <=300 chars, safe inside a JSON string AND a PowerShell '...' literal
+  printf '%s' "$1" | tr -d '\r\n' | cut -c1-300 | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/'/''/g"
+}
 write_state() {
-  local pid age ts json ps b64 src owner elapsed
+  local pid age ts json ps b64 src owner elapsed known
+  known=${1:-0}
   # PID of the process that OWNS :1235 — not tasklist's first llama-server row,
   # which credits a lingering husk when one is resident (bead c7c: state json
   # advertised a dead/non-serving pid twice, 2026-07-26 and 2026-08-04).
@@ -658,14 +712,19 @@ write_state() {
     owner="not-this-launch-ssh-exited"
   fi
   if [ -z "${pid:-}" ] || [ "$pid" = "0" ]; then
-    pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
-    src=tasklist-fallback   # can still credit a husk — visible in the log line
+    if [ "$known" -gt 0 ] 2>/dev/null; then
+      pid=$known
+      src=caller-verified
+    else
+      pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
+      src=tasklist-fallback   # can still credit a husk — visible in the log line
+    fi
   fi
   # Arm the bm2 pid-identity guard only from an authoritative resolution; a
-  # fallback pid may be a husk, and guarding on it would reclaim the real server.
-  if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
+  # tasklist pid may be a husk, and guarding on it would reclaim the real server.
+  case "$src" in owner-query|caller-verified) EXPECTED_PID=$pid ;; *) EXPECTED_PID=0 ;; esac
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\", \"gate\": \"$PROV_GATE_STATE\", \"gate_reason\": \"$(json_esc "$PROV_GATE_REASON")\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
@@ -700,6 +759,7 @@ start_coder() {
   if ! prov_gate; then
     if [ "$PROVENANCE_ENFORCE" = "0" ]; then
       log "PROVENANCE BYPASS (QWEN_PROVENANCE_ENFORCE=0): $PROV_REASON — launching anyway"
+      PROV_GATE_STATE="launch-bypass"; PROV_GATE_REASON="$PROV_REASON"
     else
       # Log once per refusal streak, then back off: a refused launch is not a crash to
       # retry every 20 s. Re-checked each cycle so a manifest fix is picked up.
@@ -708,6 +768,8 @@ start_coder() {
       sleep 280
       return 1
     fi
+  else
+    PROV_GATE_STATE="launch-pass"; PROV_GATE_REASON=""
   fi
   [ "$PROV_REFUSED" -eq 1 ] && log "provenance gate now passes (model $PROV_MODEL_ID, runtime $PROV_RUNTIME_ID)"
   PROV_REFUSED=0
@@ -825,6 +887,7 @@ while true; do
         write_state
       fi
     fi
+    prov_adopt_retry   # bead 5il: re-run an adopt-time gate that failed (no-op otherwise)
     if [ "$EXPECTED_PID" -eq 0 ] || [ $((CYC % PIDCHECK_EVERY)) -eq 0 ]; then
       pid=$(ownerpid)
       [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$OWNERPID_DARK" -eq 1 ] && { log "owner pid recovered ($pid); identity guard active"; OWNERPID_DARK=0; }
