@@ -346,15 +346,111 @@ reclaim() {  # $1 = reason. Counts toward the stand-down cap; crash restarts don
 # different-flags (36p's documented un-remediation vector, e.g. a restored
 # Startup .cmd with --cache-reuse) is a foreign server and gets reclaimed.
 # Quote-stripped equality: Win32_Process quotes the exe path, $CODER doesn't.
+# Bead 5il: an adopted server never went through start_coder, so prov_gate()
+# never ran and write_state() advertised empty ids. adopt() verified the cmdline
+# equals $CODER, so the same gate the launch path runs applies unchanged (it
+# also covers the patched-DLL overlay and keeps the b1y 20 s Python bound).
+# Unlike the launch path this NEVER refuses or reclaims: a failed gate here is
+# recorded in the state json (adopt-fail + reason, ids cleared), alerted once per
+# reason and hourly while it stands, and re-run by prov_adopt_retry(). Killing a
+# healthy adopted server on a transient box-stat failure is the bead jqq class,
+# and a reclaim would not help anyway: start_coder() gates before it kills, so a
+# refusing gate leaves the server up. A pass says only that the disk matched the
+# manifest at gate time, for THIS pid; it is reused for that pid for
+# PROV_REGATE_EVERY s, and a different pid is always re-gated.
+# Bead 5il: is a gate failure reason transient (retry may clear it: a box stat
+# failure, a TCC timeout) or definitive (the disk disagrees with the manifest)?
+# The ONE classifier: it drives both the retry delay and the state json's
+# gate_class, so the two cannot disagree. Prints transient|definitive.
+prov_reason_class() {  # $1 = gate failure reason
+  case "$1" in "could not stat"*|*"timed out"*) echo transient ;; *) echo definitive ;; esac
+}
+prov_mark() {  # $1 state, $2 reason, $3 pid the verdict is about
+  PROV_GATE_STATE=$1; PROV_GATE_REASON=$2; PROV_GATE_PID=${3:-}
+  # gate_class: none when no failure is recorded (pass, not-run), else the class of the reason.
+  if [ -n "$2" ]; then PROV_GATE_CLASS=$(prov_reason_class "$2"); else PROV_GATE_CLASS="none"; fi
+  PROV_GATE_AT=$(date '+%Y-%m-%dT%H:%M:%S%z'); PROV_GATE_T=$SECONDS
+}
+prov_ids_clear() { PROV_MODEL_ID=""; PROV_MMPROJ_ID=""; PROV_RUNTIME_ID=""; }
+adopt_provenance() {  # $1 = verified pid of the adopted server
+  local pid=${1:-0} class delay
+  # A bypassed launch (QWEN_PROVENANCE_ENFORCE=0) is not upgraded or overwritten
+  # by an adopt-time result: its state stays launch-bypass.
+  [ "$PROV_GATE_STATE" = "launch-bypass" ] && return 0
+  case "$PROV_GATE_STATE" in
+    launch-pass|adopt-pass)
+      # Reuse a pass only for the pid it was made for, and only while fresh.
+      [ "$PROV_GATE_PID" = "$pid" ] && [ $((SECONDS - PROV_GATE_T)) -lt "$PROV_REGATE_EVERY" ] && return 0 ;;
+    adopt-fail|adopt-bypass)
+      # adopt() runs every 20 s cycle while EXPECTED_PID is 0: do not re-gate
+      # (3 stats + Python) that often for the same pid.
+      [ "$PROV_GATE_PID" = "$pid" ] && [ "$SECONDS" -lt "$PROV_RETRY_AT" ] && return 0 ;;
+  esac
+  if prov_gate; then
+    prov_mark adopt-pass "" "$pid"
+    PROV_FAIL_STREAK=0; PROV_RETRY_AT=$((SECONDS + PROV_REGATE_EVERY))
+    [ -n "$PROV_ADOPT_ALERT" ] && log "provenance gate now passes on the adopted server (model $PROV_MODEL_ID, runtime $PROV_RUNTIME_ID)"
+    PROV_ADOPT_ALERT=""
+    log "provenance verified on adopted server pid $pid (model=$PROV_MODEL_ID${PROV_MMPROJ_ID:+ mmproj=$PROV_MMPROJ_ID} runtime=$PROV_RUNTIME_ID)"
+  else
+    # No half-verified ids stand: an adopted server whose gate failed shows empty ids and why.
+    prov_ids_clear
+    PROV_FAIL_STREAK=$((PROV_FAIL_STREAK + 1))
+    class=$(prov_reason_class "$PROV_REASON")
+    # A transient reason (box stat, TCC timeout) gets a quick first retry.
+    if [ "$class" = transient ] && [ "$PROV_FAIL_STREAK" -le 1 ]; then delay=$PROV_RETRY_FIRST; else delay=$PROV_RETRY_EVERY; fi
+    PROV_RETRY_AT=$((SECONDS + delay))
+    if [ "$PROVENANCE_ENFORCE" = "0" ]; then
+      prov_mark adopt-bypass "$PROV_REASON" "$pid"
+      [ "$PROV_ADOPT_ALERT" != "$PROV_REASON" ] && log "PROVENANCE BYPASS (QWEN_PROVENANCE_ENFORCE=0): adopted server not verified -- $PROV_REASON"
+    else
+      prov_mark adopt-fail "$PROV_REASON" "$pid"
+      if [ "$PROV_ADOPT_ALERT" != "$PROV_REASON" ] || [ $((SECONDS - PROV_ADOPT_ALERT_T)) -ge 3600 ]; then
+        log "ALERT: provenance gate FAILED on the adopted server (pid $pid, $class) -- $PROV_REASON. Server left running (adopt never tears down on a gate failure); state json records adopt-fail, gate_class $class; retry in ${delay}s."
+        PROV_ADOPT_ALERT_T=$SECONDS
+      fi
+    fi
+    PROV_ADOPT_ALERT="$PROV_REASON"
+  fi
+}
+# Main-loop hook (bead 5il): re-run an adopt-time gate that is due (failed, or a
+# pass older than PROV_REGATE_EVERY). It writes the state json only for the SAME
+# owner it verified. A changed owner is not re-armed from here: EXPECTED_PID goes
+# to 0 and the next cycle's adopt() verifies cmdline + pid (+ build) before it
+# arms the new pid; an unreadable owner defers the retry and writes nothing.
+prov_adopt_retry() {
+  local pid
+  # launch-pass is deliberately absent: it was gated immediately before the launch
+  # it describes and gate_at shows its age. adopt-pass describes a server we did
+  # not start, whose files can change under it, so it is re-gated hourly.
+  case "$PROV_GATE_STATE" in adopt-fail|adopt-bypass|adopt-pass) ;; *) return 0 ;; esac
+  [ "${EXPECTED_PID:-0}" -gt 0 ] 2>/dev/null || return 0   # not adopted/armed: adopt() owns that path
+  [ "$SECONDS" -ge "$PROV_RETRY_AT" ] || return 0
+  pid=$(ownerpid)
+  if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+    PROV_RETRY_AT=$((SECONDS + PROV_RETRY_FIRST))   # owner unreadable: no write, ask again soon
+    return 0
+  fi
+  if [ "$pid" != "$EXPECTED_PID" ]; then
+    log "owner of :1235 changed ($EXPECTED_PID -> $pid) before the provenance retry; not re-arming, re-adopting with cmdline verification"
+    EXPECTED_PID=0
+    return 0
+  fi
+  adopt_provenance "$pid"
+  write_state "$pid"
+}
 adopt() {
-  local pid cmd want
+  local pid cmd want now
   pid=$1
   cmd=$(ownercmd)
   [ -z "$cmd" ] && return   # transient — retry next cycle, adopt nothing on no data
   want=$(printf '%s' "$CODER" | sed 's/"//g' | tr -s ' ')
   if [ "$cmd" = "$want" ]; then
+    # A different server than the one launched_at was stamped for: restamp.
+    [ "$LAUNCHED_PID" != "$pid" ] && LAUNCHED_AT=""
     EXPECTED_PID=$pid
     log "adopted serving pid $pid (build + cmdline verified)"
+    adopt_provenance "$pid"
     # An ADOPTED server never went through start_coder, so it never got the
     # post-load residency assertion. Measured 2026-09-12: a keepalive restart
     # usually does NOT kill the box-side llama-server (the Windows sshd child
@@ -367,7 +463,16 @@ adopt() {
       GPU_ALERT="$GPU_REASON"
       log "ALERT: GPU residency assertion FAILED on the adopted server -- $GPU_REASON (measured: $GPU_LAST)"
     fi
-    write_state   # keep state json honest for the adopted server too
+    # The gate and the residency sample take seconds to a minute: the owner can
+    # change meanwhile. Re-check it before recording or arming anything. An
+    # unreadable owner (the pid-0 episodes, bead ffjq) is not a change.
+    now=$(ownerpid)
+    if [ -n "$now" ] && [ "$now" != "0" ] && [ "$now" != "$pid" ]; then
+      log "owner of :1235 changed during adoption ($pid -> $now); nothing recorded, re-adopting next cycle"
+      EXPECTED_PID=0
+      return
+    fi
+    write_state "$pid"   # keep state json honest for the adopted server too
   else
     reclaim "foreign cmdline on :1235 (pid $pid)"
   fi
@@ -389,6 +494,23 @@ PYTHON=$(command -v /opt/homebrew/bin/python3 2>/dev/null || command -v python3 
 PROVENANCE_ENFORCE=${QWEN_PROVENANCE_ENFORCE:-1}
 PROV_PY_TIMEOUT=${QWEN_PROV_PY_TIMEOUT:-20}   # per-$PYTHON wall-clock bound in prov_gate (bead b1y)
 PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_REFUSED=0
+# What the state json says about HOW the ids above were (not) obtained (bead 5il):
+# not-run | launch-pass | launch-bypass | launch-refused | adopt-pass | adopt-fail
+# | adopt-bypass, with gate_reason, gate_pid (the pid the verdict is about) and
+# gate_at (when it was reached), and gate_class (transient|definitive for a
+# recorded failure, none otherwise; see prov_reason_class). A reader can then tell "adopted, gate passed"
+# from "adopted, gate failed" from "never checked", instead of three identical
+# empty strings.
+PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""; PROV_GATE_CLASS="none"; PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0
+PROV_ADOPT_ALERT=""           # reason last logged for an adopt-fail streak (dedupe)
+PROV_ADOPT_ALERT_T=0          # SECONDS at that log; re-logged hourly while it stands
+PROV_FAIL_STREAK=0            # consecutive failed adopt-time gates
+PROV_RETRY_AT=0               # SECONDS after which an adopt-time gate is re-run
+PROV_RETRY_FIRST=60           # s to the first retry of a transient failure
+PROV_RETRY_EVERY=300          # s between later retries (~ the pid-check cadence)
+PROV_REGATE_EVERY=3600        # s a pass is reused for its pid; then re-gated
+LAUNCHED_AT=""                # stamped by the first write after a launch/adoption; later writes keep it
+LAUNCHED_PID=""               # the pid LAUNCHED_AT was stamped for; adopting a different pid restamps
 boxlen() {  # $1 = windows path -> byte length (empty on failure)
   local b64
   b64=$(printf "(Get-Item -LiteralPath '%s' -ErrorAction SilentlyContinue).Length" "$1" | iconv -t UTF-16LE | base64)
@@ -415,8 +537,12 @@ py_bounded() {  # "$PYTHON" "$@" bounded by PROV_PY_TIMEOUT s; python's own stat
 prov_timeout() {  # $1 = short step name; sets PROV_REASON
   PROV_REASON="$1 timed out after ${PROV_PY_TIMEOUT}s — $PYTHON is probably blocked by macOS TCC reading $REPO_DIR (grant Full Disk Access to Homebrew's Python.app; see CLAUDE.md Mac/MLX TCC note)"
 }
-prov_gate() {  # sets PROV_MODEL_ID / PROV_RUNTIME_ID; returns 1 with PROV_REASON on refusal
-  local len rt pyrc
+prov_gate() {  # on success sets PROV_MODEL_ID / PROV_MMPROJ_ID / PROV_RUNTIME_ID and returns 0; on refusal returns 1 with PROV_REASON and leaves the ids UNTOUCHED
+  # Bead 5il: results go into locals and are committed to the globals only when
+  # the WHOLE gate passed. A failure part-way (e.g. the overlay DLL after the
+  # model and exe passed) used to leave a half-filled id set behind; callers now
+  # decide what a failed gate does to the recorded ids and to the gate state.
+  local len rt pyrc m_id="" mm_id="" rt_id=""
   PROV_REASON=""
   if [ ! -f "$PROV" ]; then PROV_REASON="provenance tool missing at $PROV"; return 1; fi
   # Bootstrap: an EMPTY manifest is the not-yet-populated state (RDR-016 Approach
@@ -440,7 +566,7 @@ except Exception as e:
   esac
   len=$(boxlen "$CODER_MODEL")
   if [ -z "$len" ]; then PROV_REASON="could not stat $CODER_MODEL on box"; return 1; fi
-  PROV_MODEL_ID=$(py_bounded "$PROV" check-path "$CODER_MODEL" --host box --size "$len" --print-id ${CODER_MANIFEST_ID:+--id "$CODER_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
+  m_id=$(py_bounded "$PROV" check-path "$CODER_MODEL" --host box --size "$len" --print-id ${CODER_MANIFEST_ID:+--id "$CODER_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
     || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "model check-path"; return 1; }
          PROV_REASON="model not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   # The mmproj on the CODER line is loaded by llama-server the same as the model;
@@ -448,14 +574,14 @@ except Exception as e:
   if [ -n "${MMPROJ_MODEL:-}" ]; then
     len=$(boxlen "$MMPROJ_MODEL")
     if [ -z "$len" ]; then PROV_REASON="could not stat $MMPROJ_MODEL on box"; return 1; fi
-    PROV_MMPROJ_ID=$(py_bounded "$PROV" check-path "$MMPROJ_MODEL" --host box --size "$len" --print-id ${MMPROJ_MANIFEST_ID:+--id "$MMPROJ_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
+    mm_id=$(py_bounded "$PROV" check-path "$MMPROJ_MODEL" --host box --size "$len" --print-id ${MMPROJ_MANIFEST_ID:+--id "$MMPROJ_MANIFEST_ID"} 2>/tmp/prov-gate.err) \
       || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "mmproj check-path"; return 1; }
            PROV_REASON="mmproj not verified: $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   fi
   rt="llama.cpp@${EXPECTED_BUILD:-unknown}"
   len=$(boxlen "$LL")
   if [ -z "$len" ]; then PROV_REASON="could not stat $LL on box"; return 1; fi
-  PROV_RUNTIME_ID=$(py_bounded "$PROV" check-path llama-server.exe --host box --id "$rt" --size "$len" --print-id 2>/tmp/prov-gate.err) \
+  rt_id=$(py_bounded "$PROV" check-path llama-server.exe --host box --id "$rt" --size "$len" --print-id 2>/tmp/prov-gate.err) \
     || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "runtime check-path"; return 1; }
          PROV_REASON="runtime not verified ($rt): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   # Overlay runtimes (RDR-016 overlay add-runtime) swap ONE file inside the
@@ -514,6 +640,7 @@ except Exception as e:
       || { pyrc=$?; [ "$pyrc" -eq 124 ] && { prov_timeout "overlay check-path"; return 1; }
            PROV_REASON="overlay file not verified ($rt $overlay_file): $(tr -d '\n' </tmp/prov-gate.err)"; return 1; }
   fi
+  PROV_MODEL_ID="$m_id"; PROV_MMPROJ_ID="$mm_id"; PROV_RUNTIME_ID="$rt_id"
   return 0
 }
 kpid()  { [ "${1:-0}" -gt 0 ] 2>/dev/null && kill "$1" 2>/dev/null; }
@@ -637,8 +764,23 @@ waitup(){
 }
 # Launch metadata for the box-side Claude (negotiation commitment 2, 2026-07-21):
 # every (re)launch writes C:\claude-coordination\qwen-server-state.json.
+# $1 (optional) = a pid the caller has ALREADY verified owns :1235 (adopt() and
+# prov_adopt_retry(): build + cmdline / owner checked). It is used when this
+# function's own lookup fails or reports pid 0, instead of tasklist's first row,
+# and it keeps the identity guard armed (bead 5il, part 2: the lookup goes dark
+# for stretches while the server is healthy, and the tasklist fallback used to
+# reset EXPECTED_PID to 0, which re-adopted the same server on every later
+# check). If the LIVE lookup names a different non-zero pid, nothing is armed:
+# EXPECTED_PID goes to 0 so the next cycle re-adopts with cmdline verification.
+# The json's pid_source says which of owner-query / caller-verified /
+# tasklist-fallback produced the pid. launched_at is stamped once per
+# launch/adoption (LAUNCHED_AT) and kept by later writes.
+json_esc() {  # one line, <=300 chars, safe inside a JSON string AND a PowerShell '...' literal
+  printf '%s' "$1" | tr '[:cntrl:]' ' ' | cut -c1-300 | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/'/''/g"
+}
 write_state() {
-  local pid age ts json ps b64 src owner elapsed
+  local pid age ts json ps b64 src owner elapsed known
+  known=${1:-0}
   # PID of the process that OWNS :1235 — not tasklist's first llama-server row,
   # which credits a lingering husk when one is resident (bead c7c: state json
   # advertised a dead/non-serving pid twice, 2026-07-26 and 2026-08-04).
@@ -658,14 +800,31 @@ write_state() {
     owner="not-this-launch-ssh-exited"
   fi
   if [ -z "${pid:-}" ] || [ "$pid" = "0" ]; then
-    pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
-    src=tasklist-fallback   # can still credit a husk — visible in the log line
+    if [ "$known" -gt 0 ] 2>/dev/null; then
+      pid=$known
+      src=caller-verified
+    else
+      pid=$($SSH "$HOST" 'tasklist /FI "IMAGENAME eq llama-server.exe" /FO CSV /NH' 2>/dev/null | head -1 | cut -d'"' -f4)
+      src=tasklist-fallback   # can still credit a husk — visible in the log line
+    fi
   fi
   # Arm the bm2 pid-identity guard only from an authoritative resolution; a
-  # fallback pid may be a husk, and guarding on it would reclaim the real server.
-  if [ "$src" = owner-query ]; then EXPECTED_PID=$pid; else EXPECTED_PID=0; fi
+  # tasklist pid may be a husk, and guarding on it would reclaim the real server.
+  # The live owner is not the pid the caller verified: record nothing (the ids
+  # and gate belong to the verified pid, not to this one) and arm nothing; the
+  # next cycle's adopt() verifies the new owner.
+  if [ "$src" = owner-query ] && [ "$known" -gt 0 ] 2>/dev/null && [ "$pid" != "$known" ]; then
+    log "owner of :1235 is pid $pid, not the verified $known; state json not written, guard not armed, re-adopting next cycle"
+    EXPECTED_PID=0
+    return 0
+  fi
+  case "$src" in owner-query|caller-verified) EXPECTED_PID=$pid ;; *) EXPECTED_PID=0 ;; esac
+  # The first write after a launch binds that launch's gate pass to the pid that
+  # owns :1235 (authoritative lookups only).
+  if [ "$PROV_GATE_STATE" = "launch-pass" ] && [ -z "$PROV_GATE_PID" ] && [ "$src" = owner-query ]; then PROV_GATE_PID=$pid; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
-  json="{\"pid\": ${pid:-null}, \"launched_at\": \"$ts\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  if [ -z "$LAUNCHED_AT" ]; then LAUNCHED_AT=$ts; LAUNCHED_PID=$pid; fi
+  json="{\"pid\": ${pid:-null}, \"pid_source\": \"$src\", \"launched_at\": \"$LAUNCHED_AT\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\", \"gate\": \"$PROV_GATE_STATE\", \"gate_reason\": \"$(json_esc "$PROV_GATE_REASON")\", \"gate_class\": \"$PROV_GATE_CLASS\", \"gate_pid\": \"$PROV_GATE_PID\", \"gate_at\": \"$PROV_GATE_AT\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
@@ -700,19 +859,27 @@ start_coder() {
   if ! prov_gate; then
     if [ "$PROVENANCE_ENFORCE" = "0" ]; then
       log "PROVENANCE BYPASS (QWEN_PROVENANCE_ENFORCE=0): $PROV_REASON — launching anyway"
+      prov_ids_clear   # an unverified launch carries no ids, not an earlier pass's
+      prov_mark launch-bypass "$PROV_REASON" ""
     else
       # Log once per refusal streak, then back off: a refused launch is not a crash to
       # retry every 20 s. Re-checked each cycle so a manifest fix is picked up.
       [ "$PROV_REFUSED" -eq 0 ] && log "REFUSING to launch coder-box — $PROV_REASON (fix the manifest: /qwen-stack:provenance; or QWEN_PROVENANCE_ENFORCE=0 to bypass, logged)"
       PROV_REFUSED=1
+      # The server (if one is up) keeps the ids of the last pass: a refused
+      # launch verified nothing new. The state says the last gate was refused.
+      prov_mark launch-refused "$PROV_REASON" "$PROV_GATE_PID"
       sleep 280
       return 1
     fi
+  else
+    prov_mark launch-pass "" ""
   fi
   [ "$PROV_REFUSED" -eq 1 ] && log "provenance gate now passes (model $PROV_MODEL_ID, runtime $PROV_RUNTIME_ID)"
   PROV_REFUSED=0
   log "starting coder-box (alone) [provenance: model=${PROV_MODEL_ID:-bypass}${PROV_MMPROJ_ID:+ mmproj=$PROV_MMPROJ_ID} runtime=${PROV_RUNTIME_ID:-bypass}]"
   LAUNCH_T0=$SECONDS
+  LAUNCHED_AT=""   # the write_state after this launch stamps the new launched_at
   CYC=0
   kpid "$CODER_PID"; killremote; sleep 8
   if [ -n "$ENVSET" ]; then
@@ -804,7 +971,10 @@ while true; do
     # (preflight/provenance) leaves the zombie up and it is re-probed next cycle.
     start_coder && { PROBE_FAILS=0; PROBE_RELAUNCHES=$((PROBE_RELAUNCHES + 1)); }
   elif [ "$GUARDS_DOWN" -eq 1 ]; then
-    :  # stood down (reclaim cap) — liveness duty only
+    # stood down (reclaim cap): liveness duty only for the identity guards. The
+    # provenance retry is bookkeeping, not an identity guard, and it never
+    # reclaims or arms anything, so it keeps running (bead 5il).
+    prov_adopt_retry
   elif ! buildok; then
     # Liveness passed but a DIFFERENT build is serving :1235 — a foreign
     # launcher's instance (bm2: the 2026-07-25 two-day blind spot).
@@ -818,13 +988,16 @@ while true; do
     # out of the carve, the fix is a carve/BIOS decision, not a relaunch loop.
     if [ $((CYC % GPUCHK_EVERY)) -eq 0 ]; then
       if gpu_check; then
-        [ -n "$GPU_ALERT" ] && { log "GPU residency recovered ($GPU_LAST)"; GPU_ALERT=""; write_state; }
+        [ -n "$GPU_ALERT" ] && { log "GPU residency recovered ($GPU_LAST)"; GPU_ALERT=""; [ "$EXPECTED_PID" -gt 0 ] && write_state "$EXPECTED_PID"; }
       elif [ "$GPU_ALERT" != "$GPU_REASON" ]; then
         GPU_ALERT="$GPU_REASON"
         log "ALERT: GPU residency assertion failed on the SERVING model -- $GPU_REASON (measured: $GPU_LAST). NOT restarting from the periodic check; :1235 liveness and tok/s will both look fine."
-        write_state
+        # Only for a pid the guards verified: with EXPECTED_PID=0 write_state would
+        # arm whatever owns :1235, unverified.
+        [ "$EXPECTED_PID" -gt 0 ] && write_state "$EXPECTED_PID"
       fi
     fi
+    prov_adopt_retry   # bead 5il: re-run an adopt-time gate that failed (no-op otherwise)
     if [ "$EXPECTED_PID" -eq 0 ] || [ $((CYC % PIDCHECK_EVERY)) -eq 0 ]; then
       pid=$(ownerpid)
       [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$OWNERPID_DARK" -eq 1 ] && { log "owner pid recovered ($pid); identity guard active"; OWNERPID_DARK=0; }
