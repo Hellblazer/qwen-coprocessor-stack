@@ -18,10 +18,10 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 sed -n -e '/^py_bounded() {/,/^}$/p' -e '/^prov_timeout() {/,/^}$/p' -e '/^boxlen() {/,/^}$/p' \
        -e '/^prov_gate() {/,/^}$/p' -e '/^json_esc() {/,/^}$/p' -e '/^write_state() {/,/^}$/p' \
-       -e '/^prov_mark() {/,/^}$/p' -e '/^prov_ids_clear() {.*}$/p' -e '/^ownerpid() {.*}$/p' \
+       -e '/^prov_reason_class() {/,/^}$/p' -e '/^prov_mark() {/,/^}$/p' -e '/^prov_ids_clear() {.*}$/p' -e '/^ownerpid() {.*}$/p' \
        -e '/^adopt_provenance() {/,/^}$/p' -e '/^prov_adopt_retry() {/,/^}$/p' -e '/^adopt() {/,/^}$/p' \
        -e '/^start_coder() {/,/^}$/p' "$ka" > "$tmp/fns.sh"
-for f in py_bounded prov_timeout boxlen prov_gate json_esc write_state prov_mark prov_ids_clear ownerpid \
+for f in py_bounded prov_timeout boxlen prov_gate json_esc write_state prov_reason_class prov_mark prov_ids_clear ownerpid \
          adopt_provenance prov_adopt_retry adopt start_coder; do
   grep -q "^$f() {" "$tmp/fns.sh" || { echo "FAIL: $f not found in $ka"; exit 1; }
 done
@@ -89,7 +89,7 @@ CODER_MODEL='C:\models\m.gguf'; CODER_MANIFEST_ID=""; MMPROJ_MODEL=""; MMPROJ_MA
 CODER="$LL -m $CODER_MODEL --port 1235"; VARIANT=""; ENVSET="X=1"
 PROVENANCE_ENFORCE=1; LAUNCH_T0=0; CODER_PID=0; GPU_LAST=""; GPU_ALERT=""; EXPECTED_PID=0
 PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_REFUSED=0
-PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""; PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0
+PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""; PROV_GATE_CLASS="none"; PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0
 PROV_ADOPT_ALERT=""; PROV_ADOPT_ALERT_T=0; PROV_FAIL_STREAK=0; PROV_RETRY_AT=0
 PROV_RETRY_FIRST=60; PROV_RETRY_EVERY=300; PROV_REGATE_EVERY=3600; LAUNCHED_AT=""; LAUNCHED_PID=""
 PREFLIGHT_ENFORCE=1; PREFLIGHT_REFUSED=0; PREFLIGHT_ALERT=""; LAUNCH_DEAD=0; GPU_FAILS=0; MAX_GPU_RETRIES=2
@@ -119,7 +119,7 @@ print(d)' "$STATE_OUT" "$1" 2>/dev/null || echo "<UNPARSEABLE>"; }
 count() { grep -c "$1" "$2" 2>/dev/null; true; }   # grep -c prints 0 AND exits 1 on no match
 reset() {
   : > "$CALLS"; : > "$tmp/log"; : > "$tmp/reclaims"; rm -f "$STATE_OUT" "$OWNER_SEQ" "$tmp/marks"
-  PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""
+  PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""; PROV_GATE_CLASS="none"
   PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0; PROV_ADOPT_ALERT=""; PROV_ADOPT_ALERT_T=0; PROV_FAIL_STREAK=0
   PROV_RETRY_AT=0; EXPECTED_PID=0; LAUNCHED_AT=""; LAUNCHED_PID=""; PROVENANCE_ENFORCE=1; GPU_ALERT=""; GUARDS_DOWN=0
   unset FAKE_OWNER FAKE_GPU_FAIL FAKE_STAT_FAIL FAKE_OVERLAY FAKE_MODEL_FAIL FAKE_DLL_FAIL FAKE_HANG
@@ -340,5 +340,66 @@ expect "re-adopting the SAME pid keeps launched_at" "$l0" "$(field launched_at)"
 export FAKE_OWNER="5555 3"; EXPECTED_PID=0; adopt 5555
 [ "$(field launched_at)" != "$l0" ] && rr=ok || rr="stale $l0"
 expect "adopting a DIFFERENT pid restamps launched_at" "ok" "$rr"
+
+# 14 (bead 5il, Sam's adopt-refusal-policy): the state json records whether a gate failure is
+# transient or definitive in gate_class, from ONE classifier shared with the retry delay.
+# adopt pass: no failure recorded -> none
+reset; export FAKE_OWNER="4242 90"; adopt 4242
+expect "gate_class: adopt pass is none" "adopt-pass/none" "$(field provenance.gate)/$(field provenance.gate_class)"
+# transient: box stat failure
+reset; export FAKE_OWNER="4242 90" FAKE_STAT_FAIL=1; adopt 4242
+expect "gate_class: could-not-stat adopt-fail is transient" "adopt-fail/transient" "$(field provenance.gate)/$(field provenance.gate_class)"
+expect "gate_class: transient failure never stops the server" "" "$(cat "$tmp/reclaims")"
+case "$(cat "$tmp/log")" in *"(pid 4242, transient)"*"gate_class transient"*) rr=ok ;; *) rr="got: $(cat "$tmp/log")" ;; esac
+expect "gate_class: first alert names the class" "ok" "$rr"
+# hourly re-alert on a standing failure names the class too
+: > "$tmp/log"; PROV_ADOPT_ALERT_T=$((SECONDS - 3601)); PROV_RETRY_AT=$((SECONDS - 1)); EXPECTED_PID=0; adopt 4242
+expect "gate_class: hourly re-alert names the class" "1" "$(count '^ALERT: provenance gate FAILED on the adopted server (pid 4242, transient)' "$tmp/log")"
+# transient: TCC timeout
+reset; export FAKE_OWNER="4242 90" FAKE_HANG=1; adopt 4242 2>/dev/null
+expect "gate_class: timed-out adopt-fail is transient" "adopt-fail/transient" "$(field provenance.gate)/$(field provenance.gate_class)"
+# definitive: unmanifested/mismatched model
+reset; export FAKE_OWNER="4242 90" FAKE_MODEL_FAIL=1; adopt 4242
+expect "gate_class: unverified model adopt-fail is definitive" "adopt-fail/definitive" "$(field provenance.gate)/$(field provenance.gate_class)"
+expect "gate_class: definitive failure still never stops the server" "" "$(cat "$tmp/reclaims")"
+case "$(cat "$tmp/log")" in *"(pid 4242, definitive)"*) rr=ok ;; *) rr="got: $(cat "$tmp/log")" ;; esac
+expect "gate_class: definitive alert names the class" "ok" "$rr"
+d=$((PROV_RETRY_AT - SECONDS)); [ "$d" -ge 295 ] && [ "$d" -le 300 ] && dd=ok || dd="got $d"
+expect "gate_class: definitive first failure retries at 300 s (same classifier as the delay)" "ok" "$dd"
+# definitive: overlay DLL
+reset; export FAKE_OWNER="4242 90" FAKE_OVERLAY="ggml-vulkan.dll" FAKE_DLL_FAIL=1; adopt 4242
+expect "gate_class: overlay failure is definitive" "definitive" "$(field provenance.gate_class)"
+# bypass: the failure is still classified
+reset; export FAKE_OWNER="4242 90" FAKE_STAT_FAIL=1; PROVENANCE_ENFORCE=0; adopt 4242
+expect "gate_class: adopt-bypass carries the class" "adopt-bypass/transient" "$(field provenance.gate)/$(field provenance.gate_class)"
+# transient -> pass clears it (retry hook, same owner)
+reset; export FAKE_OWNER="4242 90" FAKE_STAT_FAIL=1; adopt 4242
+unset FAKE_STAT_FAIL; PROV_RETRY_AT=$((SECONDS - 1)); prov_adopt_retry
+expect "gate_class: transient then pass clears to none" "adopt-pass/none/" "$(field provenance.gate)/$(field provenance.gate_class)/$(field provenance.gate_reason)"
+# definitive -> pass clears it too
+reset; export FAKE_OWNER="4242 90" FAKE_MODEL_FAIL=1; adopt 4242
+unset FAKE_MODEL_FAIL; PROV_RETRY_AT=$((SECONDS - 1)); prov_adopt_retry
+expect "gate_class: definitive then pass clears to none" "adopt-pass/none" "$(field provenance.gate)/$(field provenance.gate_class)"
+# launch path: refused definitive (unmanifested model) -> launch-refused/definitive; the model is NOT started
+reset; export FAKE_OWNER="4242 90" FAKE_MODEL_FAIL=1; start_coder; rc=$?
+write_state 4242
+expect "gate_class: launch-refused definitive" "1/launch-refused/definitive" "$rc/$(field provenance.gate)/$(field provenance.gate_class)"
+expect "gate_class: launch-refused never kills or starts" "" "$(cat "$tmp/reclaims")"
+# launch path: refused transient
+reset; export FAKE_OWNER="4242 90" FAKE_STAT_FAIL=1; start_coder; rc=$?
+write_state 4242
+expect "gate_class: launch-refused transient" "1/launch-refused/transient" "$rc/$(field provenance.gate)/$(field provenance.gate_class)"
+# launch path: bypass classified, pass is none
+reset; export FAKE_OWNER="4242 90" FAKE_MODEL_FAIL=1; PROVENANCE_ENFORCE=0; start_coder; write_state 4242
+expect "gate_class: launch-bypass carries the class" "launch-bypass/definitive" "$(field provenance.gate)/$(field provenance.gate_class)"
+reset; export FAKE_OWNER="7000 5"; start_coder
+expect "gate_class: launch-pass is none" "launch-pass/none" "$(field provenance.gate)/$(field provenance.gate_class)"
+# not-run: a state written before any gate is none
+reset; export FAKE_OWNER="4242 90"; write_state 4242
+expect "gate_class: not-run is none" "not-run/none" "$(field provenance.gate)/$(field provenance.gate_class)"
+# the classifier itself
+expect "classifier: could not stat" "transient"  "$(prov_reason_class 'could not stat C:\x')"
+expect "classifier: timed out"      "transient"  "$(prov_reason_class 'manifest read timed out after 20s')"
+expect "classifier: anything else"  "definitive" "$(prov_reason_class 'model not verified: size mismatch')"
 
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

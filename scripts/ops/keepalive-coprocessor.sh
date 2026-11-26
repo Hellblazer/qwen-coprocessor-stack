@@ -358,13 +358,22 @@ reclaim() {  # $1 = reason. Counts toward the stand-down cap; crash restarts don
 # refusing gate leaves the server up. A pass says only that the disk matched the
 # manifest at gate time, for THIS pid; it is reused for that pid for
 # PROV_REGATE_EVERY s, and a different pid is always re-gated.
+# Bead 5il: is a gate failure reason transient (retry may clear it: a box stat
+# failure, a TCC timeout) or definitive (the disk disagrees with the manifest)?
+# The ONE classifier: it drives both the retry delay and the state json's
+# gate_class, so the two cannot disagree. Prints transient|definitive.
+prov_reason_class() {  # $1 = gate failure reason
+  case "$1" in "could not stat"*|*"timed out"*) echo transient ;; *) echo definitive ;; esac
+}
 prov_mark() {  # $1 state, $2 reason, $3 pid the verdict is about
   PROV_GATE_STATE=$1; PROV_GATE_REASON=$2; PROV_GATE_PID=${3:-}
+  # gate_class: none when no failure is recorded (pass, not-run), else the class of the reason.
+  if [ -n "$2" ]; then PROV_GATE_CLASS=$(prov_reason_class "$2"); else PROV_GATE_CLASS="none"; fi
   PROV_GATE_AT=$(date '+%Y-%m-%dT%H:%M:%S%z'); PROV_GATE_T=$SECONDS
 }
 prov_ids_clear() { PROV_MODEL_ID=""; PROV_MMPROJ_ID=""; PROV_RUNTIME_ID=""; }
 adopt_provenance() {  # $1 = verified pid of the adopted server
-  local pid=${1:-0} transient=0 delay
+  local pid=${1:-0} class delay
   # A bypassed launch (QWEN_PROVENANCE_ENFORCE=0) is not upgraded or overwritten
   # by an adopt-time result: its state stays launch-bypass.
   [ "$PROV_GATE_STATE" = "launch-bypass" ] && return 0
@@ -387,9 +396,9 @@ adopt_provenance() {  # $1 = verified pid of the adopted server
     # No half-verified ids stand: an adopted server whose gate failed shows empty ids and why.
     prov_ids_clear
     PROV_FAIL_STREAK=$((PROV_FAIL_STREAK + 1))
-    case "$PROV_REASON" in "could not stat"*|*"timed out"*) transient=1 ;; esac
+    class=$(prov_reason_class "$PROV_REASON")
     # A transient reason (box stat, TCC timeout) gets a quick first retry.
-    if [ "$transient" -eq 1 ] && [ "$PROV_FAIL_STREAK" -le 1 ]; then delay=$PROV_RETRY_FIRST; else delay=$PROV_RETRY_EVERY; fi
+    if [ "$class" = transient ] && [ "$PROV_FAIL_STREAK" -le 1 ]; then delay=$PROV_RETRY_FIRST; else delay=$PROV_RETRY_EVERY; fi
     PROV_RETRY_AT=$((SECONDS + delay))
     if [ "$PROVENANCE_ENFORCE" = "0" ]; then
       prov_mark adopt-bypass "$PROV_REASON" "$pid"
@@ -397,7 +406,7 @@ adopt_provenance() {  # $1 = verified pid of the adopted server
     else
       prov_mark adopt-fail "$PROV_REASON" "$pid"
       if [ "$PROV_ADOPT_ALERT" != "$PROV_REASON" ] || [ $((SECONDS - PROV_ADOPT_ALERT_T)) -ge 3600 ]; then
-        log "ALERT: provenance gate FAILED on the adopted server (pid $pid) -- $PROV_REASON. Server left running (adopt never tears down on a gate failure); state json records adopt-fail; retry in ${delay}s."
+        log "ALERT: provenance gate FAILED on the adopted server (pid $pid, $class) -- $PROV_REASON. Server left running (adopt never tears down on a gate failure); state json records adopt-fail, gate_class $class; retry in ${delay}s."
         PROV_ADOPT_ALERT_T=$SECONDS
       fi
     fi
@@ -488,10 +497,11 @@ PROV_MODEL_ID=""; PROV_RUNTIME_ID=""; PROV_MMPROJ_ID=""; PROV_REFUSED=0
 # What the state json says about HOW the ids above were (not) obtained (bead 5il):
 # not-run | launch-pass | launch-bypass | launch-refused | adopt-pass | adopt-fail
 # | adopt-bypass, with gate_reason, gate_pid (the pid the verdict is about) and
-# gate_at (when it was reached). A reader can then tell "adopted, gate passed"
+# gate_at (when it was reached), and gate_class (transient|definitive for a
+# recorded failure, none otherwise; see prov_reason_class). A reader can then tell "adopted, gate passed"
 # from "adopted, gate failed" from "never checked", instead of three identical
 # empty strings.
-PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""; PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0
+PROV_GATE_STATE="not-run"; PROV_GATE_REASON=""; PROV_GATE_CLASS="none"; PROV_GATE_PID=""; PROV_GATE_AT=""; PROV_GATE_T=0
 PROV_ADOPT_ALERT=""           # reason last logged for an adopt-fail streak (dedupe)
 PROV_ADOPT_ALERT_T=0          # SECONDS at that log; re-logged hourly while it stands
 PROV_FAIL_STREAK=0            # consecutive failed adopt-time gates
@@ -814,7 +824,7 @@ write_state() {
   if [ "$PROV_GATE_STATE" = "launch-pass" ] && [ -z "$PROV_GATE_PID" ] && [ "$src" = owner-query ]; then PROV_GATE_PID=$pid; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
   if [ -z "$LAUNCHED_AT" ]; then LAUNCHED_AT=$ts; LAUNCHED_PID=$pid; fi
-  json="{\"pid\": ${pid:-null}, \"pid_source\": \"$src\", \"launched_at\": \"$LAUNCHED_AT\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\", \"gate\": \"$PROV_GATE_STATE\", \"gate_reason\": \"$(json_esc "$PROV_GATE_REASON")\", \"gate_pid\": \"$PROV_GATE_PID\", \"gate_at\": \"$PROV_GATE_AT\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  json="{\"pid\": ${pid:-null}, \"pid_source\": \"$src\", \"launched_at\": \"$LAUNCHED_AT\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\", \"gate\": \"$PROV_GATE_STATE\", \"gate_reason\": \"$(json_esc "$PROV_GATE_REASON")\", \"gate_class\": \"$PROV_GATE_CLASS\", \"gate_pid\": \"$PROV_GATE_PID\", \"gate_at\": \"$PROV_GATE_AT\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
