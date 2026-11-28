@@ -21,6 +21,17 @@
 # CODER_MANIFEST_ID / MMPROJ_* back to the qwen3.8-27b values, restore
 # --reasoning off --spec-type draft-mtp --ctx-size 65536, drop -ub, band 24/40.
 #
+# 2026-11-28 (bead i1y1): a server that answers /health but hangs every completion
+# was never reclaimed: 2026-11-26/27 the inference probe logged "timed out after
+# 60 s -- not counted" 207 times over ~22 h. Now QWEN_PROBE_STALL_MAX (default 5;
+# ~30 min at the ~6 min probe cadence; 0 disables) consecutive STALLED probes count
+# as down: ALERT, then the bounded probe relaunch (start_coder gates before it
+# kills). A stall is a 60 s timeout with no idle slot, or all slots busy, with no
+# slot counter (id_task / n_decoded / ...) moving since the previous probe: a long
+# legitimate request that is still decoding moves them and resets the count. The
+# count and threshold are logged on every stall and written to the state json's
+# inference_probe block (stalls, stall_max, relaunches, probe_off, last_reason).
+#
 # TOPOLOGY (2026-06-12, vision-on-mac migration): the box runs ONE llama-server.
 # The dedicated vision model (Qwen2.5-VL-7B) and the 35B (Qwen3.6-35B-A3B) moved to
 # the Mac (MLX) — see scripts/ops/keepalive-mac.sh. This removed the coder-box+vision
@@ -237,8 +248,10 @@ up()    { curl -s --max-time 5 "http://$HOST:$1/v1/models" 2>/dev/null | grep -q
 # an idle slot (a hang, e.g. IO stuck on a dead disk); 2 = inconclusive: any
 # transport error (a network blip between up() and the probe), HTTP 503 (a real
 # request took the last slot after the /slots read), a timeout with no idle slot
-# seen, or every slot positively busy. Inconclusive never counts: killing a busy,
-# healthy server is the 2026-08-04 flapping class.
+# seen, or every slot positively busy. An inconclusive probe is not a hard failure
+# and never counts as one: killing a busy, healthy server is the 2026-08-04
+# flapping class. Only a run of STALLS (timeout / all-busy with no progress, set
+# PROBE_STALL below) counts, and only after QWEN_PROBE_STALL_MAX of them in a row.
 # Busy is inferred from positive evidence only: a /slots body with
 # "is_processing": true and no false. A missing, errored or reformatted /slots
 # (--no-slots, a format change) does not disable the probe; it runs anyway.
@@ -252,14 +265,37 @@ PROBE_FAILS=0
 PROBE_CYC=0
 PROBE_RELAUNCHES=0
 PROBE_OFF=0
+# Stall detection (bead i1y1). Inconclusive probes never counted, so a server that
+# answers /health but hangs every completion was never acted on: 2026-11-26/27,
+# 207 "timed out after 60 s -- not counted" over ~22 h. A STALL is an inconclusive
+# probe that shows no sign of life: a 60 s timeout with no idle slot and no slot
+# counter that moved since the previous probe, or all slots busy with every slot
+# counter (id_task / n_decoded / n_remain / n_past / n_prompt_tokens_processed)
+# frozen since the previous probe. QWEN_PROBE_STALL_MAX (default 5, ~30 min at the
+# ~6 min probe cadence) consecutive stalls count as down: an ALERT, then the same
+# bounded relaunch as a hard failure (MAX_PROBE_RELAUNCHES, then probing stands
+# down with a standing alert). 0 disables the stall reclaim. Guards: a probe whose
+# slot counters moved is a busy-and-progressing server and resets the count; all
+# slots busy with unreadable counters is not counted (unknown is not stalled); the
+# first all-busy sample is a baseline; a transport error or HTTP 503 neither counts
+# nor resets. The reclaim itself goes through start_coder, which gates (preflight,
+# provenance) BEFORE it kills, and an adopt-time gate that failed DEFINITIVELY
+# (the disk disagrees with the manifest) holds the reclaim and alerts instead.
+PROBE_STALL_MAX=${QWEN_PROBE_STALL_MAX:-5}
+PROBE_STALLS=0           # consecutive stalls
+PROBE_STALL=0            # set by infer_probe: this inconclusive result is a stall candidate
+PROBE_SIG=""             # slot counters read this probe ("" = /slots unreadable or reformatted)
+PROBE_SIG_PREV=""        # the previous stall-candidate probe's counters
+PROBE_STALL_ALERT_T=0    # SECONDS at the last standing ALERT (hourly re-log); 0 = none yet
 infer_probe() {
   local slots idle=0 out rc code
-  PROBE_REASON=""
+  PROBE_REASON=""; PROBE_STALL=0
   slots=$(curl -s --max-time 5 "http://$HOST:$PROBE_PORT/slots" 2>/dev/null)
+  PROBE_SIG=$(printf '%s' "$slots" | grep -oE '"(id_task|n_decoded|n_remain|n_past|n_prompt_tokens_processed)": *-?[0-9]+' | tr -d ' \n')
   if printf '%s' "$slots" | grep -qE '"is_processing": *false'; then
     idle=1
   elif printf '%s' "$slots" | grep -qE '"is_processing": *true'; then
-    PROBE_REASON="all slots busy"; return 2
+    PROBE_REASON="all slots busy"; PROBE_STALL=1; return 2
   fi
   out=$(curl -s --max-time 60 -w '\n%{http_code}' -H 'Content-Type: application/json' \
         -d '{"prompt":"ok","n_predict":1,"cache_prompt":false}' \
@@ -267,7 +303,7 @@ infer_probe() {
   if [ "$rc" -eq 28 ]; then
     PROBE_REASON="timed out after 60 s"
     [ "$idle" -eq 1 ] && { PROBE_REASON="$PROBE_REASON with an idle slot"; return 1; }
-    return 2
+    PROBE_STALL=1; return 2
   fi
   if [ "$rc" -ne 0 ]; then PROBE_REASON="curl rc $rc (transport)"; return 2; fi
   code=${out##*$'\n'}
@@ -285,6 +321,53 @@ infer_probe() {
 # hard-reset class). The main loop counts a relaunch only when start_coder
 # actually launched (a preflight/provenance refusal launches nothing), and a
 # successful DOWN-path launch (a fresh server after a crash) turns probing back on.
+probe_stall_reset() { PROBE_STALLS=0; PROBE_SIG_PREV=""; PROBE_STALL_ALERT_T=0; }
+# Refresh the state json's inference_probe block when the stall count changed, only
+# for a pid the guards verified (EXPECTED_PID; the GPU-alert path's rule).
+probe_stall_note() {
+  [ "${EXPECTED_PID:-0}" -gt 0 ] 2>/dev/null && type write_state >/dev/null 2>&1 && write_state "$EXPECTED_PID"
+  return 0
+}
+# One stall-candidate probe. Returns 1 when the server must be relaunched.
+probe_stall_step() {
+  local prev=$PROBE_SIG_PREV
+  [ "$PROBE_STALL_MAX" -gt 0 ] || { log "inference probe inconclusive ($PROBE_REASON) -- not counted (stall reclaim disabled)"; return 0; }
+  [ -n "$PROBE_SIG" ] && PROBE_SIG_PREV=$PROBE_SIG
+  if [ -n "$PROBE_SIG" ] && [ -n "$prev" ] && [ "$PROBE_SIG" != "$prev" ]; then
+    # Slot counters moved since the last probe: a long request is making progress.
+    [ "$PROBE_STALLS" -gt 0 ] && { PROBE_STALLS=0; probe_stall_note; }
+    log "inference probe: $PROBE_REASON but slot counters are moving -- progressing, not counted (stalls 0/$PROBE_STALL_MAX)"
+    return 0
+  fi
+  if [ "$PROBE_REASON" = "all slots busy" ]; then
+    # Busy needs POSITIVE evidence of a stall: counters readable and unchanged.
+    if [ -z "$PROBE_SIG" ]; then
+      log "inference probe: all slots busy, slot counters unreadable -- cannot tell progress from a stall, not counted (stalls $PROBE_STALLS/$PROBE_STALL_MAX)"; return 0
+    fi
+    if [ -z "$prev" ]; then
+      log "inference probe: all slots busy, baseline recorded -- not counted (stalls $PROBE_STALLS/$PROBE_STALL_MAX)"; return 0
+    fi
+  fi
+  PROBE_STALLS=$((PROBE_STALLS + 1))
+  log "inference probe STALLED ($PROBE_REASON; no sign of progress), stalls $PROBE_STALLS/$PROBE_STALL_MAX"
+  probe_stall_note
+  [ "$PROBE_STALL_MAX" -gt 0 ] && [ "$PROBE_STALLS" -ge "$PROBE_STALL_MAX" ] || return 0
+  # Threshold met: the server answers liveness but has made no progress for PROBE_STALL_MAX probes.
+  if [ "${PROV_GATE_STATE:-}" = "adopt-fail" ] && [ "${PROV_GATE_CLASS:-}" = "definitive" ]; then
+    if [ "$PROBE_STALL_ALERT_T" -eq 0 ] || [ $((SECONDS - PROBE_STALL_ALERT_T)) -ge 3600 ]; then
+      log "ALERT: coder-box INFERENCE-DEAD ($PROBE_STALLS/$PROBE_STALL_MAX stalled probes, $PROBE_REASON) but the reclaim is HELD: the adopt-time provenance gate failed definitively (${PROV_GATE_REASON:-?}). Server left running; :1235 liveness does not mean it can generate."
+      PROBE_STALL_ALERT_T=$SECONDS
+    fi
+    return 0
+  fi
+  if [ "$PROBE_RELAUNCHES" -ge "$MAX_PROBE_RELAUNCHES" ]; then
+    PROBE_OFF=1
+    log "ALERT STANDS: coder-box inference-dead ($PROBE_STALLS/$PROBE_STALL_MAX stalled probes) after $PROBE_RELAUNCHES relaunches. Leaving the server UP and probing OFF until keepalive restart -- :1235 liveness does not mean it can generate."
+    return 0
+  fi
+  log "ALERT: coder-box INFERENCE-DEAD: $PROBE_STALLS/$PROBE_STALL_MAX consecutive probes stalled ($PROBE_REASON); :1235 answers liveness but makes no progress -- reclaiming ($((PROBE_RELAUNCHES + 1))/$MAX_PROBE_RELAUNCHES; start_coder gates before it kills)"
+  return 1
+}
 probe_step() {
   [ "$PROBE_OFF" -eq 1 ] && return 0
   PROBE_CYC=$((PROBE_CYC + 1))
@@ -292,8 +375,10 @@ probe_step() {
   infer_probe
   case $? in
     0) [ "$PROBE_FAILS" -gt 0 ] && log "inference probe recovered"
-       PROBE_FAILS=0; PROBE_RELAUNCHES=0 ;;
-    2) log "inference probe inconclusive ($PROBE_REASON) -- not counted" ;;
+       [ "$PROBE_STALLS" -gt 0 ] && { log "inference probe recovered (stalls $PROBE_STALLS -> 0)"; probe_stall_reset; probe_stall_note; }
+       PROBE_SIG_PREV=""; PROBE_FAILS=0; PROBE_RELAUNCHES=0 ;;
+    2) if [ "$PROBE_STALL" -eq 1 ]; then probe_stall_step; return $?; fi
+       log "inference probe inconclusive ($PROBE_REASON) -- not counted" ;;
     *) PROBE_FAILS=$((PROBE_FAILS + 1))
        log "inference probe FAILED ($PROBE_REASON), $PROBE_FAILS/$MAX_PROBE_FAILS"
        [ "$PROBE_FAILS" -lt "$MAX_PROBE_FAILS" ] && return 0
@@ -824,7 +909,7 @@ write_state() {
   if [ "$PROV_GATE_STATE" = "launch-pass" ] && [ -z "$PROV_GATE_PID" ] && [ "$src" = owner-query ]; then PROV_GATE_PID=$pid; fi
   ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
   if [ -z "$LAUNCHED_AT" ]; then LAUNCHED_AT=$ts; LAUNCHED_PID=$pid; fi
-  json="{\"pid\": ${pid:-null}, \"pid_source\": \"$src\", \"launched_at\": \"$LAUNCHED_AT\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\", \"gate\": \"$PROV_GATE_STATE\", \"gate_reason\": \"$(json_esc "$PROV_GATE_REASON")\", \"gate_class\": \"$PROV_GATE_CLASS\", \"gate_pid\": \"$PROV_GATE_PID\", \"gate_at\": \"$PROV_GATE_AT\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
+  json="{\"pid\": ${pid:-null}, \"pid_source\": \"$src\", \"launched_at\": \"$LAUNCHED_AT\", \"owner\": \"$owner\", \"variant\": \"$VARIANT\", \"env\": \"$ENVSET\", \"cmdline\": \"$(printf '%s' "$CODER" | sed 's/\\/\\\\/g; s/"/\\"/g')\", \"provenance\": {\"model_id\": \"${PROV_MODEL_ID:-}\", \"mmproj_id\": \"${PROV_MMPROJ_ID:-}\", \"runtime_id\": \"${PROV_RUNTIME_ID:-}\", \"enforce\": \"$PROVENANCE_ENFORCE\", \"gate\": \"$PROV_GATE_STATE\", \"gate_reason\": \"$(json_esc "$PROV_GATE_REASON")\", \"gate_class\": \"$PROV_GATE_CLASS\", \"gate_pid\": \"$PROV_GATE_PID\", \"gate_at\": \"$PROV_GATE_AT\"}, \"inference_probe\": {\"stalls\": ${PROBE_STALLS:-0}, \"stall_max\": ${PROBE_STALL_MAX:-0}, \"relaunches\": ${PROBE_RELAUNCHES:-0}, \"probe_off\": ${PROBE_OFF:-0}, \"last_reason\": \"$(json_esc "${PROBE_REASON:-}")\"}, \"gpu_residency\": \"${GPU_LAST:-not-yet-sampled}\", \"gpu_alert\": \"$(printf '%s' "${GPU_ALERT:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')\"}"
   ps="Set-Content -Path C:\claude-coordination\qwen-server-state.json -Value '$json'"
   b64=$(printf '%s' "$ps" | iconv -t UTF-16LE | base64)
   $SSH "$HOST" "powershell -NoProfile -EncodedCommand $b64" >/dev/null 2>&1
@@ -937,9 +1022,13 @@ case "$EXPECTED_BUILD" in
   *) log "WARN: unparsable build tag from LL ('$EXPECTED_BUILD') — build guard disabled"; EXPECTED_BUILD="" ;;
 esac
 BASE_BUILD=${EXPECTED_BUILD%-patched}
+case "$PROBE_STALL_MAX" in
+  ''|*[!0-9]*) log "WARN: QWEN_PROBE_STALL_MAX='$PROBE_STALL_MAX' is not a non-negative integer -- using 5"; PROBE_STALL_MAX=5 ;;
+esac
 BUILDGUARD_NOTE=""
 [ -n "$BASE_BUILD" ] && [ "$BASE_BUILD" != "$EXPECTED_BUILD" ] && BUILDGUARD_NOTE=" (build_info compared against $BASE_BUILD)"
 log "keepalive started (pid $$) — coder-box only (build guard: ${EXPECTED_BUILD:-off})$BUILDGUARD_NOTE"
+if [ "$PROBE_STALL_MAX" -gt 0 ]; then log "inference stall reclaim: $PROBE_STALL_MAX consecutive stalled probes count as down (QWEN_PROBE_STALL_MAX)"; else log "inference stall reclaim DISABLED (QWEN_PROBE_STALL_MAX=0)"; fi
 # SELFTEST: exercise the session guard + every assertion against the LIVE box and
 # exit, launching nothing and touching no running server. This exists because a
 # real keepalive restart IS a service interruption -- the held ssh is
@@ -965,11 +1054,11 @@ CYC=0
 while true; do
   if ! up 1235; then
     log "coder-box DOWN"
-    start_coder && { PROBE_FAILS=0; PROBE_OFF=0; }
+    start_coder && { PROBE_FAILS=0; PROBE_OFF=0; probe_stall_reset; probe_stall_note; }
   elif ! probe_step; then
     # Counters move only when a launch happened: a refused launch
     # (preflight/provenance) leaves the zombie up and it is re-probed next cycle.
-    start_coder && { PROBE_FAILS=0; PROBE_RELAUNCHES=$((PROBE_RELAUNCHES + 1)); }
+    start_coder && { PROBE_FAILS=0; PROBE_RELAUNCHES=$((PROBE_RELAUNCHES + 1)); probe_stall_reset; probe_stall_note; }
   elif [ "$GUARDS_DOWN" -eq 1 ]; then
     # stood down (reclaim cap): liveness duty only for the identity guards. The
     # provenance retry is bookkeeping, not an identity guard, and it never
