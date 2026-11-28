@@ -43,6 +43,7 @@ grep -q "^fi$" "$tmp/envcheck.sh" || { echo "FAIL: PROBE_STALL_MAX validation no
 eval "$(grep '^SSH=' "$ka")"
 eval "$(grep '^KILLALL_B64=' "$ka")"
 eval "$(grep '^OWNERPID_B64=' "$ka")"
+eval "$(grep '^OOB_B64=' "$ka")"
 HOST=box
 EVENTS="$tmp/events"; STATE_OUT="$tmp/state.json"; : > "$EVENTS"; : > "$tmp/sshcalls"; rm -f "$tmp/sshviol"
 
@@ -89,9 +90,13 @@ ssh() {
     *Get-NetTCPConnection*) [ -n "${FAKE_OWNER:-}" ] && echo "$FAKE_OWNER" ;;
     *LOGSIZE=*)
       # the out-of-band read: FAKE_OOB = fail (ssh error) | grow (log grows 100 B per read) | hold (same size)
-      echo x >> "$tmp/oobcalls"
+      echo x >> "$tmp/oobcalls"; printf '%s' "$script" > "$tmp/oobscript"
       case "${FAKE_OOB:-fail}" in
         fail) return 255 ;;
+        junk) echo "LOGSIZE=abc" ;;
+        empty) return 0 ;;
+        missing) echo "LOGSIZE=-1" ;;
+        crlf) printf 'LOGSIZE=4321\r\n' ;;
         grow) echo $(( $(cat "$tmp/oobsize" 2>/dev/null || echo 1000) + 100 )) > "$tmp/oobsize"; echo "LOGSIZE=$(cat "$tmp/oobsize")" ;;
         hold) echo "LOGSIZE=$(cat "$tmp/oobsize" 2>/dev/null || echo 1000)" ;;
       esac ;;
@@ -395,6 +400,35 @@ reset; FAKE_COMP=timeout; FAKE_SLOTS=""; (QWEN_KEEPALIVE_SELFTEST=1; . "$tmp/sel
 expect "SELFTEST with unreadable /slots says UNREADABLE" "1" "$(count 'SELFTEST slot counters: UNREADABLE' "$tmp/log")"
 reset; FAKE_COMP=ok; FAKE_SLOTS="$RS_IDLE"; (QWEN_KEEPALIVE_SELFTEST=1; . "$tmp/selftest.sh") >/dev/null 2>&1
 expect "SELFTEST on a healthy probe: not a stall" "1" "$(count 'SELFTEST stall classification: not a stall' "$tmp/log")"
+
+# 16: the out-of-band read is a handle read, not Get-Item (bead gc44): Get-Item .Length is the NTFS
+# directory-entry size and lags for a log llama-server holds open. The command is sent encoded, so
+# ssh and PowerShell 5.1 quoting never see the double quotes; the decoded text is what runs on the box.
+want_oob='$h = $null; try { $h = [IO.File]::Open("C:\logs\coder-box.log", "Open", "Read", "ReadWrite,Delete"); Write-Output ("LOGSIZE=" + $h.Length) } catch { Write-Output "LOGSIZE=-1" } finally { if ($h) { $h.Close() } }'
+got_oob=$(printf '%s' "$OOB_B64" | base64 --decode | iconv -f UTF-16LE -t UTF-8)
+expect "oob command text is the handle read, exactly" "$want_oob" "$got_oob"
+expect "oob command no longer uses Get-Item" "0" "$(printf '%s' "$got_oob" | grep -c 'Get-Item')"
+reset; FAKE_OOB=hold; echo 7777 > "$tmp/oobsize"; r=$(oob_read)
+expect "oob_read sends the handle command over ssh (decoded text seen by the box)" "$want_oob" "$(cat "$tmp/oobscript")"
+expect "oob_read parses a bare integer" "7777" "$r"
+reset; FAKE_OOB=crlf; expect "oob_read strips the CR of a CRLF reply" "4321" "$(oob_read)"
+reset; FAKE_OOB=junk; expect "oob_read: non-integer reply is empty (inconclusive)" "" "$(oob_read)"
+reset; FAKE_OOB=empty; expect "oob_read: empty reply is empty (inconclusive)" "" "$(oob_read)"
+reset; FAKE_OOB=missing; expect "oob_read: LOGSIZE=-1 (open failed) is empty (inconclusive)" "" "$(oob_read)"
+reset; FAKE_OOB=fail; expect "oob_read: ssh failure is empty (inconclusive)" "" "$(oob_read)"
+# inconclusive replies are counted exactly as an ssh failure is (12d): reclaim at 5
+for m in junk empty missing; do
+  reset; FAKE_COMP=timeout; FAKE_SLOTS=""; FAKE_OOB=$m; cycles 5
+  expect "oob reply '$m' x5: counted like an ssh failure, reclaimed at 5" "1/1" "$(kills)/$(launches)"
+  expect "oob reply '$m': stall line says unreadable" "yes" "$([ "$(count 'box log size unreadable' "$tmp/log")" -ge 4 ] && echo yes || echo no)"
+done
+# 16s: SELFTEST prints the box log size before and after its one probe request
+reset; FAKE_COMP=ok; FAKE_SLOTS="$RS_IDLE"; FAKE_OOB=grow; (QWEN_KEEPALIVE_SELFTEST=1; . "$tmp/selftest.sh") >/dev/null 2>&1
+expect "SELFTEST box log size line, growing log" "1" "$(count 'SELFTEST box log size: 1100 -> 1200 bytes (grew across the request)' "$tmp/log")"
+reset; FAKE_COMP=ok; FAKE_SLOTS="$RS_IDLE"; FAKE_OOB=hold; echo 5000 > "$tmp/oobsize"; (QWEN_KEEPALIVE_SELFTEST=1; . "$tmp/selftest.sh") >/dev/null 2>&1
+expect "SELFTEST box log size line, unchanged log" "1" "$(count 'SELFTEST box log size: 5000 -> 5000 bytes (UNCHANGED' "$tmp/log")"
+reset; FAKE_COMP=ok; FAKE_SLOTS="$RS_IDLE"; FAKE_OOB=junk; (QWEN_KEEPALIVE_SELFTEST=1; . "$tmp/selftest.sh") >/dev/null 2>&1
+expect "SELFTEST box log size line, unreadable" "1" "$(count 'SELFTEST box log size: UNREADABLE' "$tmp/log")"
 
 # 10: invariants over the whole run: every ssh carried -n; kpid keeps its pid>0 guard
 expect "no ssh without -n across the whole suite" "none" "$([ -s "$tmp/sshviol" ] && echo VIOLATED || echo none)"
