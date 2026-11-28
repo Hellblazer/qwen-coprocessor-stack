@@ -6,6 +6,8 @@
 # Usage: bash scripts/ops/tests/test-keepalive-probe.sh   (python3 + curl; ~70 s,
 # most of it the one 60 s hang case). Exits non-zero if any case is wrong.
 set -u
+# probe_off_set notifies through osascript: never post real notifications from a test.
+export QWEN_KEEPALIVE_NOTIFY=0
 here=$(cd "$(dirname "$0")" && pwd)
 ka="$here/../keepalive-coprocessor.sh"
 tmp=$(mktemp -d); P=0
@@ -75,7 +77,11 @@ PROBE_FAILS=0; PROBE_CYC=14; for i in 1 2 3; do loop 0; done
 expect "second launched relaunch" "2/0" "$PROBE_RELAUNCHES/$PROBE_OFF"
 PROBE_CYC=14; for i in 1 2 3; do loop 0; done
 expect "probe_step stands down at cap" "2/1" "$PROBE_RELAUNCHES/$PROBE_OFF"
-c=$PROBE_CYC; probe_step; expect "probe_step off stays off (no probe, no count)" "0/$c" "$?/$PROBE_CYC"; stop
+# stood down: the passive probe (bead i1y1) never reclaims or counts, however it fails
+PROBE_CYC=14; probe_step; expect "probe_step off stays off while the passive probe fails" "0/1/2/3" "$?/$PROBE_OFF/$PROBE_RELAUNCHES/$PROBE_FAILS"; stop
+# ... and turns probing back on the first time one passes
+serve ok; PROBE_CYC=14; probe_step; expect "passive probe that passes clears the stand-down" "0/0/0/0" "$?/$PROBE_OFF/$PROBE_RELAUNCHES/$PROBE_FAILS"; stop
+PROBE_OFF=0; PROBE_FAILS=1; PROBE_RELAUNCHES=2
 # a passing probe clears both counters
-PROBE_OFF=0; PROBE_FAILS=1; serve ok; probe_step; expect "probe_step recovery" "0/0/0" "$?/$PROBE_FAILS/$PROBE_RELAUNCHES"; stop
+serve ok; probe_step; expect "probe_step recovery" "0/0/0" "$?/$PROBE_FAILS/$PROBE_RELAUNCHES"; stop
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
