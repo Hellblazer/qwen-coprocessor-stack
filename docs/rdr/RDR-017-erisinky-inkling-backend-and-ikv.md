@@ -1,5 +1,5 @@
 ---
-title: "Inkling 2 Mini on erisinky — an OpenAI-compatible endpoint in the Hellblazer fork, a source-built runtime under RDR-016, a keepalive-mac slot, and content-addressed .ikv segment reuse behind the supervisor"
+title: "Inkling 2 Mini on erisinky — an OpenAI-compatible endpoint in the Hellblazer fork, a source-built runtime under RDR-016, a keepalive-mac slot, and content-addressed .ikv segment reuse behind the supervisor (deferred, P4)"
 id: RDR-017
 type: Design
 status: draft
@@ -27,7 +27,7 @@ is 1068 tok/s at 2.4K and 762 at 28.5K. The M4 Max has no M5 neural
 accelerators, so the engine falls back to its slower prefill path; upstream's
 2,200 tok/s is an M5 Pro figure (`erisinky/README.md:55`, `:148`). Nothing in
 this RDR is built yet. Sam's decisions on the open questions are recorded under
-Decisions (2026-11-28); the RDR is ready for the gate.
+Decisions (2026-11-28); the RDR is ready for the gate. On 2026-11-28, after gate round 1, Sam deferred P4 (`.ikv` reuse) within this RDR; see Decision 10 and the Deferred section.
 
 ## Problem Statement
 
@@ -189,9 +189,9 @@ Mac: battery median 31.6 s (run-010).
 Serve Inkling 2 Mini from an OpenAI-compatible server written into the
 Hellblazer fork of erisinky, admit the binary under RDR-016 as a reproducible
 source build, hold it in a new keepalive-mac slot as a `pin_only` backend, and
-measure it on the battery before any `.ikv` work. If it earns its place, add
-`.ikv` reuse as a content-addressed segment cache inside that same server,
-keyed on the exact bytes of message content, not on file paths.
+measure it on the battery before any `.ikv` work. The `.ikv` segment cache is deferred within this RDR
+(Decision 10); its entry conditions and gates are under Deferred: .ikv segment
+reuse (P4).
 
 ### In scope
 
@@ -233,15 +233,13 @@ keyed on the exact bytes of message content, not on file paths.
      disconnect stops generation at the next token.
    - Context `-c 131072` (what `gajx` ran), dense FP16 KV. No `--kv8`, no
      `--kv-disk`, no sparse pool in this cycle.
-   - A `SegmentSource` trait in the module with a no-op default, so item 6 can
-     supply cached segments without forking the server.
    - New dependencies: none if `multistream::parse_json` (already used by
      `webui.rs:11-14`) handles OpenAI request bodies. If it does not, add
      `serde_json` with its checksum in `Cargo.lock`; either way the dependency set
      is part of what item 2 pins.
 
 2. **Source-build runtime provenance** (RDR-016 extension, in this repo).
-   - Allowlist key `source_repos: ["Hellblazer/erisinky", "Hellblazer/inkling-ikv"]`, distinct from
+   - Allowlist key `source_repos: ["Hellblazer/erisinky"]` (`Hellblazer/inkling-ikv` is added at P4 entry; see Deferred), distinct from
      `runtime_repos` (release assets) and `overlay_repos`.
    - Schema: `trust_tier` gains `self-built`; a `build` object records repo,
      40-hex commit, `rustc -vV`, `cargo -V`, `Cargo.lock` sha256, `RUSTFLAGS`,
@@ -303,36 +301,13 @@ keyed on the exact bytes of message content, not on file paths.
    whose only eligible text backend is `inkling-mac` (the battery has no backend
    pin: `driver.ts` and `run_battery.py` pass none).
 
-6. **`.ikv` segment cache (P4, only if P3 passes).** A `SegmentSource`
-   implementation in the existing Hellblazer fork `Hellblazer/inkling-ikv` (Decision 2), which already holds the
-   codecs, stitching and preemptible packing, with its engine dependency changed
-   from the `../inkling-engine` path to a pinned git revision of
-   `Hellblazer/erisinky`. The binary `inkling-ikv serve-openai` calls the server
-   in E's library with that source.
-   - Segments: the content of `tool` and `user` messages at or above 1,024
-     tokens. The template puts a special token on both sides of message content
-     (T:76), so the content tokenizes the same alone as in place.
-   - Key: sha256 of the exact content bytes from the request, plus the GGUF
-     sha256 from the manifest, a framing id (`msg-content:v1`), and the codec.
-     Never a path or mtime. A miss can never mount a different version of a file.
-   - Fill: tee-on-miss. When a segment is prefilled live, its global KV is
-     quantized to WHT-KV4 and written in the background between requests. The
-     offline 8-token sink-prefix packing applies to segments packed outside a
-     request.
-   - Use: a segment that falls outside the live prefix (a re-read of an
-     unchanged file, a context rebuilt after a parked context was evicted,
-     another spawn over the same worktree) is stitched instead of prefilled. If
-     the segment sits within the final 1,024 tokens, its last 1,024 tokens are
-     prefilled raw to rebuild exact SWA and conv state, as the harness's
-     mid-file path does.
-   - Store: out of tree (`~/Library/Caches/qwen-coprocessor-stack/ikv/`, internal
-     storage), LRU byte cap, `F_NOCACHE` reads as upstream does.
+6. `.ikv` segment reuse: deferred; see Deferred: .ikv segment reuse (P4).
 
 ### Out of scope
 
-- Running `inkling-ikv`'s TUI harness as a dispatch `agentKind` (option K2
-  below). It may still be tried by hand; it is not the integration.
-- Pre-packing cartridges from the worktree's files (option K3). It may come
+- Running `inkling-ikv`'s TUI harness as a dispatch `agentKind` (considered in
+  the Deferred section). It may still be tried by hand; it is not the integration.
+- Pre-packing cartridges from the worktree's files (considered in the Deferred section). It may come
   back later as a cache warmer if P4's hit rate shows a need.
 - The sparse `Kv256kPool` backend. It is deferred, not dropped. Revive it when
   SWE-bench shows context overflow past 131072 costing resolved instances (three
@@ -446,61 +421,12 @@ context and rollbacks. Gates:
 - Pooling follows Decision 6: `pin_only` stays unless 9/9 at a median within 1.5x of
   Coder-Next MLX (about 47 s), then pooled with `roles: ["code"]`.
 
-**P4: `.ikv` segment cache (item 6; entry: G3a and G3b passed; P4 builds on the
-existing `Hellblazer/inkling-ikv` fork).** The thresholds below are declared now, before any
-data; changing them needs Sam.
-
-- G4a, logit parity. On 20 request sequences captured during P3, for the first
-  32 generated positions with segments mounted against fully prefilled: mean KL
-  at most 0.02, and argmax agreement at least 31/32 in the median sequence.
-  Upstream measured 0.014-0.020 with 16/16 on slices. Falsified above either
-  bound: the cache does not ship.
-  Measured at mount offsets of 8K, 32K and 100K tokens, not only at 8K or less,
-  because the log-position temperature mismatch is zero below 8K (Key
-  discoveries); each offset must pass on its own.
-- G4b, task non-inferiority. Battery with the cache on, 3 repeats: pass count
-  at least that of the cache-off run (9/9), and no failure traced to a file
-  mix-up in the transcript. Falsified by a lower pass count.
-- G4c, benefit. On replayed SWE-bench trajectories from P3 or `gajx`, the sum of
-  prefill seconds per instance drops by at least 30% and wall time does not rise.
-  Falsified below 30%: the cache is removed rather than kept as complexity
-  without payoff.
-- G4d, staleness. A fuzz run that edits a file between two reads of it never
-  mounts the old content's segment (checked by key in the server log).
-  Falsified by one stale mount.
-- G4e, task parity. `inkling-ikv task-bench --with-kv4 -n 1024` from the repo
-  root, cache mode against raw prefill: the stitched mode scores at least 24/25
-  where raw prefill scores 25/25. Falsified at 23/25 or below. On 2026-11-28 the
-  unrepaired stitch scored 17/25 (K3V2) and 19/25 (KV4), so P4 does not pass
-  without a repair such as selective recompute of cross-file tokens.
-
-**Options considered for `.ikv` on our path.**
-
-- K1, a server-side content-addressed segment cache (chosen). It works on
-  whatever text qwen-code sends, needs no client change, and keys on bytes, so
-  qwen-code's line trimming, 1,000-line cap and truncation header are part of
-  the key rather than a mismatch. Its hits are limited to segments that fall
-  outside the live prefix. Within one session the prefix cache already holds
-  every earlier tool result, so the gain shows on re-reads, on evicted
-  contexts, and across spawns over the same tree, not on a short battery task.
-  G4c measures whether that is enough.
-- K2, `inkling-ikv` as a dispatch agentKind. It is measured upstream (M9: 6/6
-  rubric, `E README.md:159`) and needs no server. But it is a TUI with its own
-  seven tools (`I src/harness/tools.rs:560-573`) and its own sandbox, so its
-  results would not compare with qwen-code arms. It has no headless task mode
-  or harvest envelope (RDR-009). It writes `.shadow-ikv/` inside the working
-  tree by default (`--shadow` default `<dir>/.shadow-ikv`), which would land in
-  patches, and its header carries no model identity.
-- K3, pre-packing the worktree's files. A cartridge of a file's raw bytes
-  matches what qwen-code sends only for files of at most 1,000 lines with no
-  trailing whitespace (Q:84712, Q:291450). Matching more means reproducing
-  qwen-code's read transform, which couples the cache to one CLI version.
+**P4 (`.ikv` segment cache): deferred by Sam on 2026-11-28 (gate round 1, finding S7). Entry conditions and gates are in the Deferred section.**
 
 **Options considered for where the server lives.**
 
-- A module in the erisinky fork plus, for P4, an inkling-ikv fork that supplies
-  `SegmentSource` (chosen). P1-P3 touch one repo, and nothing is moved when P4
-  starts.
+- A module in the erisinky fork (chosen). P1-P3 touch one repo, and nothing is
+  moved when the deferred P4 starts.
 - A sidecar that drives the `inkling` CLI. Rejected: `run` loads the 16 GiB
   engine per call (`E src/main.rs:156-158`), and `chat` holds a session but
   exposes no tool parsing or sampling control over stdin.
@@ -627,8 +553,9 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
   Command Line Tools (Decision 3).
 - The source-build path is generic. Any later source-built runtime goes through
   `add-source-build` and `source_repos` instead of a one-off exception.
-- The `.ikv` work is gated on the model earning its place first, and the cache
-  design cannot serve stale content by construction.
+- The `.ikv` work is deferred (see the Deferred section) until P3 passes and a
+  repair design exists, and the cache design cannot serve stale content by
+  construction.
 
 ### Negative
 
@@ -640,8 +567,8 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
 - The renderer is a second implementation of T, and T may change with a new
   GGUF. G1a is the guard and must run on any GGUF change.
 - `.ikv` mounting is an approximation by construction: a segment's KV was
-  computed without the prefix it is mounted after. G4a bounds the error and
-  cannot remove it.
+  computed without the prefix it is mounted after. The logit-parity gate in the
+  Deferred section bounds the error and cannot remove it.
 - Effort 0.9 thinking counts against `max_tokens`; a low cap would truncate tool
   calls mid-write (eval rule 4). The battery's 16,384 covers it; ad hoc callers
   may not.
@@ -655,6 +582,87 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
 - erisinky and coder-mac fit in memory together (about 26 GiB plus about 45 GB)
   but share 546 GB/s of bandwidth, so both slow down under concurrent load.
   Measurements in this RDR run with coder-mac off.
+
+## Deferred: .ikv segment reuse (P4)
+
+Deferred by Sam on 2026-11-28 (gate round 1, finding S7). P4 starts only when both hold: P3 has passed (G3a and G3b), and a design exists for a stitching repair (for example selective recompute of cross-file tokens) that is expected to meet G4e. On 2026-11-28 the unrepaired stitch scored 17/25 (K3V2) and 19/25 (KV4) against 25/25 for full prefill (Key discoveries), so G4e cannot pass without one. The fork `Hellblazer/inkling-ikv` already exists and is kept; nothing else for P4 is built or allowlisted before entry.
+
+At P4 entry the server gains a `SegmentSource` hook (a trait with a no-op default) so that cached segments can be supplied without forking the server.
+
+6. **`.ikv` segment cache (P4, only if P3 passes).** A `SegmentSource`
+   implementation in the existing Hellblazer fork `Hellblazer/inkling-ikv` (Decision 2), which already holds the
+   codecs, stitching and preemptible packing, with its engine dependency changed
+   from the `../inkling-engine` path to a pinned git revision of
+   `Hellblazer/erisinky`. The binary `inkling-ikv serve-openai` calls the server
+   in E's library with that source.
+   - Segments: the content of `tool` and `user` messages at or above 1,024
+     tokens. The template puts a special token on both sides of message content
+     (T:76), so the content tokenizes the same alone as in place.
+   - Key: sha256 of the exact content bytes from the request, plus the GGUF
+     sha256 from the manifest, a framing id (`msg-content:v1`), and the codec.
+     Never a path or mtime. A miss can never mount a different version of a file.
+   - Fill: tee-on-miss. When a segment is prefilled live, its global KV is
+     quantized to WHT-KV4 and written in the background between requests. The
+     offline 8-token sink-prefix packing applies to segments packed outside a
+     request.
+   - Use: a segment that falls outside the live prefix (a re-read of an
+     unchanged file, a context rebuilt after a parked context was evicted,
+     another spawn over the same worktree) is stitched instead of prefilled. If
+     the segment sits within the final 1,024 tokens, its last 1,024 tokens are
+     prefilled raw to rebuild exact SWA and conv state, as the harness's
+     mid-file path does.
+   - Store: out of tree (`~/Library/Caches/qwen-coprocessor-stack/ikv/`, internal
+     storage), LRU byte cap, `F_NOCACHE` reads as upstream does.
+
+**P4: `.ikv` segment cache (entry: P3 has passed (G3a and G3b) and a stitching repair design exists;
+P4 builds on the existing `Hellblazer/inkling-ikv` fork).** The thresholds below are declared now, before any
+data; changing them needs Sam.
+
+- G4a, logit parity. On 20 request sequences captured during P3, for the first
+  32 generated positions with segments mounted against fully prefilled: mean KL
+  at most 0.02, and argmax agreement at least 31/32 in the median sequence.
+  Upstream measured 0.014-0.020 with 16/16 on slices. Falsified above either
+  bound: the cache does not ship.
+  Measured at mount offsets of 8K, 32K and 100K tokens, not only at 8K or less,
+  because the log-position temperature mismatch is zero below 8K (Key
+  discoveries); each offset must pass on its own.
+- G4b, task non-inferiority. Battery with the cache on, 3 repeats: pass count
+  at least that of the cache-off run (9/9), and no failure traced to a file
+  mix-up in the transcript. Falsified by a lower pass count.
+- G4c, benefit. On replayed SWE-bench trajectories from P3 or `gajx`, the sum of
+  prefill seconds per instance drops by at least 30% and wall time does not rise.
+  Falsified below 30%: the cache is removed rather than kept as complexity
+  without payoff.
+- G4d, staleness. A fuzz run that edits a file between two reads of it never
+  mounts the old content's segment (checked by key in the server log).
+  Falsified by one stale mount.
+- G4e, task parity. `inkling-ikv task-bench --with-kv4 -n 1024` from the repo
+  root, cache mode against raw prefill: the stitched mode scores at least 24/25
+  where raw prefill scores 25/25. Falsified at 23/25 or below. On 2026-11-28 the
+  unrepaired stitch scored 17/25 (K3V2) and 19/25 (KV4), so P4 does not pass
+  without a repair such as selective recompute of cross-file tokens.
+
+**Options considered for `.ikv` on our path.**
+
+- K1, a server-side content-addressed segment cache (chosen). It works on
+  whatever text qwen-code sends, needs no client change, and keys on bytes, so
+  qwen-code's line trimming, 1,000-line cap and truncation header are part of
+  the key rather than a mismatch. Its hits are limited to segments that fall
+  outside the live prefix. Within one session the prefix cache already holds
+  every earlier tool result, so the gain shows on re-reads, on evicted
+  contexts, and across spawns over the same tree, not on a short battery task.
+  G4c measures whether that is enough.
+- K2, `inkling-ikv` as a dispatch agentKind. It is measured upstream (M9: 6/6
+  rubric, `E README.md:159`) and needs no server. But it is a TUI with its own
+  seven tools (`I src/harness/tools.rs:560-573`) and its own sandbox, so its
+  results would not compare with qwen-code arms. It has no headless task mode
+  or harvest envelope (RDR-009). It writes `.shadow-ikv/` inside the working
+  tree by default (`--shadow` default `<dir>/.shadow-ikv`), which would land in
+  patches, and its header carries no model identity.
+- K3, pre-packing the worktree's files. A cartridge of a file's raw bytes
+  matches what qwen-code sends only for files of at most 1,000 lines with no
+  trailing whitespace (Q:84712, Q:291450). Matching more means reproducing
+  qwen-code's read transform, which couples the cache to one CLI version.
 
 ## Decisions (Sam, 2026-11-28)
 
@@ -673,8 +681,9 @@ recommendation the draft carried; his choice is recorded as given.
    shared CI host, approved, pending the labrun session's check that mac CI does
    not depend on CLT 27.0).
 4. **Allowlist and schema change:** approved. `source_repos` admits
-   `Hellblazer/erisinky` and `Hellblazer/inkling-ikv`; trust tier `self-built`;
-   reason of record: this RDR.
+   `Hellblazer/erisinky` now and `Hellblazer/inkling-ikv` at P4 entry (amended
+   2026-11-28 by Decision 10); trust tier `self-built`; reason of record: this
+   RDR.
 5. **Effort for agentic requests:** P3 arm A at 0.9; arm B at 0.1 only if A
    passes, or once if A fails.
 6. **Pool policy after P3:** stays `pin_only` unless the battery is 9/9 at a
@@ -684,3 +693,6 @@ recommendation the draft carried; his choice is recorded as given.
 8. **Baseline:** 134 s from bead `ssea`; 153 s (`gajx`) kept for reference.
 9. **P4 gates:** tightened. G4a is measured at mount offsets 8K, 32K and 100K;
    G4e (task parity, at least 24/25 against raw 25/25) is added. G4b-G4d stand.
+10. **P4 scope:** deferred within this RDR (2026-11-28, after gate round 1
+    finding S7). Entry conditions and the gate text are under Deferred:
+    .ikv segment reuse (P4); Decision 9's tightened gates apply there.
