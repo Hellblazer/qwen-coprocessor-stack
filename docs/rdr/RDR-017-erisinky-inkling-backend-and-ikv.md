@@ -717,3 +717,7 @@ recommendation the draft carried; his choice is recorded as given.
 10. **P4 scope:** deferred within this RDR (2026-11-28, after gate round 1
     finding S7). Entry conditions and the gate text are under Deferred:
     .ikv segment reuse (P4); Decision 9's tightened gates apply there.
+
+## Revision History
+
+- 2026-11-28: Gate round 3 — PASSED (0 Critical, 11 Significant, 0 ship-blocker(s)); blob `6138bd6c42cc`; critique `qwen-coprocessor-stack_rdr/017-gate-critique-2026-11-28-r3`.
