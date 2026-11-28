@@ -2,10 +2,11 @@
 title: "Inkling 2 Mini on erisinky — an OpenAI-compatible endpoint in the Hellblazer fork, a source-built runtime under RDR-016, a keepalive-mac slot, and content-addressed .ikv segment reuse behind the supervisor (deferred, P4)"
 id: RDR-017
 type: Design
-status: draft
+status: accepted
+accepted_date: 2026-11-28
 priority: medium
 author: hal
-reviewed-by: none
+reviewed-by: self
 created: 2026-11-28
 related_issues: [qwen-coprocessor-stack-ijzg, qwen-coprocessor-stack-gajx]
 ---
@@ -721,3 +722,4 @@ recommendation the draft carried; his choice is recorded as given.
 ## Revision History
 
 - 2026-11-28: Gate round 3 — PASSED (0 Critical, 11 Significant, 0 ship-blocker(s)); blob `6138bd6c42cc`; critique `qwen-coprocessor-stack_rdr/017-gate-critique-2026-11-28-r3`.
+- 2026-11-28: Accepted (Sam). Residual dispositions: N3 -> qwen-coprocessor-stack-akqn; S2, S6, RUSTFLAGS literal equality, add-source-build inputs -> qwen-coprocessor-stack-dogv; S3a, S3b, S5 -> qwen-coprocessor-stack-ht6q; S4 -> qwen-coprocessor-stack-z7dk; FC1 -> qwen-coprocessor-stack-z5od; FC2 -> qwen-coprocessor-stack-z33i.
