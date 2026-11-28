@@ -306,7 +306,11 @@ PROBE_STALL_ALERT_T=0    # SECONDS at the last standing ALERT (hourly re-log); 0
 PROBE_HELD=0             # 1 while a definitive provenance failure holds the reclaim
 PROBE_OFF_ALERT_T=0      # SECONDS at the last ALERT STANDS line (hourly re-log)
 PROBE_NOTE_SIG=""        # what the state json's inference_probe block last said
-OOB_B64=$(printf '%s' '$f = Get-Item -LiteralPath "C:\logs\coder-box.log" -ErrorAction SilentlyContinue; if ($f) { Write-Output ("LOGSIZE=" + $f.Length) } else { Write-Output "LOGSIZE=-1" }' | iconv -t UTF-16LE | base64)
+# The size is read through an opened handle (FileShare ReadWrite,Delete so it never blocks
+# llama-server's own handle). Get-Item .Length is the NTFS directory-entry size, which can lag
+# for a file another process holds open (bead gc44). The script is sent -EncodedCommand, so the
+# double quotes never meet ssh or PowerShell 5.1 argument quoting.
+OOB_B64=$(printf '%s' '$h = $null; try { $h = [IO.File]::Open("C:\logs\coder-box.log", "Open", "Read", "ReadWrite,Delete"); Write-Output ("LOGSIZE=" + $h.Length) } catch { Write-Output "LOGSIZE=-1" } finally { if ($h) { $h.Close() } }' | iconv -t UTF-16LE | base64)
 # Out-of-band progress reading: the byte size of the box's llama-server log, or
 # nothing when the read failed (ssh down, file missing).
 oob_read() { $SSH "$HOST" "powershell -NoProfile -EncodedCommand $OOB_B64" 2>/dev/null | tr -d '\r' | sed -n 's/^LOGSIZE=\([0-9][0-9]*\)$/\1/p' | head -1; }
@@ -1140,11 +1144,17 @@ if [ "${QWEN_KEEPALIVE_SELFTEST:-0}" = "1" ]; then
   wait_for_session
   if preflight; then log "SELFTEST preflight PASS"; else log "SELFTEST preflight FAIL -- $PREFLIGHT_REASON"; fi
   if gpu_check; then log "SELFTEST gpu residency PASS ($GPU_LAST)"; else log "SELFTEST gpu residency FAIL -- $GPU_REASON (measured: ${GPU_LAST:-none})"; fi
+  oob_before=$(oob_read)
   infer_probe; case $? in
     0) log "SELFTEST inference probe PASS (1 token generated)" ;;
     2) log "SELFTEST inference probe INCONCLUSIVE -- $PROBE_REASON" ;;
     *) log "SELFTEST inference probe FAIL -- $PROBE_REASON" ;;
   esac
+  # The rollout check for the handle read (bead gc44): the size must grow across the one request.
+  oob_after=$(oob_read)
+  if [ -z "$oob_before" ] || [ -z "$oob_after" ]; then log "SELFTEST box log size: UNREADABLE (before=${oob_before:-none} after=${oob_after:-none})"
+  elif [ "$oob_after" != "$oob_before" ]; then log "SELFTEST box log size: $oob_before -> $oob_after bytes (grew across the request)"
+  else log "SELFTEST box log size: $oob_before -> $oob_after bytes (UNCHANGED across the request -- the handle read may be lagging, or the server logged nothing)"; fi
   log "SELFTEST slot counters: ${PROBE_SIG:-UNREADABLE}"
   if [ "$PROBE_STALL" -eq 1 ]; then log "SELFTEST stall classification: stall candidate ($PROBE_REASON)"; else log "SELFTEST stall classification: not a stall"; fi
   if prov_gate; then log "SELFTEST provenance PASS (model=$PROV_MODEL_ID mmproj=$PROV_MMPROJ_ID runtime=$PROV_RUNTIME_ID)"; else log "SELFTEST provenance FAIL -- $PROV_REASON"; fi
