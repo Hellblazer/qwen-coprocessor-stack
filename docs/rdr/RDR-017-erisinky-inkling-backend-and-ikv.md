@@ -60,7 +60,7 @@ Sources, by short name used below:
   at `4be5bed685e937e4cb6f0143bb17afa5cb51a763`, checked out at
   `/Volumes/SanHell/git/erisinky`.
 - **I**: `Eriskii/inkling-ikv` at `ab18bc6`, `/Volumes/SanHell/git/inkling-ikv`.
-  There is no Hellblazer fork of it; `origin` is Eriskii's.
+  Sam's fork `Hellblazer/inkling-ikv` was created on 2026-11-28 (Decision 2); in the local clone `origin` is the fork and `upstream` is Eriskii's.
 - **Q**: qwen-code 0.15.6, `/opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js`
   (the globally installed CLI; P1 re-checks against the binary the SDK spawns).
 - **T**: the GGUF's own `tokenizer.chat_template` (6,868 bytes, read from the
@@ -241,12 +241,12 @@ keyed on the exact bytes of message content, not on file paths.
      is part of what item 2 pins.
 
 2. **Source-build runtime provenance** (RDR-016 extension, in this repo).
-   - Allowlist key `source_repos: ["Hellblazer/erisinky"]`, distinct from
+   - Allowlist key `source_repos: ["Hellblazer/erisinky", "Hellblazer/inkling-ikv"]`, distinct from
      `runtime_repos` (release assets) and `overlay_repos`.
    - Schema: `trust_tier` gains `self-built`; a `build` object records repo,
      40-hex commit, `rustc -vV`, `cargo -V`, `Cargo.lock` sha256, `RUSTFLAGS`,
-     the build command, macOS and Command Line Tools versions, and
-     `reproduced_on`.
+     the build command, macOS SDK and linker (`ld -v`) versions, Command Line
+     Tools versions, and `reproduced_on`.
    - `provenance.py add-source-build --repo --commit --worktree --binary`
      refuses unless: the worktree `HEAD` equals the commit and `git status
      --porcelain` is empty; the commit exists on GitHub for that repo (so we
@@ -257,7 +257,9 @@ keyed on the exact bytes of message content, not on file paths.
      binary's sha256 and size as `files[]`.
    - Reproducibility: the same commit built on hellmini
      (`ssh hellmini /usr/local/bin/lab-run -c lab-mac-m -- ...`) must produce the
-     same sha256; that host is then added to `reproduced_on`.
+     same sha256; that host is then added to `reproduced_on`. The two hosts
+     must run the same Command Line Tools (macOS SDK and ld) for the hashes to
+     match; the Mach-O header records both versions (017-research-12).
    - The verified binary is copied to
      `~/.qwen-coprocessor-stack/runtimes/erisinky-<sha12>/inkling` on internal
      storage and served from there. A later `cargo build` in the erisinky
@@ -302,7 +304,7 @@ keyed on the exact bytes of message content, not on file paths.
    pin: `driver.ts` and `run_battery.py` pass none).
 
 6. **`.ikv` segment cache (P4, only if P3 passes).** A `SegmentSource`
-   implementation in a Hellblazer fork of inkling-ikv, which already holds the
+   implementation in the existing Hellblazer fork `Hellblazer/inkling-ikv` (Decision 2), which already holds the
    codecs, stitching and preemptible packing, with its engine dependency changed
    from the `../inkling-engine` path to a pinned git revision of
    `Hellblazer/erisinky`. The binary `inkling-ikv serve-openai` calls the server
@@ -379,7 +381,8 @@ engine trait, then the real engine. Gates:
   `serve-openai` and through `inkling run --raw --greedy -f` produces identical
   tokens for 256 positions. Falsified by any difference. A second check,
   `inkling check --ref` (`E src/main.rs:245-309`) against a llama.cpp reference
-  dump, applies if a manifested llama.cpp build loads arch `inkling2_loop`; its
+  dump, applies, since `llama.cpp@b12649-macos-arm64` loads the Q4_K_M (Key
+  discovery, 017-research-7); its
   bound is upstream's published parity (61/61 argmax, worst KL 0.0026 on decode;
   25/25, worst 0.0069 after a 2,379-token prefill; `E README.md:150`).
 - G1c, prefix reuse. On a captured 10-turn conversation, decoding after
@@ -395,9 +398,12 @@ engine trait, then the real engine. Gates:
 **P2: Provenance and keepalive (this repo, items 2-4).** Gates:
 
 - G2a, reproducible build. Laptop and hellmini builds of the same commit have
-  the same sha256. Falsified by a difference; then Sam picks between a CI build
+  the same sha256, with both hosts on the same Command Line Tools (27.2 at the
+  time of writing). A mismatch in SDK or ld version is a setup error to fix
+  before comparing, not a pass or fail of the build. Falsified by a difference;
+  then Sam picks between a CI build
   in the fork verified online, as overlays are, and a single-host `self-built`
-  record (open question 3).
+  record (Decision 3).
 - G2b, refusal. The keepalive refuses a binary with one byte changed, a GGUF
   of the wrong size, and a missing file, logging `REFUSING` each time; with
   `QWEN_PROVENANCE_ENFORCE=0` it logs the bypass and launches. Falsified by a
@@ -419,26 +425,29 @@ engine trait, then the real engine. Gates:
 - G2f, coexistence. With vision-mac, embed and rerank up and a 128K context
   filled, peak memory and `free_gb` are recorded, and the backstop defers a
   respawn when it should. This is a recorded measurement, not pass/fail; the
-  number feeds open question 6.
+  number feeds Decision 6.
 
 **P3: Battery (item 5).** Arm A uses effort 0.9, the template default that
 `gajx` ran under, so the comparison with run-013 isolates the runtime. Arm B,
-at effort 0.1, runs only if A passes and Sam wants it (open question 5). For
+at effort 0.1, runs if A passes, or once if A fails (Decision 5). For
 each dispatch, record wall time, tool calls, prompt seconds, decode tok/s, peak
 context and rollbacks. Gates:
 
-- G3a, pass rate 9/9. Falsified at 8/9 or below: stop, record, not adopted.
+- G3a, pass rate 9/9. Falsified at 8/9 or below: the stop applies after arm B
+  (if arm A failed and arm B also fails at 8/9 or below, stop, record, not
+  adopted).
 - G3b, speed. The median must be below 134 s, the best Inkling battery measured
   (bead `ssea`: Unsloth fork b12651-mix, Q4 + dspark), or the faster runtime
   bought nothing on the loop that matters. Falsified at or above 134 s.
-- G3c, SWE-bench trigger. A median at or below 67 s (half of 134 s, proposed
-  here as the "large gain" in Sam's earlier rule) triggers the gold-clean 25
+- G3c, SWE-bench trigger. At 9/9, a median at or below 67 s (half of 134 s, decided (Decision 7)
+  as the "large gain" in Sam's earlier rule) triggers the gold-clean 25
   rerun under the existing protocol, compared with `gajx`'s 15/25. Above 67 s,
   no SWE-bench run.
-- Pooling is Sam's call after P3 (open question 6). Until then `pin_only` stays.
+- Pooling follows Decision 6: `pin_only` stays unless 9/9 at a median within 1.5x of
+  Coder-Next MLX (about 47 s), then pooled with `roles: ["code"]`.
 
-**P4: `.ikv` segment cache (item 6; entry: G3a and G3b passed, Sam agrees to
-the inkling-ikv fork).** The thresholds below are declared now, before any
+**P4: `.ikv` segment cache (item 6; entry: G3a and G3b passed; P4 builds on the
+existing `Hellblazer/inkling-ikv` fork).** The thresholds below are declared now, before any
 data; changing them needs Sam.
 
 - G4a, logit parity. On 20 request sequences captured during P3, for the first
@@ -526,7 +535,7 @@ data; changing them needs Sam.
   SWE-bench for `gajx` is 15/25 after the `hbjw` re-score (see Key
   discoveries); bead `ijzg`'s description still says 14/25.
 
-Key discoveries (2026-11-28, T2 `qwen-coprocessor-stack_rdr/017-research-1..11`).
+Key discoveries (2026-11-28, T2 `qwen-coprocessor-stack_rdr/017-research-1..12`).
 These settle every item the draft left to "discover at implementation" except
 whether the model ever emits `<|content_invoke_tool_text|>`.
 
@@ -563,7 +572,9 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
   `/build/erisinky` and `$CARGO_HOME` to `/cargo`, and the same `--target-dir`
   path. Without the remap, or with different target directories, the hashes
   differ, because the release profile's `debug = 1` embeds source and object-file
-  paths. G2a pins all four.
+  paths. G2a pins all four. The test covered one machine; across two machines
+  the SDK and linker versions stamped in the Mach-O header must also match
+  (017-research-12).
   *Source: builds in the session scratchpad, 2026-11-28*
 - **✅ Verified** (spike) — Mainline llama.cpp b12649 (manifest
   `llama.cpp@b12649-macos-arm64`, tarball sha256 matches) loads the Q4_K_M and
@@ -597,9 +608,12 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
   only, no Rust). The M5 tensor path and the sparse pool should run there, but the
   engine's 16.3 GiB resident set does not fit beside the 14 GB CI pool, and the GPU
   wired limit is the default. No Metal compiler is needed (shaders compile at
-  load), so the reproducible laptop build can be copied there; Rust need not be
-  installed.
+  load), so for running benchmarks the laptop build can be copied there. For the
+  reproducibility check, Rust 1.95.0 is installed user-level and the Command
+  Line Tools are updated to 27.2 (Decision 3).
   *Source: `ssh hellmini sysctl/sw_vers/df`, 2026-11-28*
+- **✅ Verified** (source search) — The Mach-O header of the build records the macOS SDK (27.2) and the linker version (27106.1) of the machine that built it; hellmini has SDK 27.0 and ld-27037.1. A cross-machine match therefore needs the same Command Line Tools on both hosts.
+  *Source: `otool -l target/release/inkling` (LC_BUILD_VERSION); `ld -v` and the SDK list on both hosts, 2026-11-28 (017-research-12)*
 
 ## Consequences
 
@@ -609,7 +623,8 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
   `qwen_dispatch`, the battery) with no supervisor change, because the server
   answers the routes the health probe already uses.
 - The runtime gets the same accounting as every other served artifact: a commit,
-  a toolchain, a lockfile hash, a binary hash reproduced on a second machine.
+  a toolchain, a lockfile hash, a binary hash reproduced on a second machine once both hosts run the same
+  Command Line Tools (Decision 3).
 - The source-build path is generic. Any later source-built runtime goes through
   `add-source-build` and `source_repos` instead of a one-off exception.
 - The `.ikv` work is gated on the model earning its place first, and the cache
@@ -651,8 +666,12 @@ recommendation the draft carried; his choice is recorded as given.
    from the inkling-ikv fork.
 2. **Forking `Eriskii/inkling-ikv`:** fork now, not at P4 entry.
 3. **How the runtime is verified:** a reproducible build whose sha256 must match
-   on the laptop and on hellmini. Rust 1.95.0 is installed user-level under
-   `hhildebrand` on hellmini for this (an install on a shared CI host, approved).
+   on the laptop and on hellmini. The binary records the SDK and linker versions
+   (017-research-12), so hellmini's Command Line Tools are first updated to the
+   laptop's 27.2, and Rust 1.95.0 is installed user-level under `hhildebrand`
+   (re-decided by Sam on 2026-11-28 after gate round 1; both are installs on a
+   shared CI host, approved, pending the labrun session's check that mac CI does
+   not depend on CLT 27.0).
 4. **Allowlist and schema change:** approved. `source_repos` admits
    `Hellblazer/erisinky` and `Hellblazer/inkling-ikv`; trust tier `self-built`;
    reason of record: this RDR.
