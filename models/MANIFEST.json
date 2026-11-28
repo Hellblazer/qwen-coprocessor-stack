@@ -7041,6 +7041,55 @@
         "verification": "online-artifact-hash",
         "head_sha": "f59b688a86e5af854cc4ac7bc42442a827b7a97e"
       }
+    },
+    {
+      "id": "inkling-2-mini-gguf@23c938b0",
+      "kind": "model",
+      "status": "verified",
+      "source": {
+        "host": "huggingface",
+        "repo": "lmstudio-community/Inkling-2-Mini-GGUF",
+        "revision": "23c938b028945d4b0fa9f71fb603b5cd1a683e71",
+        "url": "https://huggingface.co/lmstudio-community/Inkling-2-Mini-GGUF/resolve/23c938b028945d4b0fa9f71fb603b5cd1a683e71/"
+      },
+      "format": "gguf",
+      "trust_tier": "packager",
+      "quantized_by": null,
+      "remote_code_files": [],
+      "remote_code_present": false,
+      "files": [
+        {
+          "path": "Inkling-2-Mini-Q4_K_M.gguf",
+          "sha256": "dac3702abcb5684cbcb1fbd148d94b2d531283be974630ac61964d194db483de",
+          "size": 17478094048,
+          "hf_security": {
+            "status": "safe",
+            "avScan": "unscanned",
+            "protectAiScan": "safe",
+            "pickleImportScan": "unscanned",
+            "virusTotalScan": "unscanned",
+            "jFrogScan": "safe"
+          }
+        }
+      ],
+      "verified_on": [
+        "mac"
+      ],
+      "verified_at": "2026-11-28T10:40:43Z",
+      "notes": "as-of: fetched at revision '23c938b028945d4b0fa9f71fb603b5cd1a683e71' (resolved to 23c938b028945d4b0fa9f71fb603b5cd1a683e71); LM Studio Q4_K_M, the default weights of Hellblazer/erisinky (arch inkling2_loop); erisinky route probe (bead ijzg). Packager allowlisted by Sam 2026-11-28.",
+      "derived_from": "thinkingmachines/Inkling-2-Mini@ed40e7da625f594fc9c4990f5f66be24873c22d7",
+      "derived_from_files": [
+        {
+          "path": "model-00001-of-00001.safetensors",
+          "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1",
+          "size": 19526019168
+        },
+        {
+          "path": "mtp.safetensors",
+          "sha256": "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2",
+          "size": 635801416
+        }
+      ]
     }
   ]
 }

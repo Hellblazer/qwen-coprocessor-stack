@@ -15,7 +15,8 @@
     "unsloth",
     "ggml-org",
     "bartowski",
-    "mlx-community"
+    "mlx-community",
+    "lmstudio-community"
   ],
   "runtime_repos": [
     "ggml-org/llama.cpp",
