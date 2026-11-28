@@ -96,6 +96,132 @@ class SyntheticRunTest(unittest.TestCase):
         self.assertEqual(r["side_by_kind"], {"unknown": 1})
 
 
+SYS2 = {"role": "system", "content": "You are the agent, revised prompt."}
+
+
+def split_main_run():
+    """Main tools, system prompt changes mid-run (3 + 2 requests); a subagent with
+    its own tools issues 4 requests, more than either (tools, system) main group."""
+    sub = lambda s, n: line(s, [{"role": "system", "content": "sub"}, {"role": "user", "content": str(n)}], SIDE_TOOLS)
+    return [
+        line(1, [SYS, U1], TOOLS),
+        sub(2, 1), sub(3, 2),
+        line(4, [SYS, U1, A1, T1], TOOLS),
+        line(5, [SYS, U1, A1, T1, A2], TOOLS),
+        sub(6, 3), sub(7, 4),
+        line(8, [SYS2, U1, A1, T1, A2], TOOLS),
+        line(9, [SYS2, U1, A1, T1, A2, U1], TOOLS),
+    ]
+
+
+class MainLoopLabelTest(unittest.TestCase):
+    def setUp(self):
+        self.r = cr.analyze_run("split", split_main_run())
+
+    def test_main_is_the_dominant_tools_hash_not_the_dominant_group(self):
+        labels = [q["label"] for q in self.r["requests"]]
+        self.assertEqual(labels, ["main", "side", "side", "main", "main", "side", "side",
+                                  "main-system-changed", "main-system-changed"])
+        self.assertEqual((self.r["main"], self.r["main_system_changed"], self.r["side"]), (3, 2, 4))
+
+    def test_system_change_is_a_main_loop_prefix_break_not_a_side_request(self):
+        # a changed system prompt invalidates the whole prefix: the main-loop
+        # chain shows it as non-extending at message 0
+        ev = self.r["non_extending"]["events"]
+        self.assertEqual([(e["seq"], e["first_diff_index"]) for e in ev], [(8, 0)])
+        self.assertEqual(self.r["side_by_kind"], {"unknown": 4})
+
+    def test_run_without_any_tools_has_no_main_loop(self):
+        r = cr.analyze_run("x", [line(1, [SYS, U1]), line(2, [SYS, U1, A2], [])])
+        self.assertEqual((r["main"], r["main_system_changed"], r["side"]), (0, 0, 2))
+
+    def test_side_kinds_are_marked_unvalidated(self):
+        self.assertIn("kind guesses unvalidated against real qwen-code side requests", cr.KIND_NOTE)
+        report = cr.build_report([self.r])
+        self.assertEqual(report["kind_note"], cr.KIND_NOTE)
+        self.assertIn(cr.KIND_NOTE, cr.render_text(report))
+
+
+class CommonWithPrevTest(unittest.TestCase):
+    def test_summary_by_transition(self):
+        r = cr.analyze_run("synthetic", synthetic())
+        s = r["common_with_prev"]
+        # req2 extends req1 by two messages; main->side and side->main share nothing
+        self.assertEqual(s["main_to_main"], {"n": 1, "min": 2, "median": 2, "max": 2})
+        self.assertEqual(s["main_to_side"]["max"], 0)
+        self.assertEqual(s["side_to_main"]["max"], 0)
+        self.assertNotIn("side_to_side", s)
+
+    def test_text_reports_it(self):
+        r = cr.analyze_run("synthetic", synthetic())
+        out = cr.render_text(cr.build_report([r]))
+        self.assertIn("leading messages shared with previous request", out)
+        self.assertIn("main->main is 0 by construction", out)
+
+
+class SurrogateAndEncodingTest(unittest.TestCase):
+    LONE = "\ud83d"
+
+    def test_group_key_survives_lone_surrogate(self):
+        body = line(1, [{"role": "system", "content": "a" + self.LONE}, U1], TOOLS)["body"]
+        self.assertEqual(len(cr.group_key(body)), 64)
+
+    def test_analyze_run_survives_lone_surrogate_in_a_message(self):
+        log = [line(1, [SYS, U1], TOOLS), line(2, [SYS, U1, {"role": "user", "content": self.LONE}], TOOLS)]
+        self.assertEqual(cr.analyze_run("x", log)["main"], 2)
+
+    def test_cli_reads_escaped_surrogate_and_raw_utf8_under_ascii_locale(self):
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "classify_requests.py")
+        with tempfile.TemporaryDirectory() as d:
+            rows = [line(1, [SYS, {"role": "user", "content": "café ☃"}], TOOLS),
+                    line(2, [SYS, {"role": "user", "content": "café ☃"}, A2, {"role": "user", "content": self.LONE}], TOOLS)]
+            with open(os.path.join(d, "run-1.jsonl"), "w", encoding="utf-8") as f:
+                f.write(json.dumps(rows[0], ensure_ascii=False) + "\n")  # raw UTF-8 bytes
+                f.write(json.dumps(rows[1], ensure_ascii=True) + "\n")  # \ud83d escape
+            env = dict(os.environ, LC_ALL="C", LANG="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+            p = subprocess.run([sys.executable, script, d], capture_output=True, text=True, env=env)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIn("requests: 2", p.stdout)
+
+
+class LoadRowsDiagnosticsTest(unittest.TestCase):
+    def load(self, data):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "run-1.jsonl")
+            with open(path, "wb") as f:
+                f.write(data)
+            try:
+                return cr.load_rows(path), path
+            except SystemExit as e:
+                return str(e), path
+
+    def test_bad_json_names_file_and_line(self):
+        msg, path = self.load(b'{"a": 1}\n\n{"a": \n')
+        self.assertIn(f"{path}:3:", msg)
+
+    def test_non_object_row_names_file_and_line(self):
+        msg, path = self.load(b'{"a": 1}\n[1, 2]\n')
+        self.assertIn(f"{path}:2:", msg)
+        self.assertIn("not a JSON object", msg)
+
+    def test_invalid_utf8_names_file_and_line(self):
+        msg, path = self.load(b'{"a": 1}\n{"a": "\xff"}\n')
+        self.assertIn(f"{path}:2:", msg)
+        self.assertIn("UTF-8", msg)
+
+    def test_good_rows_load(self):
+        rows, _ = self.load(b'{"a": 1}\n\n{"b": "caf\xc3\xa9"}\n')
+        self.assertEqual(rows, [{"a": 1}, {"b": "café"}])
+
+
+class HelpUnderOOTest(unittest.TestCase):
+    def test_help_works_under_python_OO(self):
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "classify_requests.py")
+        p = subprocess.run([sys.executable, "-OO", script, "--help"], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("--json", p.stdout)
+
+
 class DiffFieldTest(unittest.TestCase):
     def check(self, a, b, fields):
         self.assertEqual(cr.differing_fields(a, b), fields)

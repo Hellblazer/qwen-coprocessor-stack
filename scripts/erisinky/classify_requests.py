@@ -8,15 +8,27 @@ Pass files or a directory (which expands to its run-*.jsonl files).
 Per run it reports:
   * total requests, main-loop requests, side requests by guessed kind. A
     request's group is sha256(canonical(tools) + canonical(system message));
-    a missing and an empty `tools` are the same NO_TOOLS value. The dominant
-    group in a run is the main loop, every other group is a side request.
+    a missing and an empty `tools` are the same NO_TOOLS value. The main loop
+    is every request whose tools hash equals the most common non-empty tools
+    hash in the run (a subagent with its own tool set is therefore side). Of
+    those, the most common (tools, system) group is labelled `main` and any
+    other, which has the main tools under a different system message, is
+    labelled `main-system-changed`: still the main loop, but its prefix
+    differs from message 0. Everything else is a side request. A run with no
+    tools at all has no main loop.
   * for each request, whether its messages array extends the previous
     main-loop request's messages as a prefix, compared per message on
     canonical JSON. Requests that do not extend it are listed with the index
     of the first differing message and the field that differs (role,
     content, reasoning_content, tool_calls, other).
   * requests that share no prefix with the request just before them (group
-    differs, or message 0 differs), split by main/side transition.
+    differs, or message 0 differs), split by main/side transition. Within one
+    group, main->main is 0 by construction: the system message is part of the
+    group and is message 0, so a same-group request always shares it. It is
+    nonzero only when the system prompt changes mid-run. The informative
+    number is `common_with_prev`, the count of leading messages a request
+    shares with the one just before it; it is reported per request and
+    summarised per run by transition.
 
 This is a proxy for the token prefix: the script has no tokenizer, so it
 compares at message granularity. P1's renderer and tokenizer give the exact
@@ -28,6 +40,7 @@ import hashlib
 import json
 import os
 import re
+import statistics
 import sys
 
 # Marker table for guessing a side request's kind. First match wins. Searched
@@ -44,10 +57,19 @@ KIND_MARKERS = [
 FIELD_ORDER = ["role", "content", "reasoning_content", "tool_calls"]
 NOTE = ("Prefix comparison is at message granularity on canonical JSON: a proxy "
         "for the token prefix, not an exact token count.")
+KIND_NOTE = "kind guesses unvalidated against real qwen-code side requests"
+NP_NOTE = ("main->main is 0 by construction while the system prompt is unchanged (the system "
+           "message is message 0 and part of the group); read the leading-message counts for "
+           "the real shared prefix.")
 
 
 def canon(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _sha(text):
+    # surrogatepass: a lone UTF-16 surrogate (JSON \ud83d) is a legal str here
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def system_message(body):
@@ -57,9 +79,13 @@ def system_message(body):
     return None
 
 
+def tools_key(body):
+    return _sha(canon(body.get("tools") or []))  # missing == empty == NO_TOOLS
+
+
 def group_key(body):
-    tools = body.get("tools") or []  # missing == empty == NO_TOOLS
-    return hashlib.sha256((canon(tools) + canon(system_message(body))).encode()).hexdigest()
+    tools = body.get("tools") or []
+    return _sha(canon(tools) + canon(system_message(body)))
 
 
 def _text(content):
@@ -105,34 +131,50 @@ def analyze_run(name, rows):
         if row.get("method") != "POST" or not isinstance(body, dict) or "messages" not in body:
             skipped += 1
             continue
-        reqs.append({"seq": row.get("seq"), "body": body, "key": group_key(body)})
+        reqs.append({"seq": row.get("seq"), "body": body, "key": group_key(body),
+                     "tkey": tools_key(body), "has_tools": bool(body.get("tools"))})
 
-    counts, first = {}, {}
+    def dominant(keys, firsts):
+        """Most common key, earliest first-seen on a tie."""
+        return max(keys, key=lambda k: (keys[k], -firsts[k]))
+
+    counts, first = {}, {}  # per (tools, system) group
+    tcounts, tfirst = {}, {}  # per non-empty tools hash
     for i, q in enumerate(reqs):
         counts[q["key"]] = counts.get(q["key"], 0) + 1
         first.setdefault(q["key"], i)
-    main_key = None
-    if counts:
-        has_tools = {k: bool(reqs[first[k]]["body"].get("tools")) for k in counts}
-        main_key = max(counts, key=lambda k: (counts[k], has_tools[k], -first[k]))
+        if q["has_tools"]:
+            tcounts[q["tkey"]] = tcounts.get(q["tkey"], 0) + 1
+            tfirst.setdefault(q["tkey"], i)
+    main_tkey = dominant(tcounts, tfirst) if tcounts else None
+    in_main_tools = {k: c for k, c in counts.items() if reqs[first[k]]["tkey"] == main_tkey}
+    main_key = dominant(in_main_tools, first) if in_main_tools else None
+
+    def label_of(q):
+        if q["tkey"] != main_tkey:  # also true for every request when main_tkey is None
+            return "side"
+        return "main" if q["key"] == main_key else "main-system-changed"
 
     groups = []
     for k in sorted(counts, key=lambda k: first[k]):
-        b = reqs[first[k]]["body"]
-        groups.append({"key": k, "count": counts[k], "main": k == main_key,
-                       "tools": len(b.get("tools") or []),
-                       "kind": None if k == main_key else guess_kind(b)})
+        q0 = reqs[first[k]]
+        lab = label_of(q0)
+        groups.append({"key": k, "count": counts[k], "main": lab == "main", "label": lab,
+                       "tools": len(q0["body"].get("tools") or []),
+                       "kind": guess_kind(q0["body"]) if lab == "side" else None})
     kind_of = {g["key"]: g["kind"] for g in groups}
 
     out_reqs, events = [], []
     np_ = _empty_np()
+    common_by_transition = {}
     side_by_kind = {}
     prev = prev_main_msgs = None
     for i, q in enumerate(reqs):
-        body, is_main = q["body"], q["key"] == main_key
+        body, label = q["body"], label_of(q)
+        is_main = label != "side"  # in the main loop, system prompt changed or not
         msgs = [canon(m) for m in body["messages"]]
         rec = {"index": i, "seq": q["seq"], "group": q["key"][:12],
-               "label": "main" if is_main else "side", "kind": kind_of[q["key"]],
+               "label": label, "kind": kind_of[q["key"]],
                "messages": len(msgs), "extends_prev_main": None,
                "common_with_prev": None, "no_prefix": False}
         if not is_main:
@@ -142,10 +184,12 @@ def analyze_run(name, rows):
             while common < min(len(msgs), len(prev["msgs"])) and msgs[common] == prev["msgs"][common]:
                 common += 1
             rec["common_with_prev"] = common
+            trans = ("main" if prev["main"] else "side") + "_to_" + ("main" if is_main else "side")
+            common_by_transition.setdefault(trans, []).append(common)
             if q["key"] != prev["key"] or common == 0:
                 rec["no_prefix"] = True
                 np_["total"] += 1
-                np_[("main" if prev["main"] else "side") + "_to_" + ("main" if is_main else "side")] += 1
+                np_[trans] += 1
         if is_main:
             if prev_main_msgs is not None:
                 n = len(prev_main_msgs)
@@ -165,20 +209,24 @@ def analyze_run(name, rows):
         out_reqs.append(rec)
 
     n_main = sum(1 for r in out_reqs if r["label"] == "main")
-    return {"run": name, "total": len(out_reqs), "main": n_main, "side": len(out_reqs) - n_main,
+    n_msc = sum(1 for r in out_reqs if r["label"] == "main-system-changed")
+    summary = {t: {"n": len(v), "min": min(v), "median": statistics.median(v), "max": max(v)}
+               for t, v in common_by_transition.items()}
+    return {"run": name, "total": len(out_reqs), "main": n_main, "main_system_changed": n_msc,
+            "side": len(out_reqs) - n_main - n_msc,
             "skipped": skipped, "side_by_kind": side_by_kind, "groups": groups,
             "main_requests_with_predecessor": sum(1 for r in out_reqs if r["extends_prev_main"] is not None),
-            "no_prefix": np_,
+            "no_prefix": np_, "common_with_prev": summary,
             "non_extending": {"count": len(events), "events": events},
             "requests": out_reqs}
 
 
 def combine(runs):
-    c = {"total": 0, "main": 0, "side": 0, "side_by_kind": {}, "no_prefix": _empty_np(),
+    c = {"total": 0, "main": 0, "main_system_changed": 0, "side": 0, "side_by_kind": {}, "no_prefix": _empty_np(),
          "main_requests_with_predecessor": 0, "non_extending": {"count": 0, "events": []},
          "distinct_groups": len({g["key"] for r in runs for g in r["groups"]})}
     for r in runs:
-        for f in ("total", "main", "side", "main_requests_with_predecessor"):
+        for f in ("total", "main", "main_system_changed", "side", "main_requests_with_predecessor"):
             c[f] += r[f]
         for k, v in r["side_by_kind"].items():
             c["side_by_kind"][k] = c["side_by_kind"].get(k, 0) + v
@@ -190,14 +238,26 @@ def combine(runs):
 
 
 def load_rows(path):
+    """Read a capture log. Any bad line stops the run with `path:line: reason`."""
     rows = []
-    with open(path) as f:
+    # surrogateescape turns invalid UTF-8 bytes into lone surrogates, which the
+    # encode() check below reports with the exact line (a strict decode would
+    # fail a whole read chunk, not the line).
+    with open(path, encoding="utf-8", errors="surrogateescape") as f:
         for n, text in enumerate(f, 1):
-            if text.strip():
-                try:
-                    rows.append(json.loads(text))
-                except ValueError as e:
-                    raise SystemExit(f"{path}:{n}: bad JSON: {e}")
+            if not text.strip():
+                continue
+            try:
+                text.encode("utf-8")
+            except UnicodeEncodeError:
+                raise SystemExit(f"{path}:{n}: not valid UTF-8")
+            try:
+                row = json.loads(text)
+            except ValueError as e:
+                raise SystemExit(f"{path}:{n}: bad JSON: {e}")
+            if not isinstance(row, dict):
+                raise SystemExit(f"{path}:{n}: not a JSON object (got {type(row).__name__})")
+            rows.append(row)
     return rows
 
 
@@ -217,8 +277,10 @@ def _fmt_kinds(d):
 
 def _block(title, r):
     np_ = r["no_prefix"]
+    msc = f" + {r['main_system_changed']} main-system-changed" if r["main_system_changed"] else ""
     lines = [f"{title}",
-             f"  requests: {r['total']}  main-loop: {r['main']}  side: {r['side']} ({_fmt_kinds(r['side_by_kind'])})",
+             f"  requests: {r['total']}  main-loop: {r['main']}{msc}  side: {r['side']} "
+             f"({_fmt_kinds(r['side_by_kind'])}{'; kinds unvalidated' if r['side'] else ''})",
              f"  share no prefix with previous request: {np_['total']} "
              f"(main->side {np_['main_to_side']}, side->main {np_['side_to_main']}, "
              f"main->main {np_['main_to_main']}, side->side {np_['side_to_side']})",
@@ -227,15 +289,24 @@ def _block(title, r):
     for e in r["non_extending"]["events"]:
         lines.append(f"    {e['run']} seq {e['seq']}: first differing message {e['first_diff_index']}, "
                      f"field {'+'.join(e['fields'])} ({e['reason']})")
+    cw = r.get("common_with_prev")
+    if cw:
+        lines.append("  leading messages shared with previous request (min/median/max, n): " + "; ".join(
+            f"{t.replace('_to_', '->')} {s['min']}/{s['median']:g}/{s['max']} (n={s['n']})"
+            for t, s in sorted(cw.items())))
     return lines
 
 
+def _group_label(g):
+    return "side:" + str(g["kind"]) if g["label"] == "side" else g["label"]
+
+
 def render_text(report):
-    out = [NOTE, ""]
+    out = [NOTE, report["kind_note"], NP_NOTE, ""]
     for r in report["runs"]:
         out += _block(f"{r['run']}", r)
         out.append(f"  groups: " + ", ".join(
-            f"{g['key'][:12]} x{g['count']} {'main' if g['main'] else 'side:' + str(g['kind'])} tools={g['tools']}"
+            f"{g['key'][:12]} x{g['count']} {_group_label(g)} tools={g['tools']}"
             for g in r["groups"]))
         out.append("")
     c = report["combined"]
@@ -244,8 +315,13 @@ def render_text(report):
     return "\n".join(out) + "\n"
 
 
+def build_report(runs):
+    return {"note": NOTE, "kind_note": KIND_NOTE, "main_to_main_note": NP_NOTE,
+            "runs": runs, "combined": combine(runs)}
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("paths", nargs="+", help="run JSONL files, or a directory holding run-*.jsonl")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = ap.parse_args(argv)
@@ -253,7 +329,7 @@ def main(argv=None):
     if not files:
         ap.error("no run-*.jsonl files found")
     runs = [analyze_run(os.path.splitext(os.path.basename(f))[0], load_rows(f)) for f in files]
-    report = {"note": NOTE, "runs": runs, "combined": combine(runs)}
+    report = build_report(runs)
     if args.json:
         json.dump(report, sys.stdout, indent=2)
         print()
