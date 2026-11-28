@@ -12,6 +12,8 @@
 # Exits non-zero if any case is wrong. bash prints one "Alarm clock" line for the
 # hang case: that SIGALRM is the b1y bound under test.
 set -u
+# probe_off_set notifies through osascript: never post real notifications from a test.
+export QWEN_KEEPALIVE_NOTIFY=0
 here=$(cd "$(dirname "$0")" && pwd)
 ka="$here/../keepalive-coprocessor.sh"
 tmp=$(mktemp -d)
