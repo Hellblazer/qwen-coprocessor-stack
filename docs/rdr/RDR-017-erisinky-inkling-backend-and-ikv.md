@@ -250,14 +250,19 @@ reuse (P4).
      --porcelain` is empty; the commit exists on GitHub for that repo (so we
      run code that is published on the fork); `rust-toolchain.toml` at that
      commit pins `1.95.0` and `rustc -V` matches; the build was `cargo fetch
-     --locked` then `cargo build --release --locked --offline` with
-     `--remap-path-prefix` for the worktree and `CARGO_HOME`. It records the
-     binary's sha256 and size as `files[]`.
+     --locked` then `cargo build --release --locked --offline` with `RUSTFLAGS`
+     holding the two `--remap-path-prefix` flags (worktree and `CARGO_HOME`) and
+     `-C link-arg=-Wl,-S`, and with `--target-dir` set to the pinned path
+     `/tmp/erisinky-build/target` (inferred, not read: any fixed path works; this
+     one is named here). `add-source-build` refuses unless the recorded RUSTFLAGS
+     contain `-Wl,-S` and the recorded target-dir equals the pinned path. It
+     records the binary's sha256 and size as `files[]`.
    - Reproducibility: the same commit built on hellmini
      (`ssh hellmini /usr/local/bin/lab-run -c lab-mac-m -- ...`) must produce the
      same sha256; that host is then added to `reproduced_on`. The two hosts
      must run the same Command Line Tools (macOS SDK and ld) for the hashes to
-     match; the Mach-O header records both versions (017-research-12).
+     match; the Mach-O header records both versions (017-research-12). The
+     debug-map paths are the second host-specific stamp (017-research-13).
    - The verified binary is copied to
      `~/.qwen-coprocessor-stack/runtimes/erisinky-<sha12>/inkling` on internal
      storage and served from there. A later `cargo build` in the erisinky
@@ -370,15 +375,24 @@ engine trait, then the real engine. Gates:
   tool call parsed, no `upstream_api_error`, and a rollback rate under one in
   ten requests. Falsified by a parse failure, an API error, or more rollbacks.
 
-**P2: Provenance and keepalive (this repo, items 2-4).** Gates:
+**P2: Provenance and keepalive (this repo, items 2-4).**
+
+Entry condition: the hellmini Command Line Tools update and the user-level Rust install happen only after Sam has approved them to the labrun session directly and labrun has scheduled them in a held-pool window. The labrun reply is recorded on bead `qwen-coprocessor-stack-ijzg` before G2a runs.
+
+Gates:
 
 - G2a, reproducible build. Laptop and hellmini builds of the same commit have
-  the same sha256, with both hosts on the same Command Line Tools (27.2 at the
-  time of writing). A mismatch in SDK or ld version is a setup error to fix
-  before comparing, not a pass or fail of the build. Falsified by a difference;
-  then Sam picks between a CI build
-  in the fork verified online, as overlays are, and a single-host `self-built`
-  record (Decision 3).
+  the same sha256. Both hosts must match on: Rust 1.95.0; `--locked`; the same
+  RUSTFLAGS (the two `--remap-path-prefix` flags and `-C link-arg=-Wl,-S`); the
+  same pinned target-dir path; and the same Command Line Tools, compared by full
+  package version (`pkgutil --pkg-info=com.apple.pkg.CLTools_Executables`) and
+  `ld -v`, not by the marketing number (017-research-12, 017-research-13). A
+  mismatch in SDK or ld version is a setup error to fix before comparing, not a
+  pass or fail of the build. Falsified by a difference with all of the above
+  equal; then the binary is recorded as a single-host `self-built` entry and the
+  cross-host route goes back to Sam, who picks between a CI build in the fork
+  verified online, as overlays are, and that single-host record (inferred, not
+  read: this is the existing fallback wording made explicit).
 - G2b, refusal. The keepalive refuses a binary with one byte changed, a GGUF
   of the wrong size, and a missing file, logging `REFUSING` each time; with
   `QWEN_PROVENANCE_ENFORCE=0` it logs the bypass and launches. Falsified by a
@@ -461,7 +475,7 @@ context and rollbacks. Gates:
   SWE-bench for `gajx` is 15/25 after the `hbjw` re-score (see Key
   discoveries); bead `ijzg`'s description still says 14/25.
 
-Key discoveries (2026-11-28, T2 `qwen-coprocessor-stack_rdr/017-research-1..12`).
+Key discoveries (2026-11-28, T2 `qwen-coprocessor-stack_rdr/017-research-1..13`).
 These settle every item the draft left to "discover at implementation" except
 whether the model ever emits `<|content_invoke_tool_text|>`.
 
@@ -498,7 +512,7 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
   `/build/erisinky` and `$CARGO_HOME` to `/cargo`, and the same `--target-dir`
   path. Without the remap, or with different target directories, the hashes
   differ, because the release profile's `debug = 1` embeds source and object-file
-  paths. G2a pins all four. The test covered one machine; across two machines
+  paths. G2a pins the list in Item 2 and G2a: Rust 1.95.0, `--locked`, the RUSTFLAGS (remaps and `-Wl,-S`), the pinned target-dir path, and the same Command Line Tools (017-research-13). The test covered one machine; across two machines
   the SDK and linker versions stamped in the Mach-O header must also match
   (017-research-12).
   *Source: builds in the session scratchpad, 2026-11-28*
@@ -530,16 +544,18 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
   1.14 at 32K, 1.25 at 100K and 1.35 at 256K. Every upstream check runs at 8K or
   less, where tau = 1. Its effect at real agent offsets has not been measured.
   *Source: E src/prefill.metal:460, 498, 502; src/kv256k.rs:2301*
-- **✅ Verified** (spike) — hellmini is an M5 Pro (24 GB, Command Line Tools
+- **✅ Verified** (spike) — hellmini is an M5 Pro (24 GB, Command Line Tools 27.0
   only, no Rust). The M5 tensor path and the sparse pool should run there, but the
   engine's 16.3 GiB resident set does not fit beside the 14 GB CI pool, and the GPU
   wired limit is the default. No Metal compiler is needed (shaders compile at
   load), so for running benchmarks the laptop build can be copied there. For the
-  reproducibility check, Rust 1.95.0 is installed user-level and the Command
-  Line Tools are updated to 27.2 (Decision 3).
+  reproducibility check, Rust 1.95.0 will be installed user-level and the Command
+  Line Tools will be updated to 27.2 before G2a (Decision 3, P2 entry).
   *Source: `ssh hellmini sysctl/sw_vers/df`, 2026-11-28*
 - **✅ Verified** (source search) — The Mach-O header of the build records the macOS SDK (27.2) and the linker version (27106.1) of the machine that built it; hellmini has SDK 27.0 and ld-27037.1. A cross-machine match therefore needs the same Command Line Tools on both hosts.
   *Source: `otool -l target/release/inkling` (LC_BUILD_VERSION); `ld -v` and the SDK list on both hosts, 2026-11-28 (017-research-12)*
+- **✅ Verified** (spike) — The binary also carries absolute object-file paths in its linker debug map (N_OSO entries): the Rust toolchain install path and the target directory. `--remap-path-prefix` does not change them. With only the toolchain install path changed, the hash changed; with `-C link-arg=-Wl,-S` both builds gave the same hash (8a0cdf4497b9e278) and no debug-map entries.
+  *Source: `nm -a target/release/inkling`; gate round 2 spike, 2026-11-28 (017-research-13)*
 
 ## Consequences
 
@@ -550,7 +566,7 @@ whether the model ever emits `<|content_invoke_tool_text|>`.
   answers the routes the health probe already uses.
 - The runtime gets the same accounting as every other served artifact: a commit,
   a toolchain, a lockfile hash, a binary hash reproduced on a second machine once both hosts run the same
-  Command Line Tools (Decision 3).
+  Command Line Tools (Decision 3) and the pinned build flags.
 - The source-build path is generic. Any later source-built runtime goes through
   `add-source-build` and `source_repos` instead of a one-off exception.
 - The `.ikv` work is deferred (see the Deferred section) until P3 passes and a
@@ -678,8 +694,13 @@ recommendation the draft carried; his choice is recorded as given.
    (017-research-12), so hellmini's Command Line Tools are first updated to the
    laptop's 27.2, and Rust 1.95.0 is installed user-level under `hhildebrand`
    (re-decided by Sam on 2026-11-28 after gate round 1; both are installs on a
-   shared CI host, approved, pending the labrun session's check that mac CI does
-   not depend on CLT 27.0).
+   shared CI host, approved by Sam in session pyrrho; labrun also needs his word directly). The labrun session replied on 2026-11-28 that no
+   mac CI job pins CLT 27.0, but the mac-signing-rehearsal job and the hellmini
+   release builds will see the new toolchain, so the install waits for Sam's
+   direct approval to labrun. The pinned build also links with
+   `-C link-arg=-Wl,-S` and a fixed target-dir path, because the binary's debug
+   map records the toolchain and target paths (017-research-13; found in gate
+   round 2).
 4. **Allowlist and schema change:** approved. `source_repos` admits
    `Hellblazer/erisinky` now and `Hellblazer/inkling-ikv` at P4 entry (amended
    2026-11-28 by Decision 10); trust tier `self-built`; reason of record: this
